@@ -5,7 +5,9 @@ store, Python environment, or plugin process.
 
 ## v0.1 exchange path
 
-Open Publisher exports a `ContentPackage` directory:
+The authenticated Sidecar API returns a bounded `ContentPackage` transfer document (canonical
+Markdown plus Base64 assets). A trusted desktop or CLI boundary materializes it into the portable
+directory form:
 
 ```text
 content-package/
@@ -23,6 +25,23 @@ revision metadata for tools that understand ContentPackage v1.
 Wandao already accepts a local Markdown directory for its import providers. Point Wandao at the
 exported `articles` directory for the compatibility path. A future Wandao provider can read the
 manifest for richer metadata without changing either application's private storage.
+
+For a development transfer JSON file:
+
+```powershell
+.\.venv\Scripts\open-publisher-content-package.exe materialize .\package.json .\content-package
+.\.venv\Scripts\open-publisher-content-package.exe verify .\content-package
+```
+
+The materializer never overwrites an existing directory. The verifier checks the canonical
+manifest hash plus every entry's byte length and SHA-256 digest.
+
+## Manifest hash
+
+`packageHash` is the SHA-256 of the canonical manifest with `packageHash` omitted, entries sorted
+by normalized POSIX path, and platform variant IDs sorted lexicographically. Entry hashes bind the
+actual Markdown and asset bytes. The v0.1 manifest domain uses only strings and integers, allowing
+the Python materializer to produce the same RFC 8785-compatible canonical bytes as other clients.
 
 ## Import rules
 

@@ -44,8 +44,19 @@ $env:OPEN_PUBLISHER_API_TOKEN = "replace-with-a-long-random-development-token"
 .\.venv\Scripts\open-publisher-agent-runtime.exe
 ```
 
-All `/api/v1` requests require `Authorization: Bearer <token>`. The unauthenticated `/health`
-endpoint contains no private data and exists only for local supervision.
+Every request, including `/health`, requires `Authorization: Bearer <token>`. This prevents an
+unrelated local process from probing or driving the Sidecar.
+
+To turn a `content_package` object returned by the demo/export API into a directory for Wandao,
+save that object as UTF-8 JSON and run:
+
+```powershell
+.\.venv\Scripts\open-publisher-content-package.exe materialize .\package.json .\content-package
+.\.venv\Scripts\open-publisher-content-package.exe verify .\content-package
+```
+
+The destination must not already exist. Materialization validates every path, Base64 payload, size,
+and hash before creating the final directory.
 
 ## Verify
 
