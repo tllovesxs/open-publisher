@@ -20,17 +20,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
+      - run: pnpm build
 
   python:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install -e ".[dev]"
-      - run: python -m pip install -e ".\services\agent-runtime[dev]"
+      - run: python -m pip install -e ".\services\agent-runtime[dev,langgraph]"
       - run: python -m ruff check .
       - run: python -m pytest
 
@@ -43,4 +47,5 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
       - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
-
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings

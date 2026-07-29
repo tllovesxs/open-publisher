@@ -20,6 +20,7 @@ class Check:
 CHECKS = (
     Check("TypeScript checks", ("pnpm", "check"), "pnpm"),
     Check("TypeScript tests", ("pnpm", "test"), "pnpm"),
+    Check("Web builds", ("pnpm", "build"), "pnpm"),
     Check("Python lint", (sys.executable, "-m", "ruff", "check", "."), sys.executable),
     Check("Python tests", (sys.executable, "-m", "pytest"), sys.executable),
     Check(
@@ -36,6 +37,11 @@ CHECKS = (
     Check(
         "Rust check",
         ("cargo", "check", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml"),
+        "cargo",
+    ),
+    Check(
+        "Rust tests",
+        ("cargo", "test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml"),
         "cargo",
     ),
 )
@@ -72,4 +78,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

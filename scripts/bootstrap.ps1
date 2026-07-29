@@ -18,7 +18,6 @@ if (-not (Test-Path -LiteralPath ".venv")) {
 $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 & $PythonExe -m pip install --upgrade pip
 & $PythonExe -m pip install -e ".[dev]"
-& $PythonExe -m pip install -e ".\services\agent-runtime[dev]"
+& $PythonExe -m pip install -e ".\services\agent-runtime[dev,langgraph]"
 
 Write-Output "Development environment is ready."
-

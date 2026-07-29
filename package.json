@@ -15,8 +15,7 @@
     "check": "pnpm -r --if-present check",
     "test": "pnpm -r --if-present test",
     "python:install": "python -m pip install -e \".[dev]\"",
-    "python:check": "python -m ruff check services/agent-runtime tests",
+    "python:check": "python -m ruff check .",
     "python:test": "python -m pytest"
   }
 }
-
