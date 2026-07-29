@@ -70,6 +70,22 @@
         }
       }
     },
+    "HumanActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "user"
+        },
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        }
+      }
+    },
     "Error": {
       "type": "object",
       "additionalProperties": false,

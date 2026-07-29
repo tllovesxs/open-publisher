@@ -55,6 +55,7 @@ document.querySelector("#fill").addEventListener("click", async () => {
       schemaVersion: "1.0",
       taskId: `draft:${crypto.randomUUID()}`,
       nonce,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
       platform,
       action: "FILL_DRAFT",
       article: {

@@ -17,6 +17,10 @@ export interface Actor {
   id: Identifier;
 }
 
+export interface HumanActor extends Actor {
+  kind: "user";
+}
+
 export interface ContractError {
   code: Identifier;
   message: string;
@@ -91,6 +95,7 @@ export interface WorkflowDefinition extends ContractBase {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   entryNodeIds: Identifier[];
+  requiredNodeIds: Identifier[];
   policy: {
     maxParallel: number;
     requiresApprovalBeforePublish: boolean;
@@ -179,7 +184,7 @@ export interface PublishPlan extends ContractBase {
   targets: PublishTarget[];
   scheduleAt?: IsoTimestamp;
   approvedAt?: IsoTimestamp;
-  approvedBy?: Actor;
+  approvedBy?: HumanActor;
   planHash: Sha256;
   createdAt: IsoTimestamp;
 }
@@ -202,6 +207,8 @@ export interface PublishJob extends ContractBase {
     | "queued"
     | "running"
     | "retry_wait"
+    | "unknown"
+    | "reconciling"
     | "needs_user"
     | "succeeded"
     | "failed"
@@ -249,10 +256,24 @@ export interface SkillPermissions {
   modelAccess: boolean;
   imageGeneration: boolean;
   browserRead: boolean;
-  platformWrites: boolean;
+  platformWrites: false;
   filesystem: "none" | "workspace-read" | "workspace-write";
   networkServices: Identifier[];
 }
+
+export type SkillSource =
+  | {
+      kind: "first-party";
+      url?: string;
+      commit?: string;
+      license?: string;
+    }
+  | {
+      kind: "third-party";
+      url: string;
+      commit: string;
+      license: string;
+    };
 
 export interface SkillManifest extends ContractBase {
   name: string;
@@ -274,12 +295,7 @@ export interface SkillManifest extends ContractBase {
     guardrails: string[];
   };
   configSchema: Record<string, unknown>;
-  source?: {
-    kind: "first-party" | "third-party";
-    url?: string;
-    commit?: string;
-    license?: string;
-  };
+  source: SkillSource;
 }
 
 export interface PlatformAdapterManifest extends ContractBase {

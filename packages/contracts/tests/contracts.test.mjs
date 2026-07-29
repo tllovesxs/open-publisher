@@ -5,6 +5,13 @@ import test from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
+import {
+  isCanonicalContentPackagePath,
+  validateConnectionSecretBoundary,
+  validateContentPackageManifest,
+  validateWorkflowGraph,
+} from "../src/validation.ts";
+
 const directory = new URL("../schemas/v1/", import.meta.url);
 const files = (await readdir(directory)).filter((fileName) => fileName.endsWith(".schema.json"));
 const schemas = await Promise.all(
@@ -86,6 +93,15 @@ test("publish mode requires explicit approval", () => {
     true,
     JSON.stringify(validate.errors),
   );
+  assert.equal(
+    validate({
+      ...plan,
+      approvedAt: "2026-07-30T00:01:00.000Z",
+      approvedBy: { kind: "agent", id: "agent:auto" },
+    }),
+    false,
+    "Only a human user can approve final publication",
+  );
 });
 
 test("declarative skills cannot declare executable entrypoints", () => {
@@ -115,6 +131,259 @@ test("declarative skills cannot declare executable entrypoints", () => {
       guardrails: ["Do not mutate canonical content."],
     },
     configSchema: { type: "object" },
+    source: { kind: "first-party" },
   };
   assert.equal(validate(manifest), false);
+});
+
+test("third-party skills are immutable and cannot write platforms", () => {
+  const validate = ajv.getSchema("https://schemas.openpublisher.dev/v1/skill-manifest.schema.json");
+  const manifest = {
+    schemaVersion: "1.0",
+    id: "third-party.example",
+    name: "Example",
+    version: "1.0.0",
+    description: "Third-party declarative skill",
+    license: "MIT",
+    runtime: { kind: "declarative", apiVersion: "1.0" },
+    capabilities: [],
+    inputArtifactTypes: [],
+    outputArtifactTypes: ["example"],
+    permissions: {
+      modelAccess: false,
+      imageGeneration: false,
+      browserRead: false,
+      platformWrites: false,
+      filesystem: "none",
+      networkServices: [],
+    },
+    declaration: {
+      objective: "Return an artifact.",
+      instructions: ["Return structured data."],
+      guardrails: ["Do not mutate platform state."],
+    },
+    configSchema: { type: "object" },
+    source: {
+      kind: "third-party",
+      url: "https://github.com/example/skill",
+      commit: "a".repeat(40),
+      license: "MIT",
+    },
+  };
+  assert.equal(validate(manifest), true, JSON.stringify(validate.errors));
+  assert.equal(
+    validate({
+      ...manifest,
+      permissions: { ...manifest.permissions, platformWrites: true },
+    }),
+    false,
+  );
+  assert.equal(
+    validate({
+      ...manifest,
+      source: { ...manifest.source, commit: "abcdef0" },
+    }),
+    false,
+  );
+});
+
+test("browser adapter manifests enforce safe capabilities in the schema", () => {
+  const validate = ajv.getSchema(
+    "https://schemas.openpublisher.dev/v1/platform-adapter-manifest.schema.json",
+  );
+  const manifest = {
+    schemaVersion: "1.0",
+    id: "adapter:browser:csdn",
+    platform: "csdn",
+    name: "CSDN draft filler",
+    version: "1.0.0",
+    license: "AGPL-3.0-only",
+    transport: "browser_extension",
+    supportedOperations: ["probe", "prepare_draft", "save_draft"],
+    requiredAuthMethods: ["browser_session"],
+    editorUrlPatterns: ["https://editor.csdn.net/md*"],
+    capabilities: {
+      supportsMarkdown: true,
+      supportsHtml: false,
+      supportsDrafts: true,
+      supportsScheduling: false,
+    },
+    permissions: {
+      hostPatterns: ["https://editor.csdn.net/*"],
+      cookieAccess: false,
+    },
+    safeDefaults: {
+      defaultMode: "save_draft",
+      finalPublishRequiresUser: true,
+      exportsCookies: false,
+    },
+  };
+  assert.equal(validate(manifest), true, JSON.stringify(validate.errors));
+  assert.equal(
+    validate({
+      ...manifest,
+      permissions: { hostPatterns: ["<all_urls>"], cookieAccess: true },
+      safeDefaults: {
+        defaultMode: "publish",
+        finalPublishRequiresUser: false,
+        exportsCookies: true,
+      },
+    }),
+    false,
+  );
+});
+
+test("workflow semantic validation enforces a reachable DAG and protected nodes", () => {
+  const validWorkflow = {
+    nodes: [
+      { id: "research", kind: "agent", handler: "research" },
+      { id: "review", kind: "human", handler: "approval" },
+    ],
+    edges: [{ from: "research", to: "review" }],
+    entryNodeIds: ["research"],
+    requiredNodeIds: ["review"],
+  };
+  assert.deepEqual(validateWorkflowGraph(validWorkflow), { valid: true, errors: [] });
+
+  const invalid = validateWorkflowGraph({
+    nodes: [
+      { id: "a", kind: "agent", handler: "a" },
+      { id: "b", kind: "agent", handler: "b" },
+      { id: "orphan", kind: "tool", handler: "orphan" },
+      { id: "optional-review", kind: "human", handler: "approval", optional: true },
+    ],
+    edges: [
+      { from: "a", to: "b" },
+      { from: "b", to: "a" },
+      { from: "a", to: "b" },
+      { from: "orphan", to: "orphan" },
+    ],
+    entryNodeIds: ["a"],
+    requiredNodeIds: ["optional-review", "missing"],
+  });
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.errors.some((error) => error.includes("acyclic")));
+  assert.ok(invalid.errors.some((error) => error.includes("Duplicate workflow edge")));
+  assert.ok(invalid.errors.some((error) => error.includes("unreachable")));
+  assert.ok(invalid.errors.some((error) => error.includes("cannot be optional")));
+  assert.ok(invalid.errors.some((error) => error.includes("Required node does not exist")));
+});
+
+test("content package paths are portable and duplicate-safe", () => {
+  const validateSchema = ajv.getSchema(
+    "https://schemas.openpublisher.dev/v1/content-package-manifest.schema.json",
+  );
+  assert.equal(isCanonicalContentPackagePath("content/article.md"), true);
+  for (const unsafePath of [
+    "../secret",
+    "assets/../secret",
+    "..\\secret",
+    "C:\\Windows\\secret",
+    "assets\\..\\secret",
+    ".",
+    "a//b",
+    "assets/NUL.txt",
+  ]) {
+    assert.equal(isCanonicalContentPackagePath(unsafePath), false, unsafePath);
+  }
+  const manifest = {
+    schemaVersion: "1.0",
+    id: "package:1",
+    articleRevisionId: "revision:1",
+    entries: [
+      {
+        artifactId: "artifact:article",
+        path: "content/article.md",
+        mediaType: "text/markdown",
+        contentHash: hash,
+        sizeBytes: 1,
+      },
+    ],
+    platformVariantIds: [],
+    packageHash: hash,
+    createdAt: "2026-07-30T00:00:00.000Z",
+  };
+  assert.equal(validateSchema(manifest), true, JSON.stringify(validateSchema.errors));
+  assert.equal(
+    validateSchema({
+      ...manifest,
+      entries: [{ ...manifest.entries[0], path: "..\\secret" }],
+    }),
+    false,
+  );
+
+  const result = validateContentPackageManifest({
+    entries: [
+      {
+        artifactId: "artifact:1",
+        path: "assets/Cover.png",
+        mediaType: "image/png",
+        contentHash: hash,
+        sizeBytes: 1,
+      },
+      {
+        artifactId: "artifact:1",
+        path: "assets/cover.png",
+        mediaType: "image/png",
+        contentHash: hash,
+        sizeBytes: 1,
+      },
+    ],
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => error.includes("Duplicate content package path")));
+  assert.ok(result.errors.some((error) => error.includes("Duplicate content package artifact")));
+});
+
+test("connection endpoints reject embedded credentials without echoing values", () => {
+  const baseProfile = {
+    schemaVersion: "1.0",
+    id: "connection:model:1",
+    providerKind: "model",
+    providerId: "openai-compatible",
+    displayName: "Gateway",
+    authMethod: "api_key",
+    credentialRef: "secret://connections/model-1",
+    capabilities: ["chat"],
+    status: "ready",
+    createdAt: "2026-07-30T00:00:00.000Z",
+    updatedAt: "2026-07-30T00:00:00.000Z",
+  };
+  assert.equal(
+    validateConnectionSecretBoundary({
+      ...baseProfile,
+      endpoint: "https://gateway.example/v1?api-version=2026-01-01",
+    }).valid,
+    true,
+  );
+  const userInfo = validateConnectionSecretBoundary({
+    ...baseProfile,
+    endpoint: "https://user:password@gateway.example/v1",
+  });
+  assert.equal(userInfo.valid, false);
+  const querySecret = validateConnectionSecretBoundary({
+    ...baseProfile,
+    endpoint: "https://gateway.example/v1?api_key=do-not-echo",
+  });
+  assert.equal(querySecret.valid, false);
+  assert.equal(querySecret.errors.join(" ").includes("do-not-echo"), false);
+});
+
+test("publish jobs expose explicit unknown and reconciling states", () => {
+  const validate = ajv.getSchema("https://schemas.openpublisher.dev/v1/publish-job.schema.json");
+  const job = {
+    schemaVersion: "1.0",
+    id: "job:1",
+    planId: "plan:1",
+    targetId: "target:1",
+    variantId: "variant:1",
+    connectionProfileId: "connection:1",
+    state: "unknown",
+    idempotencyKey: "idempotency-key-0001",
+    attempts: [],
+    createdAt: "2026-07-30T00:00:00.000Z",
+    updatedAt: "2026-07-30T00:00:00.000Z",
+  };
+  assert.equal(validate(job), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...job, state: "reconciling" }), true, JSON.stringify(validate.errors));
 });

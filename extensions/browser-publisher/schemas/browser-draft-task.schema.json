@@ -8,6 +8,7 @@
     "schemaVersion",
     "taskId",
     "nonce",
+    "expiresAt",
     "platform",
     "action",
     "article",
@@ -28,6 +29,11 @@
       "minLength": 32,
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "expiresAt": {
+      "description": "Short-lived task expiry checked by the extension before any page mutation.",
+      "type": "string",
+      "format": "date-time"
     },
     "platform": {
       "enum": [

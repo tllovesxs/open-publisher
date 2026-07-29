@@ -7,5 +7,9 @@
   "scripts": {
     "check": "node scripts/validate-manifests.mjs",
     "test": "node scripts/validate-manifests.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
   }
 }

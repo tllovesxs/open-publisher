@@ -46,6 +46,12 @@ if (taskSchema.properties?.safety?.properties?.finalPublish?.const !== false) {
 if (taskSchema.properties?.safety?.properties?.requiresUserReview?.const !== true) {
   throw new Error("Browser task schema must require user review");
 }
+if (
+  !taskSchema.required?.includes("expiresAt") ||
+  taskSchema.properties?.expiresAt?.format !== "date-time"
+) {
+  throw new Error("Browser tasks must carry a required date-time expiry");
+}
 
 async function sourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

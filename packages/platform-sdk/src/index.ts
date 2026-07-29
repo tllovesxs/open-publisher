@@ -53,6 +53,13 @@ export type AdapterJobResult =
       diagnostics?: JsonValue;
     }
   | {
+      status: "UNKNOWN_REMOTE_STATE";
+      reason: string;
+      retryable: false;
+      remoteId?: string;
+      diagnostics?: JsonValue;
+    }
+  | {
       status: "RETRYABLE_ERROR" | "PERMANENT_ERROR";
       error: ContractError;
     };
@@ -102,6 +109,18 @@ export function needsUser(reason: string, diagnostics?: JsonValue): AdapterJobRe
     : { status: "NEEDS_USER", reason, retryable: false, diagnostics };
 }
 
+export function unknownRemoteState(
+  reason: string,
+  options: { remoteId?: string; diagnostics?: JsonValue } = {},
+): AdapterJobResult {
+  return {
+    status: "UNKNOWN_REMOTE_STATE",
+    reason,
+    retryable: false,
+    ...options,
+  };
+}
+
 export function assertSafeBrowserAdapterManifest(manifest: PlatformAdapterManifest): void {
   if (manifest.transport !== "browser_extension") {
     return;
@@ -111,5 +130,19 @@ export function assertSafeBrowserAdapterManifest(manifest: PlatformAdapterManife
   }
   if (!manifest.safeDefaults.finalPublishRequiresUser) {
     throw new Error("Browser adapters must require the user for final publication");
+  }
+  if (manifest.safeDefaults.defaultMode !== "save_draft") {
+    throw new Error("Browser adapters must default to saving a draft");
+  }
+  const patterns = [...manifest.permissions.hostPatterns, ...(manifest.editorUrlPatterns ?? [])];
+  if (
+    patterns.some(
+      (pattern) =>
+        !/^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/\S*$/.test(
+          pattern,
+        ),
+    )
+  ) {
+    throw new Error("Browser adapter hosts must be explicit HTTPS patterns");
   }
 }

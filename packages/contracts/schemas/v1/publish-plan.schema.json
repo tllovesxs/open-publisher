@@ -68,7 +68,7 @@
       "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
     },
     "approvedBy": {
-      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Actor"
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/HumanActor"
     },
     "planHash": {
       "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"

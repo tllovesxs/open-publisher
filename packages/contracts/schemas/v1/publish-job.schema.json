@@ -41,6 +41,8 @@
         "queued",
         "running",
         "retry_wait",
+        "unknown",
+        "reconciling",
         "needs_user",
         "succeeded",
         "failed",

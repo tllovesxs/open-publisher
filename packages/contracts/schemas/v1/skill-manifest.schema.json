@@ -17,7 +17,8 @@
     "outputArtifactTypes",
     "permissions",
     "declaration",
-    "configSchema"
+    "configSchema",
+    "source"
   ],
   "properties": {
     "schemaVersion": {
@@ -120,7 +121,7 @@
           "type": "boolean"
         },
         "platformWrites": {
-          "type": "boolean"
+          "const": false
         },
         "filesystem": {
           "enum": [
@@ -195,7 +196,7 @@
         },
         "commit": {
           "type": "string",
-          "pattern": "^[a-f0-9]{7,64}$"
+          "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
         },
         "license": {
           "type": "string",
@@ -240,6 +241,41 @@
           "runtime": {
             "required": [
               "entrypoint"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "kind": {
+                "const": "third-party"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "url": {
+                "pattern": "^https://"
+              }
+            },
+            "required": [
+              "url",
+              "commit",
+              "license"
             ]
           }
         }

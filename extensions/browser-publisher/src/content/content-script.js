@@ -139,10 +139,13 @@
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const taskExpiresAt = Date.parse(message?.task?.expiresAt ?? "");
     if (
       sender.id !== chrome.runtime.id ||
       message?.type !== "OPEN_PUBLISHER_FILL_DRAFT" ||
       message.task?.action !== "FILL_DRAFT" ||
+      !Number.isFinite(taskExpiresAt) ||
+      taskExpiresAt <= Date.now() ||
       message.task?.safety?.finalPublish !== false ||
       message.task?.safety?.requiresUserReview !== true
     ) {

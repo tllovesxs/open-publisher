@@ -12,6 +12,7 @@
     "nodes",
     "edges",
     "entryNodeIds",
+    "requiredNodeIds",
     "policy"
   ],
   "properties": {
@@ -67,6 +68,15 @@
       }
     },
     "entryNodeIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "requiredNodeIds": {
+      "description": "Nodes protected by the workflow preset. They must exist, be reachable, and cannot be optional.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,

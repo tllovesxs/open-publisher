@@ -1,6 +1,13 @@
 import { readFile, readdir } from "node:fs/promises";
 
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
+
 const root = new URL("../", import.meta.url);
+const contractSchemaRoot = new URL(
+  "../../../packages/contracts/schemas/v1/",
+  import.meta.url,
+);
 const expectedIds = new Set([
   "official.research",
   "official.writing",
@@ -13,6 +20,24 @@ const expectedIds = new Set([
 ]);
 const forbiddenExecutableKeys = new Set(["command", "entrypoint", "executable", "script", "scripts"]);
 
+const schemaFiles = (await readdir(contractSchemaRoot)).filter((fileName) =>
+  fileName.endsWith(".schema.json"),
+);
+const contractSchemas = await Promise.all(
+  schemaFiles.map(async (fileName) =>
+    JSON.parse(await readFile(new URL(fileName, contractSchemaRoot), "utf8")),
+  ),
+);
+const ajv = new Ajv2020({ allErrors: true, strictSchema: true, strictTypes: false });
+addFormats(ajv);
+contractSchemas.forEach((schema) => ajv.addSchema(schema));
+const validateSkillManifest = ajv.getSchema(
+  "https://schemas.openpublisher.dev/v1/skill-manifest.schema.json",
+);
+if (validateSkillManifest === undefined) {
+  throw new Error("SkillManifest contract schema is unavailable");
+}
+
 function inspectForExecutableFields(value, path = "$") {
   if (value === null || typeof value !== "object") return;
   for (const [key, nested] of Object.entries(value)) {
@@ -24,7 +49,8 @@ function inspectForExecutableFields(value, path = "$") {
 }
 
 const directories = (await readdir(root, { withFileTypes: true })).filter(
-  (entry) => entry.isDirectory() && entry.name !== "scripts",
+  (entry) =>
+    entry.isDirectory() && entry.name !== "scripts" && entry.name !== "node_modules",
 );
 const seenIds = new Set();
 
@@ -32,6 +58,19 @@ for (const directory of directories) {
   const manifest = JSON.parse(
     await readFile(new URL(`${directory.name}/skill.json`, root), "utf8"),
   );
+  if (!validateSkillManifest(manifest)) {
+    throw new Error(
+      `${directory.name}: does not satisfy SkillManifest: ${ajv.errorsText(
+        validateSkillManifest.errors,
+        { separator: "; " },
+      )}`,
+    );
+  }
+  try {
+    ajv.compile(manifest.configSchema);
+  } catch (error) {
+    throw new Error(`${directory.name}: invalid configSchema: ${String(error)}`);
+  }
   inspectForExecutableFields(manifest);
 
   if (manifest.schemaVersion !== "1.0") throw new Error(`${directory.name}: invalid schemaVersion`);

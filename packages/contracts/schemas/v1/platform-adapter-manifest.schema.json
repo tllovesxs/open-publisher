@@ -169,5 +169,56 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "transport": {
+            "const": "browser_extension"
+          }
+        },
+        "required": [
+          "transport"
+        ]
+      },
+      "then": {
+        "properties": {
+          "editorUrlPatterns": {
+            "items": {
+              "type": "string",
+              "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?/[^\\s]*$"
+            }
+          },
+          "permissions": {
+            "properties": {
+              "hostPatterns": {
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?/[^\\s]*$"
+                }
+              },
+              "cookieAccess": {
+                "const": false
+              }
+            }
+          },
+          "safeDefaults": {
+            "properties": {
+              "defaultMode": {
+                "const": "save_draft"
+              },
+              "finalPublishRequiresUser": {
+                "const": true
+              },
+              "exportsCookies": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
