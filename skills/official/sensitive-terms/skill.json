@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "1.0",
+  "id": "official.sensitive-terms",
+  "name": "Sensitive Terms Review",
+  "version": "1.0.0",
+  "description": "依据显式词库和规则检查风险表达，输出定位、类别和人工复核建议。",
+  "license": "AGPL-3.0-only",
+  "runtime": {
+    "kind": "declarative",
+    "apiVersion": "1.0"
+  },
+  "capabilities": [
+    "compliance.terms",
+    "review.annotations"
+  ],
+  "inputArtifactTypes": [
+    "article_revision_candidate",
+    "platform_variant",
+    "term_dictionary"
+  ],
+  "outputArtifactTypes": [
+    "sensitive_terms_report"
+  ],
+  "permissions": {
+    "modelAccess": false,
+    "imageGeneration": false,
+    "browserRead": false,
+    "platformWrites": false,
+    "filesystem": "none",
+    "networkServices": []
+  },
+  "declaration": {
+    "objective": "使用版本化规则定位可能违规、夸大或需要资质证明的表达，供用户判断。",
+    "instructions": [
+      "逐项应用指定平台和内容领域的版本化词库。",
+      "为每个命中项返回原文位置、规则编号、严重程度和建议动作。",
+      "区分精确命中、上下文命中和需要人工判断的提示。"
+    ],
+    "guardrails": [
+      "不得把规则检查描述为法律意见或平台审核保证。",
+      "不得为了通过检查而自动删除事实、免责声明或引用。",
+      "只输出报告，不自动修改或发布内容。"
+    ]
+  },
+  "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "dictionaryIds"
+    ],
+    "properties": {
+      "dictionaryIds": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        }
+      },
+      "minimumSeverity": {
+        "enum": [
+          "info",
+          "warning",
+          "block"
+        ],
+        "default": "warning"
+      }
+    }
+  },
+  "source": {
+    "kind": "first-party"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1.0",
+  "id": "official.visual-planning",
+  "name": "Visual Planning",
+  "version": "1.0.0",
+  "description": "根据文章结构规划封面、信息卡片和文中配图，输出供应商无关的视觉计划。",
+  "license": "AGPL-3.0-only",
+  "runtime": {
+    "kind": "declarative",
+    "apiVersion": "1.0"
+  },
+  "capabilities": [
+    "visual.plan",
+    "prompt.compose"
+  ],
+  "inputArtifactTypes": [
+    "article_revision",
+    "brand_profile"
+  ],
+  "outputArtifactTypes": [
+    "visual_plan"
+  ],
+  "permissions": {
+    "modelAccess": true,
+    "imageGeneration": false,
+    "browserRead": false,
+    "platformWrites": false,
+    "filesystem": "none",
+    "networkServices": []
+  },
+  "declaration": {
+    "objective": "确定每张图的用途、尺寸、构图、文字层级、无障碍文本和生图提示词，但不直接运行第三方生图脚本。",
+    "instructions": [
+      "先识别封面、章节解释图、数据卡片和装饰图的必要性，避免无意义配图。",
+      "为每个视觉项输出用途、平台比例、安全区、文字内容、视觉风格、负面提示和可访问性文本。",
+      "把具体生图 Provider 与模型参数留给后续 image_generation 节点选择。"
+    ],
+    "guardrails": [
+      "不执行第三方 Skill、Node 脚本、Playwright 或 ComfyUI 工作流。",
+      "不生成侵犯肖像、商标或版权的具体复刻要求。",
+      "所有图片只是计划中的 Artifact 请求，不得隐式写入文章或平台。"
+    ]
+  },
+  "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "maxInlineImages": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20,
+        "default": 5
+      },
+      "preferredAspectRatios": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"
+        }
+      }
+    }
+  },
+  "source": {
+    "kind": "first-party"
+  }
+}

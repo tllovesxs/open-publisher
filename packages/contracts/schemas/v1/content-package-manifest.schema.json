@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/content-package-manifest.schema.json",
+  "title": "ContentPackageManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "articleRevisionId",
+    "entries",
+    "platformVariantIds",
+    "packageHash",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "articleRevisionId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifactId",
+          "path",
+          "mediaType",
+          "contentHash",
+          "sizeBytes"
+        ],
+        "properties": {
+          "artifactId": {
+            "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+          },
+          "mediaType": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 200
+          },
+          "contentHash": {
+            "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "platformVariantIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "packageHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/run-event.schema.json",
+  "title": "RunEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "runId",
+    "sequence",
+    "type",
+    "actor",
+    "payload",
+    "eventHash",
+    "at"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "runId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "type": {
+      "enum": [
+        "run.created",
+        "run.started",
+        "run.waiting_for_user",
+        "run.succeeded",
+        "run.failed",
+        "run.cancelled",
+        "node.started",
+        "node.completed",
+        "node.failed",
+        "artifact.created",
+        "publish.queued",
+        "publish.attempted",
+        "publish.reconciled"
+      ]
+    },
+    "nodeId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "actor": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Actor"
+    },
+    "payload": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/JsonValue"
+    },
+    "previousEventHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "eventHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "at": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

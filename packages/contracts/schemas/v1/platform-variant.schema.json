@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/platform-variant.schema.json",
+  "title": "PlatformVariant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "revisionId",
+    "platform",
+    "title",
+    "body",
+    "tags",
+    "contentHash",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "revisionId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "platform": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "excerpt": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "content"
+      ],
+      "properties": {
+        "format": {
+          "enum": [
+            "markdown",
+            "html",
+            "plain"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "coverArtifactId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "inlineArtifactIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      }
+    },
+    "platformMetadata": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/JsonValue"
+      }
+    },
+    "contentHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/browser-publisher/v1/browser-draft-task.schema.json",
+  "title": "BrowserDraftTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "taskId",
+    "nonce",
+    "platform",
+    "action",
+    "article",
+    "safety"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "taskId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "platform": {
+      "enum": [
+        "csdn",
+        "toutiao",
+        "wechat"
+      ]
+    },
+    "action": {
+      "const": "FILL_DRAFT"
+    },
+    "expectedDomVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "article": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "body"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format",
+            "content"
+          ],
+          "properties": {
+            "format": {
+              "enum": [
+                "markdown",
+                "plain"
+              ]
+            },
+            "content": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000000
+            }
+          }
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finalPublish",
+        "requiresUserReview"
+      ],
+      "properties": {
+        "finalPublish": {
+          "const": false
+        },
+        "requiresUserReview": {
+          "const": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/workflow-run.schema.json",
+  "title": "WorkflowRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "snapshotId",
+    "status",
+    "inputArtifactIds",
+    "outputArtifactIds",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "snapshotId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting_for_user",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "inputArtifactIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "outputArtifactIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "currentNodeIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "startedAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "completedAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "error": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Error"
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/publish-plan.schema.json",
+  "title": "PublishPlan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "revisionId",
+    "mode",
+    "targets",
+    "planHash",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "revisionId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "mode": {
+      "enum": [
+        "save_draft",
+        "publish"
+      ]
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "platform",
+          "connectionProfileId",
+          "variantId"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+          },
+          "platform": {
+            "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+          },
+          "connectionProfileId": {
+            "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+          },
+          "variantId": {
+            "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+          },
+          "accountLabel": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "scheduleAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "approvedAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "approvedBy": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Actor"
+    },
+    "planHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "publish"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "approvedAt",
+          "approvedBy"
+        ]
+      }
+    }
+  ]
+}

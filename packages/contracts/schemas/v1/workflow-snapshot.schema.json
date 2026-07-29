@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/workflow-snapshot.schema.json",
+  "title": "WorkflowSnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "definitionId",
+    "definitionVersion",
+    "definitionHash",
+    "definition",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "definitionId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "definitionVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "definitionHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "definition": {
+      "$ref": "https://schemas.openpublisher.dev/v1/workflow-definition.schema.json"
+    },
+    "inputArtifactIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

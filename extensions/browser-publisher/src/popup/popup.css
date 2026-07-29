@@ -1,0 +1,58 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 340px;
+}
+
+main {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+input,
+textarea,
+button {
+  box-sizing: border-box;
+  font: inherit;
+  width: 100%;
+}
+
+input,
+textarea {
+  border: 1px solid #8a8a8a;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+button {
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 9px 12px;
+}
+
+.status,
+.notice {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.notice {
+  color: #6b7280;
+}

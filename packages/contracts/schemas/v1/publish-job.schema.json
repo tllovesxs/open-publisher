@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/publish-job.schema.json",
+  "title": "PublishJob",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "planId",
+    "targetId",
+    "variantId",
+    "connectionProfileId",
+    "state",
+    "idempotencyKey",
+    "attempts",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "planId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "targetId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "variantId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "connectionProfileId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "state": {
+      "enum": [
+        "queued",
+        "running",
+        "retry_wait",
+        "needs_user",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 300
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Attempt"
+      }
+    },
+    "nextAttemptAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "updatedAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  },
+  "$defs": {
+    "Attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "status",
+        "startedAt"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "running",
+            "succeeded",
+            "failed",
+            "unknown"
+          ]
+        },
+        "startedAt": {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "completedAt": {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "remoteId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "error": {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Error"
+        }
+      }
+    }
+  }
+}

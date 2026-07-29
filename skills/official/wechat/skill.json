@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "1.0",
+  "id": "official.wechat",
+  "name": "WeChat Variant",
+  "version": "1.0.0",
+  "description": "把已批准的文章修订转换为微信公众号文章变体，不执行平台写入。",
+  "license": "AGPL-3.0-only",
+  "runtime": {
+    "kind": "declarative",
+    "apiVersion": "1.0"
+  },
+  "capabilities": [
+    "variant.wechat",
+    "format.richtext"
+  ],
+  "inputArtifactTypes": [
+    "article_revision",
+    "visual_plan"
+  ],
+  "outputArtifactTypes": [
+    "platform_variant"
+  ],
+  "permissions": {
+    "modelAccess": true,
+    "imageGeneration": false,
+    "browserRead": false,
+    "platformWrites": false,
+    "filesystem": "none",
+    "networkServices": []
+  },
+  "declaration": {
+    "objective": "生成适合微信公众号阅读节奏和摘要展示的 PlatformVariant。",
+    "instructions": [
+      "保持文章事实与主要论点，调整标题、摘要、段落长度和小标题。",
+      "把视觉计划映射为封面与文中图片占位，并保留 Artifact 引用。",
+      "输出平台字段限制、自检信息和富文本转换所需的结构化元数据。"
+    ],
+    "guardrails": [
+      "不访问公众号页面、账号登录态或 Cookie。",
+      "不点击保存、群发或发布按钮。",
+      "不把平台变体反向覆盖 canonical ArticleRevision。"
+    ]
+  },
+  "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accountStyle": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "includeSourceLinks": {
+        "type": "boolean",
+        "default": true
+      }
+    }
+  },
+  "source": {
+    "kind": "first-party"
+  }
+}

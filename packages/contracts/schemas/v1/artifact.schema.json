@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/artifact.schema.json",
+  "title": "Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "artifactType",
+    "mediaType",
+    "contentHash",
+    "producer",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "runId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "sourceRevisionId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "artifactType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "mediaType": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 200
+    },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "inlineData": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/JsonValue"
+    },
+    "contentHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "workflow-node",
+            "skill",
+            "user",
+            "system"
+          ]
+        },
+        "id": {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/JsonValue"
+      }
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "uri"
+      ]
+    },
+    {
+      "required": [
+        "inlineData"
+      ]
+    }
+  ]
+}

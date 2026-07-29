@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "1.0",
+  "id": "official.csdn",
+  "name": "CSDN Variant",
+  "version": "1.0.0",
+  "description": "把已批准的文章修订转换为保留代码与技术结构的 CSDN Markdown 变体。",
+  "license": "AGPL-3.0-only",
+  "runtime": {
+    "kind": "declarative",
+    "apiVersion": "1.0"
+  },
+  "capabilities": [
+    "variant.csdn",
+    "format.markdown"
+  ],
+  "inputArtifactTypes": [
+    "article_revision",
+    "visual_plan"
+  ],
+  "outputArtifactTypes": [
+    "platform_variant"
+  ],
+  "permissions": {
+    "modelAccess": true,
+    "imageGeneration": false,
+    "browserRead": false,
+    "platformWrites": false,
+    "filesystem": "none",
+    "networkServices": []
+  },
+  "declaration": {
+    "objective": "生成适合 CSDN 技术读者的 Markdown PlatformVariant，并保留代码块和来源。",
+    "instructions": [
+      "保留代码语言标记、命令、版本号、警告和可复现步骤。",
+      "生成准确的技术标题、摘要、标签建议和封面 Artifact 引用。",
+      "输出 Markdown 正文及平台字段自检结果。"
+    ],
+    "guardrails": [
+      "不改写代码语义，不编造测试结果或兼容性结论。",
+      "不访问 CSDN 登录态，不执行保存或发布。",
+      "只返回派生变体，不修改 canonical ArticleRevision。"
+    ]
+  },
+  "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "maxTags": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10,
+        "default": 5
+      },
+      "preserveHeadingDepth": {
+        "type": "boolean",
+        "default": true
+      }
+    }
+  },
+  "source": {
+    "kind": "first-party"
+  }
+}

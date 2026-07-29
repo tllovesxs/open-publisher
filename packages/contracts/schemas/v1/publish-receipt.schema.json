@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/publish-receipt.schema.json",
+  "title": "PublishReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "jobId",
+    "platform",
+    "status",
+    "payloadHash",
+    "reconciliation",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "jobId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "platform": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "status": {
+      "enum": [
+        "draft_saved",
+        "published",
+        "failed",
+        "unknown"
+      ]
+    },
+    "remoteId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "remoteUrl": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 4000
+    },
+    "publishedAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "payloadHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "not_checked",
+            "matched",
+            "mismatched",
+            "not_found",
+            "unknown"
+          ]
+        },
+        "checkedAt": {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "details": {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/JsonValue"
+        }
+      }
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  }
+}

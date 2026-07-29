@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/connection-profile.schema.json",
+  "title": "ConnectionProfile",
+  "description": "Public connection metadata. Plaintext credentials and browser cookies are forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "providerKind",
+    "providerId",
+    "displayName",
+    "authMethod",
+    "capabilities",
+    "status",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "providerKind": {
+      "enum": [
+        "platform",
+        "model",
+        "image",
+        "search"
+      ]
+    },
+    "providerId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "endpoint": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2000
+    },
+    "authMethod": {
+      "enum": [
+        "none",
+        "api_key",
+        "oauth",
+        "browser_session",
+        "custom"
+      ]
+    },
+    "credentialRef": {
+      "type": "string",
+      "pattern": "^secret://[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      "maxLength": 500
+    },
+    "browserProfileRef": {
+      "type": "string",
+      "pattern": "^browser-profile://[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+      "maxLength": 500
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+      }
+    },
+    "status": {
+      "enum": [
+        "unknown",
+        "ready",
+        "expired",
+        "needs_user",
+        "disabled"
+      ]
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "updatedAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "authMethod": {
+            "const": "browser_session"
+          }
+        },
+        "required": [
+          "authMethod"
+        ]
+      },
+      "then": {
+        "required": [
+          "browserProfileRef"
+        ],
+        "not": {
+          "required": [
+            "credentialRef"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authMethod": {
+            "enum": [
+              "api_key",
+              "oauth",
+              "custom"
+            ]
+          }
+        },
+        "required": [
+          "authMethod"
+        ]
+      },
+      "then": {
+        "required": [
+          "credentialRef"
+        ],
+        "not": {
+          "required": [
+            "browserProfileRef"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authMethod": {
+            "const": "none"
+          }
+        },
+        "required": [
+          "authMethod"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "credentialRef"
+              ]
+            },
+            {
+              "required": [
+                "browserProfileRef"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

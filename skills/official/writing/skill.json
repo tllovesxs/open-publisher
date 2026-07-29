@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "1.0",
+  "id": "official.writing",
+  "name": "Writing",
+  "version": "1.0.0",
+  "description": "依据研究包、写作要求和大纲生成 Markdown 文章候选修订。",
+  "license": "AGPL-3.0-only",
+  "runtime": {
+    "kind": "declarative",
+    "apiVersion": "1.0"
+  },
+  "capabilities": [
+    "writing.longform",
+    "markdown.compose"
+  ],
+  "inputArtifactTypes": [
+    "research_bundle",
+    "outline",
+    "writing_brief"
+  ],
+  "outputArtifactTypes": [
+    "article_revision_candidate"
+  ],
+  "permissions": {
+    "modelAccess": true,
+    "imageGeneration": false,
+    "browserRead": false,
+    "platformWrites": false,
+    "filesystem": "none",
+    "networkServices": []
+  },
+  "declaration": {
+    "objective": "生成结构清楚、论据可追溯的 Markdown 候选稿，由工作流显式决定是否形成新修订。",
+    "instructions": [
+      "先遵守 writing_brief 的受众、语气、长度和结构约束。",
+      "仅使用 research_bundle 中可追溯的事实；需要补充的内容标成待核实项。",
+      "输出标题、摘要、Markdown 正文、引用映射和自检结果。"
+    ],
+    "guardrails": [
+      "不捏造数据、人物观点、引用或产品能力。",
+      "不把候选稿声明为已经获批的 ArticleRevision。",
+      "不调用发布接口或改变平台草稿。"
+    ]
+  },
+  "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "targetLength": {
+        "type": "integer",
+        "minimum": 200,
+        "maximum": 50000
+      },
+      "tone": {
+        "type": "string",
+        "maxLength": 100
+      }
+    }
+  },
+  "source": {
+    "kind": "first-party"
+  }
+}

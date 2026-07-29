@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/article-revision.schema.json",
+  "title": "ArticleRevision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "articleId",
+    "revisionNumber",
+    "title",
+    "markdown",
+    "contentHash",
+    "status",
+    "createdAt",
+    "createdBy"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/SchemaVersion"
+    },
+    "id": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "articleId": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "revisionNumber": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "parentRevisionId": {
+      "oneOf": [
+        {
+          "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "markdown": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frontMatter": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/JsonValue"
+      }
+    },
+    "contentHash": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Sha256"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "reviewed",
+        "approved",
+        "archived"
+      ]
+    },
+    "createdAt": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "createdBy": {
+      "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Actor"
+    }
+  }
+}

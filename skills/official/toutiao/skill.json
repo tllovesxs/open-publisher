@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "1.0",
+  "id": "official.toutiao",
+  "name": "Toutiao Variant",
+  "version": "1.0.0",
+  "description": "把已批准的文章修订转换为适合今日头条信息流阅读的文章变体。",
+  "license": "AGPL-3.0-only",
+  "runtime": {
+    "kind": "declarative",
+    "apiVersion": "1.0"
+  },
+  "capabilities": [
+    "variant.toutiao",
+    "format.feed"
+  ],
+  "inputArtifactTypes": [
+    "article_revision",
+    "visual_plan"
+  ],
+  "outputArtifactTypes": [
+    "platform_variant"
+  ],
+  "permissions": {
+    "modelAccess": true,
+    "imageGeneration": false,
+    "browserRead": false,
+    "platformWrites": false,
+    "filesystem": "none",
+    "networkServices": []
+  },
+  "declaration": {
+    "objective": "生成信息密度清晰、开篇明确且适合移动端阅读的头条 PlatformVariant。",
+    "instructions": [
+      "在不夸大结论的前提下优化标题和前两段的信息表达。",
+      "缩短过长段落，保留关键证据、限定条件与来源。",
+      "根据视觉计划给出封面组合与文中插图 Artifact 引用。"
+    ],
+    "guardrails": [
+      "不制造标题党、虚假紧迫感或未经证实的断言。",
+      "不访问头条账号登录态，不执行保存或发布。",
+      "只返回派生变体和自检结果。"
+    ]
+  },
+  "configSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "openingStyle": {
+        "enum": [
+          "summary",
+          "question",
+          "scene"
+        ],
+        "default": "summary"
+      },
+      "coverImageCount": {
+        "enum": [
+          1,
+          3
+        ],
+        "default": 1
+      }
+    }
+  },
+  "source": {
+    "kind": "first-party"
+  }
+}

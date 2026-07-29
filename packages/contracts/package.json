@@ -1,0 +1,27 @@
+{
+  "name": "@open-publisher/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "schemas",
+    "src"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/validate-schemas.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "validate": "node scripts/validate-schemas.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "typescript": "^5.9.3"
+  }
+}
