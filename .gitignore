@@ -23,10 +23,10 @@ htmlcov/
 
 # Local runtime data
 .local/
-data/
-artifacts/
-checkpoints/
-logs/
+/data/
+/artifacts/
+/checkpoints/
+/logs/
 *.db
 *.db-shm
 *.db-wal
@@ -52,4 +52,3 @@ Thumbs.db
 *.msi
 *.msix
 *-setup.exe
-
