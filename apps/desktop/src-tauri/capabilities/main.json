@@ -1,0 +1,6 @@
+{
+  "identifier": "main-window",
+  "description": "The main WebView may only call explicitly registered Rust commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

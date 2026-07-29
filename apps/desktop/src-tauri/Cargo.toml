@@ -1,0 +1,27 @@
+[package]
+name = "open-publisher-desktop"
+version = "0.1.0"
+description = "Local-first intelligent writing and publishing desktop host"
+authors = ["Open Publisher contributors"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/open-publisher/open-publisher"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "open_publisher_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.5", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
