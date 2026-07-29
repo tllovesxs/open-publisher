@@ -1,9 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 
+const defaultMatchMedia = window.matchMedia;
+
 describe("desktop workspace", () => {
   beforeEach(() => {
     window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: defaultMatchMedia,
+    });
   });
 
   it("switches between product areas and opens an article", () => {
@@ -55,5 +64,19 @@ describe("desktop workspace", () => {
     expect(dialog).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "CSDN" }));
     expect(screen.getByText("平台预览 · 不会实际发布")).toBeTruthy();
+  });
+
+  it("keeps the evidence rail closed on a narrow initial viewport", () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        ...defaultMatchMedia(query),
+        matches: query === "(max-width: 900px)",
+      }),
+    });
+
+    render(<App />);
+    expect(screen.getByLabelText("证据与风险")).not.toHaveClass("is-open");
+    expect(screen.getByRole("button", { name: "运行工作流" })).toBeVisible();
   });
 });

@@ -4,7 +4,7 @@ export type RuntimeState = "standby" | "starting" | "ready" | "stopped" | "fault
 
 export interface RuntimeSnapshot {
   state: RuntimeState;
-  bridgeMode: "interface_only" | "packaged_sidecar";
+  bridgeMode: "interface_only" | "python_sidecar";
   generation: number;
   detail: string;
 }
@@ -21,11 +21,31 @@ export interface SaveDraftReceipt {
   persistence: "memory" | "local_database";
 }
 
+export interface RunDemoRequest {
+  title: string;
+  topic: string;
+  sourceMarkdown: string;
+  platforms: Array<"wechat" | "csdn" | "toutiao">;
+}
+
+export interface DemoReceiptSummary {
+  status: string;
+  remoteId: string;
+}
+
+export interface RunDemoSummary {
+  artifactCount: number;
+  runStatus: string;
+  planStatus: string;
+  receipts: DemoReceiptSummary[];
+}
+
 export interface DesktopBridge {
   runtimeSnapshot(): Promise<RuntimeSnapshot>;
   ensureAgentRuntime(): Promise<RuntimeSnapshot>;
   stopAgentRuntime(): Promise<RuntimeSnapshot>;
   saveDraft(request: SaveDraftRequest): Promise<SaveDraftReceipt>;
+  runDemo(request: RunDemoRequest): Promise<RunDemoSummary>;
 }
 
 const isTauriHost = () => typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -74,6 +94,20 @@ const mockBridge: DesktopBridge = {
       persistence: "memory",
     };
   },
+  async runDemo(request) {
+    mockRuntimeState = "ready";
+    mockGeneration += 1;
+    await pause(180);
+    return {
+      artifactCount: 3,
+      runStatus: "completed",
+      planStatus: "completed",
+      receipts: request.platforms.map((platform) => ({
+        status: "published",
+        remoteId: `dry-run-${platform}`,
+      })),
+    };
+  },
 };
 
 const tauriBridge: DesktopBridge = {
@@ -81,6 +115,7 @@ const tauriBridge: DesktopBridge = {
   ensureAgentRuntime: () => invoke<RuntimeSnapshot>("ensure_agent_runtime"),
   stopAgentRuntime: () => invoke<RuntimeSnapshot>("stop_agent_runtime"),
   saveDraft: (request) => invoke<SaveDraftReceipt>("save_draft", { request }),
+  runDemo: (request) => invoke<RunDemoSummary>("run_demo_workflow", { request }),
 };
 
 /**
@@ -96,4 +131,6 @@ export const desktopBridge: DesktopBridge = {
     isTauriHost() ? tauriBridge.stopAgentRuntime() : mockBridge.stopAgentRuntime(),
   saveDraft: (request) =>
     isTauriHost() ? tauriBridge.saveDraft(request) : mockBridge.saveDraft(request),
+  runDemo: (request) =>
+    isTauriHost() ? tauriBridge.runDemo(request) : mockBridge.runDemo(request),
 };

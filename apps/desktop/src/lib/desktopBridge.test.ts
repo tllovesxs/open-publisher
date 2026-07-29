@@ -14,5 +14,17 @@ describe("desktopBridge browser fallback", () => {
     });
     expect(receipt.revisionId).toContain("article-1-local");
     expect(receipt.persistence).toBe("memory");
+
+    const summary = await desktopBridge.runDemo({
+      title: "Demo",
+      topic: "Local-first",
+      sourceMarkdown: "# draft",
+      platforms: ["wechat", "csdn"],
+    });
+    expect(summary.runStatus).toBe("completed");
+    expect(summary.receipts).toHaveLength(2);
+    expect(summary).not.toHaveProperty("endpoint");
+    expect(summary).not.toHaveProperty("token");
+    expect(summary).not.toHaveProperty("contentPackage");
   });
 });

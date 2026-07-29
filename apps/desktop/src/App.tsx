@@ -54,11 +54,14 @@ export default function App() {
     Object.fromEntries(initialArticles.map((article) => [article.id, article.markdown])),
   );
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
+  const [revisionIds, setRevisionIds] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>("split");
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>("wechat");
   const [theme, setTheme] = useState<Theme>(preferredTheme);
-  const [railOpen, setRailOpen] = useState(true);
+  const [railOpen, setRailOpen] = useState(
+    () => !window.matchMedia?.("(max-width: 900px)").matches,
+  );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -143,9 +146,13 @@ export default function App() {
     try {
       const receipt = await desktopBridge.saveDraft({
         articleId: selectedArticle.id,
-        baseRevision: null,
+        baseRevision: revisionIds[selectedArticle.id] ?? null,
         markdown: currentMarkdown,
       });
+      setRevisionIds((current) => ({
+        ...current,
+        [selectedArticle.id]: receipt.revisionId,
+      }));
       setArticleItems((current) =>
         current.map((article) =>
           article.id === selectedArticle.id
@@ -168,8 +175,9 @@ export default function App() {
           ? "修订已记入本地会话（演示模式）"
           : "修订已保存到本地数据库",
       );
-    } catch {
-      setToast("保存失败：桌面宿主没有响应，请检查本地运行时");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setToast(`保存失败：${detail.slice(0, 120)}`);
     } finally {
       setSaving(false);
     }
@@ -177,14 +185,23 @@ export default function App() {
 
   const runWorkflow = async () => {
     if (runningStageIndex !== null) return;
+    setWorkflowCompleted(false);
+    setRunningStageIndex(runOrder[0] ?? null);
     try {
-      const snapshot = await desktopBridge.ensureAgentRuntime();
-      setRuntime(snapshot);
-      setWorkflowCompleted(false);
-      setRunningStageIndex(runOrder[0] ?? null);
-      setToast("已冻结当前修订，工作流开始运行");
-    } catch {
-      setToast("工作流未启动：本地 Agent 运行时不可用");
+      const summary = await desktopBridge.runDemo({
+        title: selectedArticle.title,
+        topic: selectedArticle.deck,
+        sourceMarkdown: currentMarkdown,
+        platforms: selectedArticle.channels,
+      });
+      setRuntime(await desktopBridge.runtimeSnapshot());
+      setToast(
+        `工作流 ${summary.runStatus} · ${summary.artifactCount} 个产物 · ${summary.receipts.length} 个发布演练回执`,
+      );
+    } catch (error) {
+      setRunningStageIndex(null);
+      const detail = error instanceof Error ? error.message : String(error);
+      setToast(`工作流未启动：${detail.slice(0, 120)}`);
     }
   };
 
