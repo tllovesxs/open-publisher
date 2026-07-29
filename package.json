@@ -1,0 +1,22 @@
+{
+  "name": "open-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first intelligent writing and multi-platform publishing workspace",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @open-publisher/desktop dev",
+    "dev:web": "pnpm --filter @open-publisher/desktop dev:web",
+    "build": "pnpm -r --if-present build",
+    "check": "pnpm -r --if-present check",
+    "test": "pnpm -r --if-present test",
+    "python:install": "python -m pip install -e \".[dev]\"",
+    "python:check": "python -m ruff check services/agent-runtime tests",
+    "python:test": "python -m pytest"
+  }
+}
+
