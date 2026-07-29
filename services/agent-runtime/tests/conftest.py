@@ -6,12 +6,18 @@ from fastapi.testclient import TestClient
 from open_publisher_runtime.config import Settings
 from open_publisher_runtime.main import create_app
 
+TEST_API_TOKEN = "test-open-publisher-sidecar-token-0001"
+
 
 @pytest.fixture
 def client(tmp_path) -> Iterator[TestClient]:
-    settings = Settings(data_dir=tmp_path / "runtime-data")
+    settings = Settings(
+        data_dir=tmp_path / "runtime-data",
+        api_token=TEST_API_TOKEN,
+    )
     app = create_app(settings)
     with TestClient(app) as test_client:
+        test_client.headers.update({"Authorization": f"Bearer {TEST_API_TOKEN}"})
         yield test_client
 
 
@@ -21,4 +27,3 @@ def article_payload() -> dict[str, str]:
         "title": "测试文章",
         "markdown": "# 初稿\n\n这是第一版内容。",
     }
-

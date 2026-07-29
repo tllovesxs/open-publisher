@@ -13,8 +13,10 @@ from open_publisher_runtime.api.dependencies import (
     get_session,
 )
 from open_publisher_runtime.api.schemas import (
+    ApprovePublishPlanRequest,
     ArticleDetail,
     ArticleWithRevision,
+    ConnectionProfilePublic,
     CreateArticleRequest,
     CreateConnectionProfileRequest,
     CreatePublishPlanRequest,
@@ -45,7 +47,6 @@ from open_publisher_runtime.domain.contracts import ContentPackageV1
 from open_publisher_runtime.domain.entities import (
     Article,
     ArticleRevision,
-    ConnectionProfile,
     RuntimeEvent,
     Workflow,
     WorkflowRun,
@@ -240,29 +241,33 @@ def resume_run(
 
 @router.post(
     "/connections",
-    response_model=ConnectionProfile,
+    response_model=ConnectionProfilePublic,
     status_code=status.HTTP_201_CREATED,
 )
 def create_connection(
     request: CreateConnectionProfileRequest,
     session: SessionDep,
-) -> ConnectionProfile:
+) -> ConnectionProfilePublic:
     service = ConnectionService(SqlAlchemyRuntimeRepository(session))
     try:
-        return service.create(
+        profile = service.create(
             name=request.name,
             provider=request.provider,
             secret_ref=request.secret_ref,
             base_url=request.base_url,
             config=request.config,
         )
+        return ConnectionProfilePublic.from_profile(profile)
     except Exception as error:
         raise _translate_error(error) from error
 
 
-@router.get("/connections", response_model=list[ConnectionProfile])
-def list_connections(session: SessionDep) -> list[ConnectionProfile]:
-    return list(SqlAlchemyRuntimeRepository(session).list_connections())
+@router.get("/connections", response_model=list[ConnectionProfilePublic])
+def list_connections(session: SessionDep) -> list[ConnectionProfilePublic]:
+    return [
+        ConnectionProfilePublic.from_profile(profile)
+        for profile in SqlAlchemyRuntimeRepository(session).list_connections()
+    ]
 
 
 @router.get("/catalog", response_model=RuntimeCatalog)
@@ -270,7 +275,10 @@ def catalog(session: SessionDep) -> RuntimeCatalog:
     repository = SqlAlchemyRuntimeRepository(session)
     return RuntimeCatalog(
         workflows=list(repository.list_workflows()),
-        connections=list(repository.list_connections()),
+        connections=[
+            ConnectionProfilePublic.from_profile(profile)
+            for profile in repository.list_connections()
+        ],
     )
 
 
@@ -290,9 +298,36 @@ def create_publish_plan(
         plan, variants = publishing.create_plan(
             revision_id=request.revision_id,
             targets=targets,
-            approved=request.approved,
         )
         return PublishPlanDetail(plan=plan, variants=variants)
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+@router.post("/publish/plans/{plan_id}/approve", response_model=PublishPlanDetail)
+def approve_publish_plan(
+    plan_id: str,
+    request: ApprovePublishPlanRequest,
+    session: SessionDep,
+    container: ContainerDep,
+) -> PublishPlanDetail:
+    repository, _, _, _, publishing, _ = _services(session, container)
+    try:
+        plan = publishing.approve(
+            plan_id,
+            actor_id=request.actor_id,
+            comment=request.comment,
+        )
+        variants = [
+            variant
+            for variant_id in plan.plan_json.get("variant_ids", [])
+            if (variant := repository.get_variant(str(variant_id))) is not None
+        ]
+        return PublishPlanDetail(
+            plan=plan,
+            variants=variants,
+            jobs=list(repository.list_publish_jobs(plan.id)),
+        )
     except Exception as error:
         raise _translate_error(error) from error
 
@@ -435,7 +470,12 @@ def complete_demo(
                 )
                 for platform in request.platforms
             ],
-            approved=True,
+        )
+        publishing.approve(
+            plan.id,
+            actor_id="demo:local-user",
+            comment="explicit internal approval for deterministic dry-run demo",
+            source="dry_run_demo",
         )
         jobs = publishing.enqueue(plan.id)
         receipts = []
@@ -470,4 +510,3 @@ def request_policy_no_approval():
 
 def no_content() -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-

@@ -17,6 +17,7 @@ from open_publisher_runtime.domain.entities import (
     Workflow,
     WorkflowRun,
 )
+from open_publisher_runtime.domain.enums import PublishJobState
 
 
 class ArtifactBlobStore(Protocol):
@@ -94,6 +95,14 @@ class RuntimeRepository(Protocol):
 
     def get_publish_job_by_idempotency(self, idempotency_key: str) -> PublishJob | None: ...
 
+    def claim_publish_job(
+        self,
+        job_id: str,
+        *,
+        expected_states: Sequence[PublishJobState],
+        claimed_state: PublishJobState,
+    ) -> bool: ...
+
     def list_publish_jobs(self, plan_id: str) -> Sequence[PublishJob]: ...
 
     def add_publish_attempt(self, attempt: PublishAttempt) -> PublishAttempt: ...
@@ -111,4 +120,3 @@ class RuntimeRepository(Protocol):
     def commit(self) -> None: ...
 
     def rollback(self) -> None: ...
-

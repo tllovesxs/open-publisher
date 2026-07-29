@@ -4,11 +4,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy import text
 
 from open_publisher_runtime import __version__
-from open_publisher_runtime.api.dependencies import RuntimeContainer
+from open_publisher_runtime.api.dependencies import RuntimeContainer, require_sidecar_token
 from open_publisher_runtime.api.routes import router
 from open_publisher_runtime.api.schemas import HealthResponse
 from open_publisher_runtime.application.harness import WorkflowService
@@ -55,7 +55,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="Open Publisher Agent Runtime",
         version=__version__,
         lifespan=lifespan,
+        dependencies=[Depends(require_sidecar_token)],
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
+    assert runtime_settings.api_token is not None
+    app.state.api_token = runtime_settings.api_token
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -74,7 +80,7 @@ app = create_app()
 def run() -> None:
     settings = Settings.from_env()
     uvicorn.run(
-        "open_publisher_runtime.main:app",
+        create_app(settings),
         host=settings.api_host,
         port=settings.api_port,
         reload=False,
@@ -83,4 +89,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -88,6 +90,29 @@ class CreateConnectionProfileRequest(ApiModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConnectionProfilePublic(ApiModel):
+    id: str
+    name: str
+    provider: str
+    base_url: str | None = None
+    config_json: dict[str, Any] = Field(default_factory=dict)
+    secret_scheme: str
+    secret_configured: Literal[True] = True
+    created_at: datetime
+
+    @classmethod
+    def from_profile(cls, profile: ConnectionProfile) -> ConnectionProfilePublic:
+        return cls(
+            id=profile.id,
+            name=profile.name,
+            provider=profile.provider,
+            base_url=profile.base_url,
+            config_json=profile.config_json,
+            secret_scheme=urlparse(profile.secret_ref).scheme,
+            created_at=profile.created_at,
+        )
+
+
 class PublishTargetRequest(ApiModel):
     platform: str = Field(min_length=1, max_length=100)
     account_ref: str = Field(min_length=1, max_length=300)
@@ -106,7 +131,11 @@ class PublishTargetRequest(ApiModel):
 class CreatePublishPlanRequest(ApiModel):
     revision_id: str
     targets: list[PublishTargetRequest] = Field(min_length=1)
-    approved: bool = True
+
+
+class ApprovePublishPlanRequest(ApiModel):
+    actor_id: str = Field(default="user:local", min_length=1, max_length=200)
+    comment: str | None = Field(default=None, max_length=2000)
 
 
 class PublishPlanDetail(ApiModel):
@@ -160,5 +189,4 @@ class DemoResponse(ApiModel):
 
 class RuntimeCatalog(ApiModel):
     workflows: list[Workflow]
-    connections: list[ConnectionProfile]
-
+    connections: list[ConnectionProfilePublic]

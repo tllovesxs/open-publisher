@@ -46,17 +46,28 @@ class ArticleService:
         if not normalized_markdown:
             raise ValueError("canonical Markdown cannot be empty")
 
+        latest = self.repository.get_latest_revision(article_id)
+        if parent_revision_id is not None:
+            parent = self.repository.get_revision(parent_revision_id)
+            if parent is None:
+                raise LookupError(f"parent revision {parent_revision_id} not found")
+            if parent.article_id != article_id:
+                raise ValueError("parent revision must belong to the same article")
+            if latest is None or parent.id != latest.id:
+                raise ValueError(
+                    "P0 revision history is linear; parent must be the latest revision"
+                )
+        elif latest:
+            parent_revision_id = latest.id
+
         artifact = self.artifact_service.put_text(
             kind="article.markdown",
             text=normalized_markdown,
             media_type="text/markdown; charset=utf-8",
             metadata={"article_id": article_id},
         )
-        latest = self.repository.get_latest_revision(article_id)
         if latest and latest.content_hash == artifact.content_hash:
             return latest
-        if parent_revision_id is None and latest:
-            parent_revision_id = latest.id
         revision = ArticleRevision(
             article_id=article_id,
             number=self.repository.next_revision_number(article_id),
@@ -78,4 +89,3 @@ class ArticleService:
         if revision is None:
             raise LookupError(f"article {article_id} has no revisions")
         return article, revision
-

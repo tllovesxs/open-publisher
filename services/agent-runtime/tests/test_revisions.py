@@ -22,3 +22,40 @@ def test_article_revisions_are_immutable_and_numbered(client, article_payload) -
     assert [revision["number"] for revision in revisions] == [1, 2]
     assert revisions[0]["markdown"] == article_payload["markdown"]
 
+
+def test_revision_parent_must_be_latest_revision_of_same_article(client) -> None:
+    first_article = client.post(
+        "/api/v1/articles",
+        json={"title": "文章 A", "markdown": "A1"},
+    ).json()
+    second_article = client.post(
+        "/api/v1/articles",
+        json={"title": "文章 B", "markdown": "B1"},
+    ).json()
+
+    cross_article = client.post(
+        f"/api/v1/articles/{first_article['article']['id']}/revisions",
+        json={
+            "markdown": "A2",
+            "parent_revision_id": second_article["revision"]["id"],
+        },
+    )
+    assert cross_article.status_code == 409
+
+    second_revision = client.post(
+        f"/api/v1/articles/{first_article['article']['id']}/revisions",
+        json={
+            "markdown": "A2",
+            "parent_revision_id": first_article["revision"]["id"],
+        },
+    )
+    assert second_revision.status_code == 201
+
+    stale_parent = client.post(
+        f"/api/v1/articles/{first_article['article']['id']}/revisions",
+        json={
+            "markdown": "A3",
+            "parent_revision_id": first_article["revision"]["id"],
+        },
+    )
+    assert stale_parent.status_code == 409

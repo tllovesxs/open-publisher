@@ -1,10 +1,14 @@
+from open_publisher_runtime.application.publishing import DryRunResult
+from open_publisher_runtime.infrastructure.orm import PlatformVariantORM
+from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
+
+
 def _create_plan(client, article_payload):
     article = client.post("/api/v1/articles", json=article_payload).json()
     plan_response = client.post(
         "/api/v1/publish/plans",
         json={
             "revision_id": article["revision"]["id"],
-            "approved": True,
             "targets": [
                 {
                     "platform": "csdn",
@@ -14,7 +18,13 @@ def _create_plan(client, article_payload):
         },
     )
     assert plan_response.status_code == 201, plan_response.text
-    return plan_response.json()
+    plan = plan_response.json()
+    approval = client.post(
+        f"/api/v1/publish/plans/{plan['plan']['id']}/approve",
+        json={"actor_id": "user:test"},
+    )
+    assert approval.status_code == 200, approval.text
+    return approval.json()
 
 
 def test_publish_outbox_is_idempotent_and_never_remote(client, article_payload) -> None:
@@ -49,7 +59,6 @@ def test_unknown_job_requires_reconciliation(client, article_payload) -> None:
         "/api/v1/publish/plans",
         json={
             "revision_id": article["revision"]["id"],
-            "approved": True,
             "targets": [
                 {
                     "platform": "wechat",
@@ -59,6 +68,11 @@ def test_unknown_job_requires_reconciliation(client, article_payload) -> None:
             ],
         },
     ).json()
+    approval = client.post(
+        f"/api/v1/publish/plans/{plan['plan']['id']}/approve",
+        json={"actor_id": "user:test"},
+    )
+    assert approval.status_code == 200, approval.text
     job = client.post(f"/api/v1/publish/plans/{plan['plan']['id']}/enqueue").json()["jobs"][0]
     unknown = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
     assert unknown.status_code == 200
@@ -70,3 +84,101 @@ def test_unknown_job_requires_reconciliation(client, article_payload) -> None:
     assert reconciled.json()["job"]["state"] == "succeeded"
     assert reconciled.json()["receipt"]["details_json"]["mode"] == "dry_run_reconcile"
 
+
+def test_publish_plan_requires_explicit_hash_bound_approval(client, article_payload) -> None:
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    created = client.post(
+        "/api/v1/publish/plans",
+        json={
+            "revision_id": article["revision"]["id"],
+            "targets": [{"platform": "csdn", "account_ref": "approval-test"}],
+        },
+    )
+    assert created.status_code == 201
+    plan = created.json()["plan"]
+    assert plan["status"] == "draft"
+    assert plan["approval_status"] == "pending"
+    assert "approval_grant" not in plan["plan_json"]
+
+    blocked = client.post(f"/api/v1/publish/plans/{plan['id']}/enqueue")
+    assert blocked.status_code == 409
+
+    approved = client.post(
+        f"/api/v1/publish/plans/{plan['id']}/approve",
+        json={"actor_id": "user:approval-test", "comment": "preview confirmed"},
+    )
+    assert approved.status_code == 200, approved.text
+    grant = approved.json()["plan"]["plan_json"]["approval_grant"]
+    assert grant["actor_id"] == "user:approval-test"
+    assert grant["revision_hash"] == article["revision"]["content_hash"]
+    assert len(grant["binding_hash"]) == 64
+    assert grant["target_hashes"]
+
+    variant_id = approved.json()["variants"][0]["id"]
+    with client.app.state.container.database.session() as session:
+        variant = session.get(PlatformVariantORM, variant_id)
+        assert variant is not None
+        variant.title = "审批后被篡改的标题"
+    tampered = client.post(f"/api/v1/publish/plans/{plan['id']}/enqueue")
+    assert tampered.status_code == 409
+    assert "changed after approval" in tampered.text
+
+
+def test_completed_plan_cannot_regress_when_reenqueued(client, article_payload) -> None:
+    plan = _create_plan(client, article_payload)
+    plan_id = plan["plan"]["id"]
+    job = client.post(f"/api/v1/publish/plans/{plan_id}/enqueue").json()["jobs"][0]
+    processed = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
+    assert processed.status_code == 200
+    assert client.get(f"/api/v1/publish/plans/{plan_id}").json()["plan"]["status"] == "completed"
+
+    repeated_enqueue = client.post(f"/api/v1/publish/plans/{plan_id}/enqueue")
+    assert repeated_enqueue.status_code == 200
+    assert repeated_enqueue.json()["jobs"][0]["id"] == job["id"]
+    assert client.get(f"/api/v1/publish/plans/{plan_id}").json()["plan"]["status"] == "completed"
+
+    repeated_process = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
+    assert repeated_process.status_code == 200
+    assert client.get(f"/api/v1/publish/plans/{plan_id}").json()["plan"]["status"] == "completed"
+
+
+def test_publish_claim_and_attempt_are_committed_before_publisher_io(
+    client, article_payload
+) -> None:
+    observed: dict[str, object] = {}
+    database = client.app.state.container.database
+
+    class InspectingPublisher:
+        def publish(self, job, variant):
+            with database.session() as session:
+                repository = SqlAlchemyRuntimeRepository(session)
+                persisted = repository.get_publish_job(job.id)
+                attempts = repository.list_publish_attempts(job.id)
+                observed["state"] = persisted.state if persisted else None
+                observed["attempt_count"] = len(attempts)
+                observed["idempotency_key"] = job.idempotency_key
+            return DryRunResult(
+                remote_id=f"inspected-{job.id}",
+                remote_url=None,
+                details={
+                    "mode": "dry_run",
+                    "idempotency_key": job.idempotency_key,
+                },
+            )
+
+        def reconcile(self, job, variant):
+            return None
+
+    client.app.state.container.dry_run_publisher = InspectingPublisher()
+    plan = _create_plan(client, article_payload)
+    job = client.post(
+        f"/api/v1/publish/plans/{plan['plan']['id']}/enqueue"
+    ).json()["jobs"][0]
+    response = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
+    assert response.status_code == 200, response.text
+    assert response.json()["job"]["state"] == "succeeded"
+    assert observed == {
+        "state": "in_progress",
+        "attempt_count": 1,
+        "idempotency_key": job["idempotency_key"],
+    }

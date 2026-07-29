@@ -7,6 +7,8 @@ from open_publisher_runtime.application.articles import ArticleService
 from open_publisher_runtime.application.artifacts import ArtifactService
 from open_publisher_runtime.application.ports import RuntimeRepository
 from open_publisher_runtime.domain.contracts import (
+    MAX_CONTENT_PACKAGE_ASSET_BYTES,
+    MAX_CONTENT_PACKAGE_TOTAL_ASSET_BYTES,
     ContentPackageArticleV1,
     ContentPackageAssetV1,
     ContentPackageV1,
@@ -84,14 +86,25 @@ class ContentPackageService:
         if actual_markdown_hash != package.article.content_hash:
             raise ValueError("ContentPackage canonical Markdown hash mismatch")
 
-        imported_artifacts: list[Artifact] = []
+        validated_assets: list[tuple[ContentPackageAssetV1, bytes]] = []
+        total_asset_bytes = 0
         for asset in package.assets:
             try:
                 data = base64.b64decode(asset.content_base64, validate=True)
             except (binascii.Error, ValueError) as error:
                 raise ValueError(f"invalid base64 for asset {asset.path}") from error
+            if len(data) > MAX_CONTENT_PACKAGE_ASSET_BYTES:
+                raise ValueError(f"ContentPackage asset exceeds size limit: {asset.path}")
+            total_asset_bytes += len(data)
+            if total_asset_bytes > MAX_CONTENT_PACKAGE_TOTAL_ASSET_BYTES:
+                raise ValueError("ContentPackage assets exceed the total size limit")
             if self.artifact_service.digest(data) != asset.content_hash:
                 raise ValueError(f"ContentPackage asset hash mismatch: {asset.path}")
+            validated_assets.append((asset, data))
+
+        # Do not write any blob until every path, base64 payload, size, and hash is valid.
+        imported_artifacts: list[Artifact] = []
+        for asset, data in validated_assets:
             imported_artifacts.append(
                 self.artifact_service.put_bytes(
                     kind=asset.kind,
@@ -114,4 +127,3 @@ class ContentPackageService:
             },
         )
         return article, revision, imported_artifacts
-

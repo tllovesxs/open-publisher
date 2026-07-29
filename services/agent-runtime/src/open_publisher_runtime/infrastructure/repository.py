@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from open_publisher_runtime.domain.entities import (
@@ -20,7 +20,9 @@ from open_publisher_runtime.domain.entities import (
     RuntimeEvent,
     Workflow,
     WorkflowRun,
+    utc_now,
 )
+from open_publisher_runtime.domain.enums import PublishJobState
 from open_publisher_runtime.infrastructure.orm import (
     ArticleORM,
     ArticleRevisionORM,
@@ -220,6 +222,26 @@ class SqlAlchemyRuntimeRepository:
             select(PublishJobORM).where(PublishJobORM.idempotency_key == idempotency_key)
         )
         return _domain(PublishJob, obj) if obj else None
+
+    def claim_publish_job(
+        self,
+        job_id: str,
+        *,
+        expected_states: Sequence[PublishJobState],
+        claimed_state: PublishJobState,
+    ) -> bool:
+        result = self.session.execute(
+            update(PublishJobORM)
+            .where(
+                PublishJobORM.id == job_id,
+                PublishJobORM.state.in_([state.value for state in expected_states]),
+            )
+            .values(state=claimed_state.value, updated_at=utc_now())
+            .execution_options(synchronize_session=False)
+        )
+        self.session.flush()
+        self.session.expire_all()
+        return result.rowcount == 1
 
     def list_publish_jobs(self, plan_id: str) -> Sequence[PublishJob]:
         objects = self.session.scalars(

@@ -73,6 +73,7 @@ class DeterministicDryRunPublisher:
                 "platform": job.platform,
                 "account_ref": job.account_ref,
                 "variant_id": variant.id,
+                "idempotency_key": job.idempotency_key,
                 "notice": "No remote API was called.",
             },
         )
@@ -89,6 +90,7 @@ class DeterministicDryRunPublisher:
                 "mode": "dry_run_reconcile",
                 "platform": job.platform,
                 "variant_id": variant.id,
+                "idempotency_key": job.idempotency_key,
                 "notice": "Simulated reconciliation found the remote draft.",
             },
         )
@@ -111,7 +113,6 @@ class PublishOutboxService:
         *,
         revision_id: str,
         targets: list[PublishTarget],
-        approved: bool,
     ) -> tuple[PublishPlan, list[PlatformVariant]]:
         revision = self.repository.get_revision(revision_id)
         if revision is None:
@@ -124,6 +125,11 @@ class PublishOutboxService:
 
         variants: list[PlatformVariant] = []
         for target in targets:
+            platform = target.platform.strip().lower()
+            account_ref = target.account_ref.strip()
+            title = (target.title or article.title).strip()
+            if not platform or not account_ref or not title:
+                raise ValueError("publish target platform, account, and title cannot be blank")
             if target.connection_profile_id:
                 profile = self.repository.get_connection(target.connection_profile_id)
                 if profile is None:
@@ -131,25 +137,25 @@ class PublishOutboxService:
                         f"connection profile {target.connection_profile_id} not found"
                     )
             rendered = self._render_variant(
-                platform=target.platform,
-                title=target.title or article.title,
+                platform=platform,
+                title=title,
                 markdown=revision.markdown,
             )
             artifact = self.artifact_service.put_text(
-                kind=f"platform-variant.{target.platform}",
+                kind=f"platform-variant.{platform}",
                 text=rendered,
                 media_type="text/markdown; charset=utf-8",
                 metadata={
                     "revision_id": revision.id,
-                    "platform": target.platform,
-                    "account_ref": target.account_ref,
+                    "platform": platform,
+                    "account_ref": account_ref,
                 },
             )
             variant = PlatformVariant(
                 revision_id=revision.id,
-                platform=target.platform.strip().lower(),
-                account_ref=target.account_ref,
-                title=(target.title or article.title).strip(),
+                platform=platform,
+                account_ref=account_ref,
+                title=title,
                 body_artifact_id=artifact.id,
                 content_hash=artifact.content_hash,
                 metadata_json={
@@ -158,19 +164,120 @@ class PublishOutboxService:
                     "simulate_outcome": target.simulate_outcome,
                 },
             )
+            variant.metadata_json["target_hash"] = self._target_hash(variant)
             variants.append(self.repository.add_variant(variant))
 
         plan = PublishPlan(
             revision_id=revision.id,
-            status=PublishPlanStatus.APPROVED if approved else PublishPlanStatus.DRAFT,
-            approval_status=ApprovalStatus.APPROVED if approved else ApprovalStatus.PENDING,
+            status=PublishPlanStatus.DRAFT,
+            approval_status=ApprovalStatus.PENDING,
             plan_json={
                 "mode": "dry_run",
                 "variant_ids": [variant.id for variant in variants],
+                "target_hashes": [
+                    str(variant.metadata_json["target_hash"]) for variant in variants
+                ],
                 "remote_publish_allowed": False,
             },
         )
         return self.repository.add_publish_plan(plan), variants
+
+    @staticmethod
+    def _hash_json(value: object) -> str:
+        serialized = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
+    @classmethod
+    def _target_hash(cls, variant: PlatformVariant) -> str:
+        approval_metadata = {
+            key: value
+            for key, value in variant.metadata_json.items()
+            if key != "target_hash"
+        }
+        return cls._hash_json(
+            {
+                "variant_id": variant.id,
+                "revision_id": variant.revision_id,
+                "platform": variant.platform,
+                "account_ref": variant.account_ref,
+                "connection_profile_id": variant.metadata_json.get("connection_profile_id"),
+                "title": variant.title,
+                "content_hash": variant.content_hash,
+                "metadata": approval_metadata,
+            }
+        )
+
+    def _approval_binding(self, plan: PublishPlan) -> dict[str, object]:
+        revision = self.repository.get_revision(plan.revision_id)
+        if revision is None:
+            raise LookupError(f"revision {plan.revision_id} not found")
+        target_hashes: list[str] = []
+        for variant_id in plan.plan_json.get("variant_ids", []):
+            variant = self.repository.get_variant(str(variant_id))
+            if variant is None:
+                raise LookupError(f"platform variant {variant_id} not found")
+            if variant.revision_id != revision.id:
+                raise ValueError("publish plan contains a variant from another revision")
+            target_hashes.append(self._target_hash(variant))
+        if not target_hashes:
+            raise ValueError("publish plan has no targets to approve")
+        binding = {
+            "revision_id": revision.id,
+            "revision_hash": revision.content_hash,
+            "target_hashes": target_hashes,
+        }
+        return {
+            **binding,
+            "binding_hash": self._hash_json(binding),
+        }
+
+    def approve(
+        self,
+        plan_id: str,
+        *,
+        actor_id: str,
+        comment: str | None = None,
+        source: str = "user",
+    ) -> PublishPlan:
+        plan = self.repository.get_publish_plan(plan_id)
+        if plan is None:
+            raise LookupError(f"publish plan {plan_id} not found")
+        normalized_actor = actor_id.strip()
+        if not normalized_actor:
+            raise ValueError("publish approval actor cannot be blank")
+        if plan.status not in {PublishPlanStatus.DRAFT, PublishPlanStatus.APPROVED}:
+            raise ValueError(f"publish plan cannot be approved from state {plan.status}")
+        binding = self._approval_binding(plan)
+        plan.plan_json = {
+            **plan.plan_json,
+            "approval_grant": {
+                **binding,
+                "actor_id": normalized_actor,
+                "approved_at": utc_now().isoformat(),
+                "comment": comment or "",
+                "source": source,
+            },
+        }
+        plan.status = PublishPlanStatus.APPROVED
+        plan.approval_status = ApprovalStatus.APPROVED
+        plan.updated_at = utc_now()
+        return self.repository.update_publish_plan(plan)
+
+    def _validate_approval(self, plan: PublishPlan) -> None:
+        if plan.approval_status is not ApprovalStatus.APPROVED:
+            raise ValueError("publish plan must be explicitly approved before enqueue")
+        grant = plan.plan_json.get("approval_grant")
+        if not isinstance(grant, dict):
+            raise ValueError("publish plan approval grant is missing")
+        current_binding = self._approval_binding(plan)
+        for key in ("revision_id", "revision_hash", "target_hashes", "binding_hash"):
+            if grant.get(key) != current_binding[key]:
+                raise ValueError("publish plan content changed after approval")
 
     @staticmethod
     def _render_variant(*, platform: str, title: str, markdown: str) -> str:
@@ -182,8 +289,10 @@ class PublishOutboxService:
         plan = self.repository.get_publish_plan(plan_id)
         if plan is None:
             raise LookupError(f"publish plan {plan_id} not found")
-        if plan.approval_status is not ApprovalStatus.APPROVED:
-            raise ValueError("publish plan must be approved before enqueue")
+        self._validate_approval(plan)
+        existing_jobs = list(self.repository.list_publish_jobs(plan.id))
+        if plan.status is PublishPlanStatus.COMPLETED:
+            return existing_jobs
         variant_ids = [str(value) for value in plan.plan_json.get("variant_ids", [])]
         jobs: list[PublishJob] = []
         for variant_id in variant_ids:
@@ -223,9 +332,7 @@ class PublishOutboxService:
                 payload_json=payload,
             )
             jobs.append(self.repository.add_publish_job(job))
-        plan.status = PublishPlanStatus.QUEUED
-        plan.updated_at = utc_now()
-        self.repository.update_publish_plan(plan)
+        self._refresh_plan(plan.id)
         return jobs
 
     def process(self, job_id: str) -> tuple[PublishJob, PublishReceipt | None]:
@@ -234,6 +341,8 @@ class PublishOutboxService:
             raise LookupError(f"publish job {job_id} not found")
         existing_receipt = self.repository.get_publish_receipt_for_job(job.id)
         if job.state is PublishJobState.SUCCEEDED and existing_receipt:
+            self._refresh_plan(job.plan_id)
+            self.repository.commit()
             return job, existing_receipt
         if job.state is PublishJobState.UNKNOWN:
             raise ValueError("UNKNOWN jobs must be reconciled before retry")
@@ -243,6 +352,21 @@ class PublishOutboxService:
         if variant is None:
             raise LookupError(f"platform variant {job.variant_id} not found")
 
+        claimed = self.repository.claim_publish_job(
+            job.id,
+            expected_states=[PublishJobState.PENDING, PublishJobState.FAILED_RETRYABLE],
+            claimed_state=PublishJobState.IN_PROGRESS,
+        )
+        if not claimed:
+            current = self.repository.get_publish_job(job.id)
+            if current is not None and current.state is PublishJobState.SUCCEEDED:
+                receipt = self.repository.get_publish_receipt_for_job(current.id)
+                if receipt is not None:
+                    return current, receipt
+            current_state = current.state if current is not None else "missing"
+            raise ValueError(f"publish job claim failed from state {current_state}")
+        job = self.repository.get_publish_job(job.id)
+        assert job is not None
         attempt = PublishAttempt(
             job_id=job.id,
             attempt_number=self.repository.next_attempt_number(job.id),
@@ -254,9 +378,9 @@ class PublishOutboxService:
             },
         )
         self.repository.add_publish_attempt(attempt)
-        job.state = PublishJobState.IN_PROGRESS
-        job.updated_at = utc_now()
-        self.repository.update_publish_job(job)
+        self._refresh_plan(job.plan_id)
+        # Persist the exclusive claim and attempt before any publisher I/O.
+        self.repository.commit()
 
         try:
             result = self.publisher.publish(job, variant)
@@ -271,6 +395,7 @@ class PublishOutboxService:
             job.updated_at = utc_now()
             self.repository.update_publish_job(job)
             self._refresh_plan(job.plan_id)
+            self.repository.commit()
             return job, None
         except DryRunPublishFailure as error:
             attempt.state = PublishAttemptState.FAILED
@@ -286,9 +411,24 @@ class PublishOutboxService:
             job.updated_at = utc_now()
             self.repository.update_publish_job(job)
             self._refresh_plan(job.plan_id)
+            self.repository.commit()
+            return job, None
+        except Exception as error:  # noqa: BLE001 - outcome is uncertain after publisher entry
+            attempt.state = PublishAttemptState.UNKNOWN
+            attempt.error = f"unexpected publisher error: {type(error).__name__}"
+            attempt.completed_at = utc_now()
+            self.repository.update_publish_attempt(attempt)
+            job.state = PublishJobState.UNKNOWN
+            job.reconcile_required = True
+            job.last_error = "unexpected publisher error; reconciliation required"
+            job.updated_at = utc_now()
+            self.repository.update_publish_job(job)
+            self._refresh_plan(job.plan_id)
+            self.repository.commit()
             return job, None
 
         receipt = self._succeed(job=job, attempt=attempt, variant=variant, result=result)
+        self.repository.commit()
         return job, receipt
 
     def reconcile(self, job_id: str) -> tuple[PublishJob, PublishReceipt | None]:
@@ -303,6 +443,19 @@ class PublishOutboxService:
         if variant is None:
             raise LookupError(f"platform variant {job.variant_id} not found")
 
+        claimed = self.repository.claim_publish_job(
+            job.id,
+            expected_states=[PublishJobState.UNKNOWN],
+            claimed_state=PublishJobState.RECONCILING,
+        )
+        if not claimed:
+            current = self.repository.get_publish_job(job.id)
+            if current is not None and current.state is PublishJobState.SUCCEEDED:
+                return current, self.repository.get_publish_receipt_for_job(current.id)
+            current_state = current.state if current is not None else "missing"
+            raise ValueError(f"publish reconciliation claim failed from state {current_state}")
+        job = self.repository.get_publish_job(job.id)
+        assert job is not None
         attempt = PublishAttempt(
             job_id=job.id,
             attempt_number=self.repository.next_attempt_number(job.id),
@@ -314,13 +467,19 @@ class PublishOutboxService:
             },
         )
         self.repository.add_publish_attempt(attempt)
-        job.state = PublishJobState.RECONCILING
-        job.updated_at = utc_now()
-        self.repository.update_publish_job(job)
-        result = self.publisher.reconcile(job, variant)
+        self._refresh_plan(job.plan_id)
+        # Reconciliation is I/O too; make its claim durable first.
+        self.repository.commit()
+        try:
+            result = self.publisher.reconcile(job, variant)
+        except Exception as error:  # noqa: BLE001 - keep the job reconcilable
+            result = None
+            attempt.error = f"reconciliation error: {type(error).__name__}"
         if result is None:
             attempt.state = PublishAttemptState.UNKNOWN
-            attempt.error = "simulated reconciliation could not determine remote state"
+            attempt.error = (
+                attempt.error or "simulated reconciliation could not determine remote state"
+            )
             attempt.completed_at = utc_now()
             self.repository.update_publish_attempt(attempt)
             job.state = PublishJobState.UNKNOWN
@@ -329,8 +488,10 @@ class PublishOutboxService:
             job.updated_at = utc_now()
             self.repository.update_publish_job(job)
             self._refresh_plan(job.plan_id)
+            self.repository.commit()
             return job, None
         receipt = self._succeed(job=job, attempt=attempt, variant=variant, result=result)
+        self.repository.commit()
         return job, receipt
 
     def _succeed(
@@ -388,10 +549,12 @@ class PublishOutboxService:
             for job in jobs
         ):
             plan.status = PublishPlanStatus.NEEDS_ATTENTION
-        elif any(job.state is PublishJobState.IN_PROGRESS for job in jobs):
+        elif any(
+            job.state in {PublishJobState.IN_PROGRESS, PublishJobState.RECONCILING}
+            for job in jobs
+        ):
             plan.status = PublishPlanStatus.RUNNING
         else:
             plan.status = PublishPlanStatus.QUEUED
         plan.updated_at = utc_now()
         self.repository.update_publish_plan(plan)
-

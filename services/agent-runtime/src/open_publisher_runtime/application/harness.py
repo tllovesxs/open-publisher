@@ -146,8 +146,15 @@ class RunController:
             aggregate_id=run.id,
             event_type="run.started",
         )
+        # The running claim and audit events must be visible before model I/O starts.
+        self.repository.commit()
 
         try:
+            if policy.max_model_calls < self.workflow_runner.required_model_calls:
+                raise ValueError(
+                    "run policy model-call budget is smaller than the preset requirement "
+                    f"({policy.max_model_calls} < {self.workflow_runner.required_model_calls})"
+                )
             output = self.workflow_runner.run(
                 PresetWorkflowInput(
                     title=article.title,
@@ -201,10 +208,15 @@ class RunController:
                     event_type="run.interrupted",
                     payload={"reason": "content_approval"},
                 )
+                self.repository.commit()
                 return run
 
             return self._finalize(run)
         except Exception as error:  # noqa: BLE001 - boundary converts failure into durable state
+            self.repository.rollback()
+            persisted_run = self.repository.get_run(run.id)
+            if persisted_run is not None:
+                run = persisted_run
             run.status = RunStatus.FAILED
             run.error = f"{type(error).__name__}: {error}"
             run.completed_at = utc_now()
@@ -216,6 +228,7 @@ class RunController:
                 event_type="run.failed",
                 payload={"error_type": type(error).__name__},
             )
+            self.repository.commit()
             return run
 
     def resume(self, *, run_id: str, action: str, comment: str | None = None) -> WorkflowRun:
@@ -238,6 +251,7 @@ class RunController:
                 event_type="run.rejected",
                 payload={"comment": comment or ""},
             )
+            self.repository.commit()
             return run
         if normalized_action != "approve":
             raise ValueError("action must be approve or reject")
@@ -279,5 +293,5 @@ class RunController:
                 "output_revision_hash": revision.content_hash,
             },
         )
+        self.repository.commit()
         return run
-

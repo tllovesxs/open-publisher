@@ -42,6 +42,8 @@ class WorkflowState(TypedDict):
 
 
 class PresetArticleWorkflow:
+    required_model_calls = 3
+
     def __init__(self, model_access: ModelAccessLayer) -> None:
         self.model_access = model_access
 
@@ -148,4 +150,3 @@ def preset_definition() -> dict[str, Any]:
         ],
         "side_effects": "none",
     }
-

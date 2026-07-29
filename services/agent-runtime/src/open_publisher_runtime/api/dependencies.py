@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from secrets import compare_digest
+from typing import Annotated
 
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from open_publisher_runtime.application.model_access import ModelAccessLayer
@@ -21,6 +24,30 @@ class RuntimeContainer:
     model_access: ModelAccessLayer
     workflow_runner: PresetArticleWorkflow
     dry_run_publisher: DeterministicDryRunPublisher
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_sidecar_token(
+    request: Request,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+) -> None:
+    expected = str(request.app.state.api_token)
+    supplied = (
+        credentials.credentials
+        if credentials and credentials.scheme.casefold() == "bearer"
+        else ""
+    )
+    if not supplied or not compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="valid sidecar bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def get_container(request: Request) -> RuntimeContainer:
@@ -47,4 +74,3 @@ def get_repository(
     if session is None:
         raise RuntimeError("database session dependency was not supplied")
     return SqlAlchemyRuntimeRepository(session)
-

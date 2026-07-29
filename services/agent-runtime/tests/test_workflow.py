@@ -1,3 +1,21 @@
+from sqlalchemy import select
+
+from open_publisher_runtime.infrastructure.orm import WorkflowRunORM
+from open_publisher_runtime.infrastructure.providers import MockTextProvider
+
+
+class CountingTextProvider(MockTextProvider):
+    def __init__(self, callback=None) -> None:
+        self.calls = 0
+        self.callback = callback
+
+    def generate(self, request):
+        self.calls += 1
+        if self.callback:
+            self.callback()
+        return super().generate(request)
+
+
 def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -> None:
     article = client.post("/api/v1/articles", json=article_payload).json()
     workflows_response = client.get("/api/v1/workflows")
@@ -50,3 +68,54 @@ def test_run_can_pause_and_resume_for_approval(client, article_payload) -> None:
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["status"] == "completed"
 
+
+def test_run_policy_rejects_insufficient_model_budget_before_first_call(
+    client, article_payload
+) -> None:
+    provider = CountingTextProvider()
+    client.app.state.container.model_access.text_provider = provider
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "policy": {"max_model_calls": 1},
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["status"] == "failed"
+    assert "model-call budget" in response.json()["error"]
+    assert provider.calls == 0
+
+
+def test_running_claim_is_committed_before_model_io(client, article_payload) -> None:
+    observed_states: list[str] = []
+
+    def observe_persisted_run() -> None:
+        with client.app.state.container.database.session() as session:
+            observed_states.extend(
+                session.scalars(select(WorkflowRunORM.status)).all()
+            )
+
+    provider = CountingTextProvider(observe_persisted_run)
+    client.app.state.container.model_access.text_provider = provider
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "policy": {"max_model_calls": 3},
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "completed"
+    assert provider.calls == 3
+    assert observed_states == ["running", "running", "running"]
