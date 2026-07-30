@@ -9,6 +9,11 @@ it can do for the selected account and environment before a publish plan is appr
 | CSDN | Browser companion | MV3 draft fill for the current editor contract | User clicks publish | Manual Markdown/asset export |
 | Toutiao | Browser companion | MV3 draft fill for the current editor contract | User clicks publish | Manual Markdown/asset export |
 
+The MV3 implementation in P0 proves the extension-local task validation, pairing, replay defense,
+and DOM fill boundary. The desktop publish queue does not yet deliver tasks to the extension:
+the popup creates a local smoke payload after the user enters a nonce, title, and body. Therefore
+the table does not claim a desktop-to-browser end-to-end handoff.
+
 ## Capability states
 
 - `AVAILABLE`: the adapter and required authorization are ready.
@@ -32,13 +37,14 @@ approve a new publish-plan hash.
 
 ## Browser companion boundary
 
-The extension accepts a versioned draft task containing the article payload, target origin,
-expiry, and one-use nonce. It does not request cookie access, export browser storage, or click a
-final publish control. A selector or editor-version mismatch returns `NEEDS_USER`.
+The extension Service Worker accepts a versioned draft task from its own extension pages containing
+the article payload, target origin, expiry, and one-use nonce. It does not expose an external
+message endpoint, request cookie access, export browser storage, or click a final publish control.
+A selector or editor-version mismatch returns `NEEDS_USER`. A future desktop transport needs a
+separate authenticated local bridge and threat-model review.
 
 ## Live test policy
 
 Default tests use deterministic fake providers and perform no platform writes. A real adapter must
 add an opt-in test marker, capability probe, documented rollback/reconciliation procedure, and a
 test account before this table can claim production support.
-

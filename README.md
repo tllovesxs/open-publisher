@@ -15,7 +15,7 @@ deterministic mock（确定性模拟）提供商，不会向真实模型或内�
 | --- | --- |
 | 桌面工作区 | React + Tauri v2，包含 Markdown 编辑、预览、修订、工作流、素材、连接、技能、任务与发布界面 |
 | 内容模型 | Markdown 主稿、不可变 `ArticleRevision`、内容寻址 Artifact 和平台派生稿 |
-| 多 Agent | Python Harness + LangGraph；研究、提纲、写作、自然化、审核、风险、视觉规划和平台改写均以结构化 Artifact 交接 |
+| 多 Agent | Python Harness + LangGraph；研究、提纲、写作、自然化、审核、风险和视觉规划以结构化 Artifact 交接；P0 平台稿由版本化确定性转换器派生 |
 | 模型接入 | 默认 Mock；提供 OpenAI-compatible 文本/图像提供商的接入边界，不内置独立模型网关 |
 | 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验基础 |
 | 平台接入 | 微信公众号官方 API 的能力与草稿载荷基础；CSDN、今日头条和微信公众号的 MV3 浏览器草稿填充基础 |
@@ -44,7 +44,7 @@ flowchart LR
     Py --> Store["SQLite + Artifact Store"]
     Py --> Outbox["确定性发布服务<br/>Outbox · 幂等 · 核验"]
     Outbox --> API["官方 API"]
-    Outbox --> Ext["MV3 浏览器助手<br/>仅填充草稿"]
+    Outbox -.->|"未来的本地认证传输<br/>v0.1 尚未接线"| Ext["MV3 浏览器助手<br/>仅填充草稿"]
     Store <-->|"ContentPackage v1"| Wandao["万能导"]
 ```
 
@@ -65,7 +65,7 @@ flowchart LR
 
 当前开发路径以 Windows PowerShell 为准。请先准备：
 
-- Node.js 22+
+- Node.js 22.6+
 - pnpm 11（仓库声明版本为 `11.7.0`）
 - Rust 1.88（由 `rust-toolchain.toml` 固定）
 - Python 3.12 或 3.13
@@ -88,6 +88,10 @@ pnpm dev
 Tauri 的 Rust Host 会启动 Python Sidecar，为它选择随机本机端口并注入每次启动独立的
 Bearer token。端口和 token 不会返回给 WebView。
 
+P0 的运行边界是开发检出，不是可分发安装包。普通 Tauri bundle 会缺少 Python
+Sidecar 及其依赖，因此构建前置检查会主动阻止它；准确边界和仅供布局检查的显式覆盖
+方式见 [`release-packaging.md`](docs/development/release-packaging.md)。
+
 只开发界面时可以运行：
 
 ```powershell
@@ -108,6 +112,8 @@ Sidecar，也不能执行发布。
 
 详细演示步骤见
 [`docs/development/manual-demo.md`](docs/development/manual-demo.md)。
+其中也包含显式 opt-in 的 SiliconFlow 真实模型 E2E 命令；该命令真实生成正文与图片，
+但发布阶段固定使用本地 dry-run，不会写入微信公众号、CSDN 或今日头条。
 
 ## 安全设计
 
@@ -119,6 +125,8 @@ Sidecar，也不能执行发布。
   并核验，不能盲目重试。
 - 浏览器任务只携带文章、目标来源、过期时间和一次性 nonce；扩展不读取或导出 Cookie，
   不点击最终发布按钮。
+- v0.1 尚未把桌面发布队列到扩展 Service Worker 的认证传输接线；扩展弹窗仅用于本地
+  配对和 DOM 填充冒烟，不代表桌面到浏览器的端到端发布已经完成。
 - `pnpm dev:web` 明确不具备 Sidecar 与秘密访问能力。
 
 这是 P0 安全基线，不等于经过生产安全审计。真实凭据、账号和未发布稿件不要放进公开

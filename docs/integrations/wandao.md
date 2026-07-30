@@ -19,8 +19,8 @@ content-package/
 ```
 
 The Markdown file is the portable source of truth. Local asset references are relative and remain
-inside the package directory. `manifest.json` adds stable identities, hashes, provenance, and
-revision metadata for tools that understand ContentPackage v1.
+inside the package directory. `manifest.json` adds the producing `sourceApp`, stable identities,
+hashes, provenance, and revision metadata for tools that understand ContentPackage v1.
 
 Wandao already accepts a local Markdown directory for its import providers. Point Wandao at the
 exported `articles` directory for the compatibility path. A future Wandao provider can read the

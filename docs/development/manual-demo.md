@@ -24,8 +24,22 @@ pnpm dev
 
 In development, Rust starts the Python runtime on a random loopback port with a per-launch bearer
 token. Neither value is returned to the WebView. Use the top-bar **运行工作流** action to run the
-deterministic article workflow, then inspect the revision, artifacts, platform variants, jobs, and
-receipts in the corresponding pages.
+deterministic article workflow. Rust resolves the desktop article to its durable backend revision,
+selects the current workflow, starts a run, and returns the output Markdown plus a bounded Artifact
+summary. The private Sidecar endpoint, bearer token, Artifact bytes, and secret references never
+cross into the WebView.
+
+The **发布** page exercises the granular local path rather than the convenience demo endpoint:
+create platform variants, inspect them, explicitly approve the bound hashes, enqueue the same plan
+twice to verify idempotency, process each deterministic dry-run job, and reload the resulting
+SQLite receipts. None of those actions contacts WeChat, CSDN, or Toutiao. The **生成配图** command
+also crosses the Rust boundary and stores validated bytes in the local Artifact Store, while the
+WebView receives only provider/model/count/media-type metadata.
+
+Article catalog metadata, evidence cards, and the general task catalog still contain seeded product
+examples in v0.1. Model connection forms persist only public configuration and a broker reference;
+the default desktop workflow continues to use the built-in deterministic Mock until the Rust
+credential-lease activation path is implemented.
 
 For UI-only work, run:
 
@@ -68,3 +82,22 @@ Run every available basic check:
 
 Live WeChat, CSDN, and Toutiao tests are intentionally excluded. See
 [`platform-capabilities.md`](../integrations/platform-capabilities.md) for the exact boundary.
+
+## Explicit real-model E2E
+
+The real integration command calls SiliconFlow for text and one generated image, then exercises
+the same local Harness, approval binding, platform variants, idempotent outbox, dry-run receipts,
+SQLite reopen, and ContentPackage materialize/verify path. It never writes to a content platform.
+The API key is accepted only through the current process environment and is not included in the
+result report:
+
+```powershell
+$env:OPEN_PUBLISHER_SILICONFLOW_API_KEY = "<temporary key>"
+.\services\agent-runtime\.venv\Scripts\open-publisher-real-e2e.exe `
+  --confirm-external-model-calls
+Remove-Item Env:OPEN_PUBLISHER_SILICONFLOW_API_KEY
+```
+
+Outputs are written under `.local/real-e2e/` by default. Each run contains an isolated SQLite
+database, content-addressed Artifact Store, verified ContentPackage directory, and a sanitized
+`report.json`. This command is deliberately excluded from ordinary unit tests and quality checks.

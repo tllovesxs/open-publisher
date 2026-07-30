@@ -18,24 +18,20 @@ flowchart LR
     F --> Q["Review Agent<br/>ReviewReport"]
     F --> S["Risk Agent<br/>RiskReport"]
     F --> V["Visual Agent<br/>VisualPlan"]
-    F --> P1["WeChat Agent<br/>PlatformVariant"]
-    F --> P2["CSDN Agent<br/>PlatformVariant"]
-    F --> P3["Toutiao Agent<br/>PlatformVariant"]
     Q --> G{"Human policy gate"}
     S --> G
     V --> G
-    P1 --> G
-    P2 --> G
-    P3 --> G
     G -->|"approved hashes"| P["PublishPlan"]
+    P --> T["Versioned deterministic transforms<br/>PlatformVariant per target"]
     P --> J["Deterministic outbox"]
+    T --> J
 ```
 
 Research, outline, writing, and natural-style passes are sequential because each changes the
-canonical content. Review, risk, visual planning, and platform variants are independent readers
-of the same immutable revision, so the Harness may run them concurrently.
+canonical content. Review, risk, and visual planning are independent readers of the same immutable
+revision, so the Harness runs them as a bounded fan-out.
 
-The default `maxParallel` is four. Additional platform variants wait in the local queue; spawning
+The default `max_parallel` is four. More runnable model nodes wait in the local queue; spawning
 more agents does not bypass the model-provider concurrency limit.
 
 ## Agent catalog
@@ -49,10 +45,20 @@ more agents does not bypass the model-provider concurrency limit.
 | Review | canonical revision | `ReviewReport` | coherence, evidence coverage, factual-claim checklist |
 | Risk | canonical revision, platform policy | `RiskReport` | sensitive terms, prohibited claims, PII and link checks |
 | Visual | canonical revision, asset policy | `VisualPlan` | cover/illustration prompt planner, image provider |
-| Platform | canonical revision, one target | `PlatformVariant` | length, title, tags, layout and asset constraints |
 
 “Natural style” means clarity and authorial editing support. It does not promise to evade AI
 detection or platform review.
+
+## Platform variants in v0.1
+
+Platform variants are not model-backed agents in P0. After the human gate, the publish-plan service
+uses `deterministic-platform-transform.v1` to derive target-specific Markdown and records that
+producer in variant metadata. This keeps approval hashes reproducible and avoids silently spending
+additional model calls after review.
+
+A future platform Agent may propose a richer variant before the human gate, but it must still
+return a structured candidate Artifact. It will not own credentials or bypass the deterministic
+publish service.
 
 ## Node customization
 
@@ -80,4 +86,3 @@ model call before I/O and persists the claim so a restart cannot silently exceed
 - A workflow failure cannot enqueue a publish job.
 - An ambiguous platform result becomes `UNKNOWN` and enters reconciliation; an agent is not asked
   to guess whether publication succeeded.
-

@@ -8,7 +8,7 @@ remote publishing do not share equal authority.
 flowchart LR
     subgraph Desktop["Tauri desktop"]
         UI["React workspace<br/>Markdown + review UI"]
-        Host["Rust host<br/>validation · secrets · supervision"]
+        Host["Rust host<br/>validation · reference boundary · supervision"]
         UI -->|"typed Tauri commands"| Host
     end
 
@@ -25,17 +25,19 @@ flowchart LR
     end
 
     Host -->|"loopback + per-launch token"| API
-    Host -->|"short-lived secret lease"| Runtime
+    Host -.->|"future short-lived secret lease<br/>v0.1 uses env/mock refs only"| Runtime
     Graph -->|"structured artifacts only"| Publish
     Publish -->|"official API when available"| Platforms["Publishing platforms"]
 
     subgraph Browser["MV3 browser companion"]
+        Popup["P0 extension popup<br/>manual smoke payload"]
         Worker["Service worker"]
         Adapter["Editor adapter"]
+        Popup --> Worker
         Worker --> Adapter
     end
 
-    Publish -->|"scoped task + nonce"| Worker
+    Publish -.->|"future authenticated local transport<br/>not wired in v0.1"| Worker
     Adapter -->|"draft fill / NEEDS_USER"| Platforms
     Wandao["Wandao"] <-->|"ContentPackage v1"| Artifacts
 ```

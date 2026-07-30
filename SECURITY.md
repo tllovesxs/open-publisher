@@ -13,7 +13,9 @@ the minimum reproduction data needed.
 
 ## Product boundaries
 
-- Model and platform secrets belong to the Rust secret broker.
+- Model and platform secrets belong to the planned Rust secret broker. The v0.1 UI stores only
+  `env://`/`mock://` references and keeps the deterministic demo on Mock; Stronghold/keyring
+  brokering and short-lived credential leases are not yet implemented.
 - Browser cookies remain inside the user's browser profile.
 - Agents and third-party skills cannot call public publishing operations directly.
 - A publish timeout is reconciled against the remote platform before any retry.
@@ -31,4 +33,3 @@ Use fake credentials and local fixtures in tests. Logs and exported diagnostics 
 - access and refresh tokens
 - passwords
 - token-bearing URL query parameters
-
