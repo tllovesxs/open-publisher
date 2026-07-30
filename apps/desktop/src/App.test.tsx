@@ -1,243 +1,173 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 import App from "./App";
-import { desktopBridge, type RunWorkflowSummary } from "./lib/desktopBridge";
+import { desktopBridge } from "./lib/desktopBridge";
 
-const defaultMatchMedia = window.matchMedia;
-
-describe("desktop workspace", () => {
+describe("desktop product flow", () => {
   beforeEach(() => {
     window.localStorage.clear();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true,
-      value: defaultMatchMedia,
-    });
   });
 
-  it("switches between product areas and opens an article", () => {
+  it("exposes only the four user-facing product areas", async () => {
     render(<App />);
 
-    expect(
-      screen.getAllByRole("heading", { name: "本地优先，才是创作者工具的底气" }).length,
-    ).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: "文章" }));
-    expect(screen.getByRole("heading", { name: "稿件不是文件，是一条修订历史" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "从一个主题开始" })).toBeVisible();
+    const navigation = screen.getByRole("navigation", { name: "主导航" });
+    expect(within(navigation).getAllByRole("button")).toHaveLength(4);
+    expect(within(navigation).getByRole("button", { name: "创作" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "文章" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "发布" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "设置" })).toBeVisible();
+    expect(within(navigation).queryByRole("button", { name: "工作流" })).toBeNull();
+    expect(within(navigation).queryByRole("button", { name: "Skill" })).toBeNull();
 
-    fireEvent.click(screen.getAllByRole("button", { name: /打开稿件/ })[1]);
-    expect(
-      screen.getAllByRole("heading", { name: "一个写作团队，住进一条工作流" }).length,
-    ).toBeGreaterThan(0);
+    fireEvent.click(within(navigation).getByRole("button", { name: "文章" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Markdown 正文")).toBeVisible(),
+    );
+  });
+
+  it("creates an article from a brief and opens the generated revision", async () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "如何设计可靠的多平台发布流程" },
+    });
+    fireEvent.change(screen.getByLabelText("参考资料"), {
+      target: { value: "只使用用户提供的事实，发布前必须人工确认。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    await waitFor(
+      () => {
+        expect(screen.getByLabelText("Markdown 正文")).toBeVisible();
+        expect(
+          screen.getAllByRole("heading", {
+            name: "如何设计可靠的多平台发布流程",
+          })[0],
+        ).toBeVisible();
+      },
+      { timeout: 3000 },
+    );
     expect((screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value).toContain(
-      "多 Agent 的价值",
+      "只使用用户提供的事实",
     );
   });
 
-  it("edits and saves a revision through the desktop bridge fallback", async () => {
+  it("shows the creation stage, execution plan, and timestamped logs", async () => {
+    let finishWorkflow: (() => void) | undefined;
+    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
+    vi.spyOn(desktopBridge, "runWorkflow").mockImplementation(
+      (request) =>
+        new Promise((resolve) => {
+          finishWorkflow = () => void originalRunWorkflow(request).then(resolve);
+        }),
+    );
     render(<App />);
-    const editor = screen.getByLabelText("Markdown 正文");
 
-    fireEvent.change(editor, { target: { value: "# 新修订\n\n作者仍然拥有最终决定权。" } });
-    expect(screen.getByText("有未保存修改")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "保存修订" }));
-    await waitFor(() => {
-      expect(screen.getByText("修订已记入本地会话（演示模式）")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "可观察的智能写作流程" },
     });
-    expect((screen.getByRole("button", { name: "已保存" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    expect(screen.getByText("正在保存创作要求")).toBeVisible();
+    expect(screen.getByText("写作 Agent")).toBeVisible();
+    expect(screen.getByText(/执行日志/)).toBeVisible();
+    await screen.findByText("多 Agent 工作流正在执行");
+    expect(screen.getByText("多 Agent 工作流已启动")).toBeInTheDocument();
+
+    finishWorkflow?.();
+    await screen.findByLabelText("Markdown 正文");
   });
 
-  it("creates a local draft and applies Markdown toolbar actions", () => {
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: "新建文章" }));
-    expect(screen.getAllByRole("heading", { name: "未命名文章" }).length).toBeGreaterThan(0);
-
-    const editor = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
-    editor.focus();
-    editor.setSelectionRange(0, 0);
-    fireEvent.click(screen.getByRole("button", { name: "插入标题" }));
-    expect(editor.value.startsWith("## 小节标题")).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "让 Agent 处理选中内容" }));
-    expect(screen.getByText(/已记录选区请求/)).toBeVisible();
-  });
-
-  it("runs the workflow and opens a real platform preview", async () => {
-    let resolveWorkflow: ((summary: RunWorkflowSummary) => void) | undefined;
-    const workflowCall = vi
+  it("keeps the same article and offers a retry after workflow failure", async () => {
+    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
+    const saveDraft = vi.spyOn(desktopBridge, "saveDraft");
+    const runWorkflow = vi
       .spyOn(desktopBridge, "runWorkflow")
-      .mockImplementation(
-        (request) =>
-          new Promise((resolve) => {
-            resolveWorkflow = resolve;
-            expect(request.articleId).toBe("art-local-first");
-          }),
-      );
+      .mockRejectedValueOnce(new Error("upstream timeout"))
+      .mockImplementation(originalRunWorkflow);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "运行工作流" }));
-    await waitFor(() => {
-      expect(workflowCall).toHaveBeenCalledOnce();
-      expect((screen.getByRole("button", { name: "运行中" }) as HTMLButtonElement).disabled).toBe(
-        true,
-      );
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "失败后可恢复的写作流程" },
     });
-    expect(screen.queryByRole("button", { name: "运行工作流" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "打开平台预览" }));
-    const dialog = screen.getByRole("dialog", { name: "平台预览" });
-    expect(dialog).toBeTruthy();
-    const closePreview = within(dialog).getByRole("button", { name: "关闭平台预览" });
-    expect(closePreview).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Tab" });
-    expect(within(dialog).getByRole("button", { name: "公众号" })).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(closePreview).toHaveFocus();
-    fireEvent.click(within(dialog).getByRole("button", { name: "CSDN" }));
-    expect(screen.getByText("平台预览 · 不会实际发布")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "平台预览" })).toBeNull();
-    await waitFor(() => expect(screen.getByRole("button", { name: "打开平台预览" })).toHaveFocus());
-    const request = workflowCall.mock.calls[0][0];
-    resolveWorkflow?.({
-      runId: "run-controlled",
-      status: "completed",
-      workflowName: "article-default",
-      workflowVersion: "1.1.0",
-      inputRevisionId: request.revisionId,
-      outputRevisionId: "revision-controlled",
-      outputRevisionNumber: 2,
-      outputMarkdown: "# 工作流已完成",
-      outputContentHash: "a".repeat(64),
-      artifacts: [{ id: "artifact-controlled", kind: "workflow.canonical-draft" }],
-      persistence: "memory",
-    });
+    expect(await screen.findByText("文章生成失败")).toBeVisible();
+    expect(screen.getByText("失败原因：upstream timeout")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "重试本次生成" }));
+
+    await screen.findByLabelText("Markdown 正文");
+    expect(runWorkflow).toHaveBeenCalledTimes(2);
+    expect(runWorkflow.mock.calls[1]?.[0].articleId).toBe(
+      runWorkflow.mock.calls[0]?.[0].articleId,
+    );
+    expect(saveDraft).toHaveBeenCalledTimes(1);
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "运行工作流" })).toBeEnabled();
+      const stored = JSON.parse(
+        window.localStorage.getItem("open-publisher-creation-activity") ?? "{}",
+      ) as { logs?: Array<{ message: string }> };
+      expect(stored.logs?.map((entry) => entry.message)).toEqual(
+        expect.arrayContaining([
+          "工作流失败：upstream timeout",
+          "开始重试本次生成",
+        ]),
+      );
     });
   });
 
-  it("passes optional workflow selections into the local demo bridge", async () => {
+  it("edits and saves a local article revision", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "工作流" }));
+    fireEvent.click(screen.getByRole("button", { name: "文章" }));
+    const editor = await screen.findByLabelText("Markdown 正文");
 
-    const researchToggle = screen.getByRole("checkbox", { name: "证据采集可选节点" });
-    const riskToggle = screen.getByRole("checkbox", { name: "风险巡检必经节点" });
-    expect(researchToggle).toBeChecked();
-    expect(riskToggle).toBeDisabled();
-    fireEvent.click(researchToggle);
-    expect(researchToggle).not.toBeChecked();
+    fireEvent.change(editor, {
+      target: { value: "# 新标题\n\n作者保留最终决定权。" },
+    });
+    expect(screen.getByText("有未保存修改")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "从头运行" }));
-    const result = await screen.findByRole("region", { name: "最近一次工作流结果" });
-    expect(within(result).getByText("7")).toBeVisible();
-    expect(within(result).getByText("Artifact")).toBeVisible();
+    expect(await screen.findByText("文章已保存到浏览器演示会话")).toBeVisible();
+    expect(screen.getByRole("button", { name: "已保存" })).toBeDisabled();
   });
 
-  it("requires approval, verifies idempotency, and completes a local publish dry-run", async () => {
+  it("keeps the durable approval flow inside the publishing page", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "发布" }));
+    await screen.findByRole("button", { name: "生成平台稿" });
 
-    fireEvent.click(screen.getByRole("button", { name: "生成发布计划" }));
-    const approveButton = await screen.findByRole("button", { name: "批准本次演练" });
-    expect(approveButton).toBeDisabled();
-    expect(screen.getByText("3 项 · 内容哈希已绑定")).toBeVisible();
-
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: /我已检查目标与变体/ }),
-    );
-    expect(approveButton).toBeEnabled();
-    fireEvent.click(approveButton);
-
-    const enqueueButton = await screen.findByRole("button", {
-      name: "验证幂等并入队",
+    fireEvent.click(screen.getByRole("button", { name: "生成平台稿" }));
+    const confirmation = await screen.findByRole("checkbox", {
+      name: "我已检查文章、目标平台和标题",
     });
-    fireEvent.click(enqueueButton);
-    expect(await screen.findByText(/同一组 3 个 durable job/)).toBeVisible();
-    expect(screen.getByText("3 个任务")).toBeVisible();
+    expect(screen.getAllByText("已生成")).toHaveLength(3);
 
-    fireEvent.click(screen.getByRole("button", { name: "执行本地 dry-run" }));
-    expect(await screen.findByText("演练闭环已完成")).toBeVisible();
-    expect(screen.getByText("3 个持久化回执")).toBeVisible();
-    expect(screen.getAllByText("published")).toHaveLength(3);
+    fireEvent.click(confirmation);
+    fireEvent.click(screen.getByRole("button", { name: "确认平台稿" }));
+    const enqueue = await screen.findByRole("button", { name: "加入发布队列" });
+    fireEvent.click(enqueue);
+
+    const process = await screen.findByRole("button", { name: "执行发布演练" });
+    fireEvent.click(process);
+    expect(await screen.findByText("演练完成")).toBeVisible();
+    expect(screen.getByText("3 个平台回执")).toBeVisible();
   });
 
-  it("stores generated visual output through the desktop bridge", async () => {
+  it("configures and tests the model from settings without rendering the secret", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "素材" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成配图" }));
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
-    expect(await screen.findByText(/已保存 1 个配图 Artifact/)).toBeVisible();
-    expect(screen.getByText("已存入本地 Artifact")).toBeVisible();
-  });
+    const keyInput = screen.getByLabelText("API Key") as HTMLInputElement;
+    fireEvent.change(keyInput, { target: { value: "test-session-secret-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
-  it("keeps the evidence rail closed on a narrow initial viewport", () => {
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true,
-      value: (query: string) => ({
-        ...defaultMatchMedia(query),
-        matches: query === "(max-width: 900px)",
-      }),
-    });
-
-    render(<App />);
-    expect(screen.getByLabelText("证据与风险")).not.toHaveClass("is-open");
-    expect(screen.getByRole("button", { name: "运行工作流" })).toBeVisible();
-  });
-
-  it("adds an honest mock connection through the accessible dialog", async () => {
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "连接" }));
-
-    expect(await screen.findByText("尚未添加模型连接")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "添加连接" }));
-    const dialog = screen.getByRole("dialog", { name: "添加模型连接" });
-    expect(dialog).toBeVisible();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "保存连接引用" }));
-    expect(screen.getByText("请输入连接名称。")).toBeVisible();
-
-    fireEvent.change(screen.getByLabelText(/连接名称/), {
-      target: { value: "本地演示 Mock" },
-    });
-    fireEvent.change(screen.getByLabelText(/密钥环境变量名/), {
-      target: { value: "sk-plaintext-is-not-an-env-name" },
-    });
-    fireEvent.blur(screen.getByLabelText(/密钥环境变量名/));
-    expect(screen.getByText(/请填写大写环境变量名/)).toBeVisible();
-    fireEvent.change(screen.getByLabelText(/提供商/), {
-      target: { value: "mock" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "保存连接引用" }));
-
-    const profileHeading = await screen.findByRole("heading", { name: "本地演示 Mock" });
-    expect(profileHeading.closest("article")).toHaveTextContent("Mock 引用 · 不使用真实密钥");
-    expect(screen.getByText(/当前 deterministic demo 仍使用内置 Mock/)).toBeVisible();
-  });
-
-  it("closes the connection dialog with Escape and labels the external Skill honestly", async () => {
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "连接" }));
-    await waitFor(() => {
-      expect(screen.queryByText("正在读取本地连接配置…")).toBeNull();
-    });
-    const addConnection = screen.getByRole("button", { name: "添加连接" });
-    fireEvent.click(addConnection);
-    expect(screen.getByRole("dialog", { name: "添加模型连接" })).toBeVisible();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "添加模型连接" })).toBeNull();
-    await waitFor(() => expect(addConnection).toHaveFocus());
-
-    fireEvent.click(screen.getByRole("button", { name: "Skill" }));
-    expect(screen.getByText("v0.1 未安装")).toBeVisible();
-    expect(screen.getByLabelText("不可启用归藏社交卡片")).toBeDisabled();
-    expect(screen.queryByText("沙箱运行")).toBeNull();
-    expect(screen.getAllByText("声明式 · 无平台写权限")).toHaveLength(4);
+    expect(await screen.findByText("Mock 模型")).toBeVisible();
+    expect(screen.queryByText("test-session-secret-value")).toBeNull();
+    expect(keyInput.type).toBe("password");
   });
 });

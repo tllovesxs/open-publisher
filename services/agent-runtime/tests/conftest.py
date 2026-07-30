@@ -4,9 +4,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from open_publisher_runtime.config import Settings
-from open_publisher_runtime.main import create_app
+from open_publisher_runtime.main import MODEL_ENV_VARIABLES, create_app
 
 TEST_API_TOKEN = "test-open-publisher-sidecar-token-0001"
+
+
+@pytest.fixture(autouse=True)
+def isolate_model_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in MODEL_ENV_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture

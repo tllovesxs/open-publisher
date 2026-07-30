@@ -51,6 +51,17 @@ pub struct SaveDraftReceipt {
     pub persistence: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredArticleSummary {
+    pub article_id: String,
+    pub title: String,
+    pub markdown: String,
+    pub revision_id: String,
+    pub revision_number: u32,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunWorkflowRequest {
@@ -211,12 +222,49 @@ pub struct ConnectionProfilePublic {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigureModelRequest {
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub text_model: String,
+    pub image_base_url: Option<String>,
+    pub image_model: Option<String>,
+    #[serde(default)]
+    pub image_trusted_hosts: Vec<String>,
+    pub timeout_seconds: u16,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfigurationSummary {
+    pub name: String,
+    pub base_url: String,
+    pub text_model: String,
+    pub image_base_url: Option<String>,
+    pub image_model: Option<String>,
+    pub image_trusted_hosts: Vec<String>,
+    pub timeout_seconds: u16,
+    pub secret_configured: bool,
+    pub persistence: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnectionTestSummary {
+    pub provider: String,
+    pub model: String,
+    pub mocked: bool,
+}
+
 /// The WebView talks only to this fixed command surface. Implementations own
 /// the child endpoint and bearer token and must never serialize either value.
 pub trait SidecarSupervisor: Send + Sync + 'static {
     fn snapshot(&self) -> Result<RuntimeSnapshot, String>;
     fn ensure_started(&self) -> Result<RuntimeSnapshot, String>;
     fn stop(&self) -> Result<RuntimeSnapshot, String>;
+    fn list_articles(&self) -> Result<Vec<StoredArticleSummary>, String>;
     fn save_draft(&self, request: SaveDraftRequest) -> Result<SaveDraftReceipt, String>;
     fn run_workflow(&self, request: RunWorkflowRequest) -> Result<RunWorkflowSummary, String>;
     fn create_publish_plan(
@@ -243,9 +291,14 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
         &self,
         request: CreateConnectionProfileRequest,
     ) -> Result<ConnectionProfilePublic, String>;
+    fn configure_model(
+        &self,
+        request: ConfigureModelRequest,
+    ) -> Result<ModelConfigurationSummary, String>;
+    fn model_configuration(&self) -> Result<Option<ModelConfigurationSummary>, String>;
+    fn test_model_connection(&self) -> Result<ModelConnectionTestSummary, String>;
 }
 
-#[derive(Debug)]
 struct SupervisorState {
     state: RuntimeState,
     generation: u64,
@@ -253,6 +306,7 @@ struct SupervisorState {
     child: Option<Child>,
     connection: Option<PrivateConnection>,
     article_mappings: HashMap<String, BackendArticleMapping>,
+    model_configuration: Option<PrivateModelConfiguration>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +319,34 @@ struct PrivateConnection {
 struct BackendArticleMapping {
     article_id: String,
     revision_id: String,
+}
+
+#[derive(Clone)]
+struct PrivateModelConfiguration {
+    name: String,
+    base_url: String,
+    api_key: String,
+    text_model: String,
+    image_base_url: Option<String>,
+    image_model: Option<String>,
+    image_trusted_hosts: Vec<String>,
+    timeout_seconds: u16,
+}
+
+impl PrivateModelConfiguration {
+    fn summary(&self) -> ModelConfigurationSummary {
+        ModelConfigurationSummary {
+            name: self.name.clone(),
+            base_url: self.base_url.clone(),
+            text_model: self.text_model.clone(),
+            image_base_url: self.image_base_url.clone(),
+            image_model: self.image_model.clone(),
+            image_trusted_hosts: self.image_trusted_hosts.clone(),
+            timeout_seconds: self.timeout_seconds,
+            secret_configured: !self.api_key.is_empty(),
+            persistence: "session",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +371,7 @@ enum ApiRoute<'a> {
     ProcessPublishJob(&'a str),
     GenerateImage,
     Connections,
+    ModelTest,
 }
 
 impl ApiRoute<'_> {
@@ -316,6 +399,7 @@ impl ApiRoute<'_> {
             }
             Self::GenerateImage => "/api/v1/images/generate".to_owned(),
             Self::Connections => "/api/v1/connections".to_owned(),
+            Self::ModelTest => "/api/v1/models/test".to_owned(),
         }
     }
 }
@@ -341,6 +425,7 @@ struct CreateRevisionRequestWire<'a> {
 #[derive(Debug, Serialize)]
 struct StartRunPolicyWire<'a> {
     require_content_approval: bool,
+    max_wall_clock_seconds: u16,
     allow_remote_publish: bool,
     disabled_optional_node_ids: &'a [String],
 }
@@ -378,6 +463,10 @@ struct EmptyRequestWire {}
 #[derive(Debug, Deserialize)]
 struct ArticleListItemWire {
     id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    updated_at: String,
     #[serde(default)]
     metadata_json: HashMap<String, Value>,
 }
@@ -557,6 +646,14 @@ struct ConnectionProfileWire {
     created_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelConnectionTestWire {
+    provider: String,
+    model: String,
+    mocked: bool,
+}
+
 pub struct PythonSidecarSupervisor {
     inner: Mutex<SupervisorState>,
     client: Client,
@@ -569,7 +666,7 @@ impl PythonSidecarSupervisor {
         let repository_root = repository_root();
         let client = Client::builder()
             .connect_timeout(Duration::from_millis(350))
-            .timeout(Duration::from_secs(330))
+            .timeout(Duration::from_secs(930))
             .no_proxy()
             .redirect(Policy::none())
             .build()
@@ -583,6 +680,7 @@ impl PythonSidecarSupervisor {
                 child: None,
                 connection: None,
                 article_mappings: HashMap::new(),
+                model_configuration: None,
             }),
             client,
             data_dir,
@@ -659,7 +757,12 @@ impl PythonSidecarSupervisor {
         }
     }
 
-    fn spawn_child(&self, port: u16, token: &str) -> Result<(Child, &'static str), String> {
+    fn spawn_child(
+        &self,
+        port: u16,
+        token: &str,
+        model_configuration: Option<&PrivateModelConfiguration>,
+    ) -> Result<(Child, &'static str), String> {
         fs::create_dir_all(&self.data_dir)
             .map_err(|_| "could not create the Python runtime data directory".to_owned())?;
         let log_path = self.data_dir.join("sidecar.log");
@@ -689,6 +792,30 @@ impl PythonSidecarSupervisor {
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
+
+        if let Some(model) = model_configuration {
+            command
+                .env("OPEN_PUBLISHER_MODEL_API_KEY", &model.api_key)
+                .env("OPEN_PUBLISHER_TEXT_BASE_URL", &model.base_url)
+                .env("OPEN_PUBLISHER_TEXT_MODEL", &model.text_model)
+                .env(
+                    "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS",
+                    model.timeout_seconds.to_string(),
+                );
+            if let (Some(image_base_url), Some(image_model)) =
+                (&model.image_base_url, &model.image_model)
+            {
+                command
+                    .env("OPEN_PUBLISHER_IMAGE_BASE_URL", image_base_url)
+                    .env("OPEN_PUBLISHER_IMAGE_MODEL", image_model);
+            }
+            if !model.image_trusted_hosts.is_empty() {
+                command.env(
+                    "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS",
+                    model.image_trusted_hosts.join(","),
+                );
+            }
+        }
 
         #[cfg(windows)]
         {
@@ -858,11 +985,11 @@ impl PythonSidecarSupervisor {
             port,
             token: strong_token(),
         };
-        let (child, launch_source) =
-            self.spawn_child(port, &connection.token)
-                .inspect_err(|error| {
-                    fault_state(state, error);
-                })?;
+        let (child, launch_source) = self
+            .spawn_child(port, &connection.token, state.model_configuration.as_ref())
+            .inspect_err(|error| {
+                fault_state(state, error);
+            })?;
         state.child = Some(child);
         state.connection = Some(connection.clone());
 
@@ -937,6 +1064,61 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         state.state = RuntimeState::Stopped;
         state.detail = "本地 Python sidecar 已停止。".to_owned();
         Ok(Self::describe(&state))
+    }
+
+    fn list_articles(&self) -> Result<Vec<StoredArticleSummary>, String> {
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let articles: Vec<ArticleListItemWire> = self.get_json(&connection, ApiRoute::Articles)?;
+        let mut seen_desktop_ids = HashSet::new();
+        let mut summaries = Vec::new();
+
+        for article in articles.into_iter().rev() {
+            let Some(desktop_article_id) = article
+                .metadata_json
+                .get("desktop_article_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= 256)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if !seen_desktop_ids.insert(desktop_article_id.clone()) {
+                continue;
+            }
+            let backend_article_id = validate_backend_id(article.id, "article")?;
+            if !valid_timestamp(&article.updated_at) {
+                return Err("local Python runtime returned an invalid article timestamp".to_owned());
+            }
+            let detail: ArticleDetailWire =
+                self.get_json(&connection, ApiRoute::Article(&backend_article_id))?;
+            validate_revision_wire(&detail.latest_revision)?;
+            let revision_id = detail.latest_revision.id.clone();
+            state.article_mappings.insert(
+                desktop_article_id.clone(),
+                BackendArticleMapping {
+                    article_id: backend_article_id,
+                    revision_id: revision_id.clone(),
+                },
+            );
+            let derived_title =
+                title_from_markdown(&detail.latest_revision.markdown, &article.title);
+            summaries.push(StoredArticleSummary {
+                article_id: desktop_article_id,
+                title: derived_title,
+                markdown: detail.latest_revision.markdown,
+                revision_id,
+                revision_number: detail.latest_revision.number,
+                updated_at: article.updated_at,
+            });
+        }
+
+        Ok(summaries)
     }
 
     fn save_draft(&self, request: SaveDraftRequest) -> Result<SaveDraftReceipt, String> {
@@ -1033,6 +1215,7 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             topic: &request.topic,
             policy: StartRunPolicyWire {
                 require_content_approval: false,
+                max_wall_clock_seconds: 900,
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &request.disabled_optional_node_ids,
             },
@@ -1280,6 +1463,58 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             self.post_json(&connection, ApiRoute::Connections, &payload)?;
         public_connection(profile)
     }
+
+    fn configure_model(
+        &self,
+        request: ConfigureModelRequest,
+    ) -> Result<ModelConfigurationSummary, String> {
+        let mut state = self.lock_state()?;
+        let existing_key = state
+            .model_configuration
+            .as_ref()
+            .map(|configuration| configuration.api_key.as_str());
+        let configuration = validate_model_configuration(request, existing_key)?;
+        let summary = configuration.summary();
+
+        terminate_child(&mut state);
+        state.connection = None;
+        state.article_mappings.clear();
+        state.model_configuration = Some(configuration);
+        state.state = RuntimeState::Stopped;
+        state.detail = "模型配置已应用到当前会话；下次调用会重启本地服务。".to_owned();
+        Ok(summary)
+    }
+
+    fn model_configuration(&self) -> Result<Option<ModelConfigurationSummary>, String> {
+        let state = self.lock_state()?;
+        Ok(state
+            .model_configuration
+            .as_ref()
+            .map(PrivateModelConfiguration::summary))
+    }
+
+    fn test_model_connection(&self) -> Result<ModelConnectionTestSummary, String> {
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let response: ModelConnectionTestWire =
+            self.post_json(&connection, ApiRoute::ModelTest, &EmptyRequestWire {})?;
+        if response.provider.trim().is_empty()
+            || response.provider.len() > 100
+            || response.model.trim().is_empty()
+            || response.model.len() > 300
+        {
+            return Err("local Python runtime returned an invalid model test result".to_owned());
+        }
+        Ok(ModelConnectionTestSummary {
+            provider: response.provider,
+            model: response.model,
+            mocked: response.mocked,
+        })
+    }
 }
 
 impl Drop for PythonSidecarSupervisor {
@@ -1486,6 +1721,77 @@ fn validate_connection_request(
         request.secret_env_var = Some(variable);
     }
     Ok(request)
+}
+
+fn validate_model_configuration(
+    mut request: ConfigureModelRequest,
+    existing_api_key: Option<&str>,
+) -> Result<PrivateModelConfiguration, String> {
+    request.name = request.name.trim().to_owned();
+    if request.name.is_empty()
+        || request.name.chars().count() > 100
+        || request.name.chars().any(char::is_control)
+    {
+        return Err("配置名称应为 1–100 个可见字符。".to_owned());
+    }
+
+    let base_url = normalize_base_url(Some(request.base_url))?
+        .ok_or_else(|| "文本模型 API 地址不能为空。".to_owned())?;
+    let text_model = normalize_public_option(Some(request.text_model), "文本模型", 300)?
+        .ok_or_else(|| "文本模型不能为空。".to_owned())?;
+    let supplied_key = request.api_key.trim();
+    let api_key = if supplied_key.is_empty() {
+        existing_api_key
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| "API Key 不能为空。".to_owned())?
+    } else {
+        if supplied_key.len() > 4_096 || supplied_key.chars().any(char::is_control) {
+            return Err("API Key 格式无效。".to_owned());
+        }
+        supplied_key.to_owned()
+    };
+
+    let image_base_url = normalize_base_url(request.image_base_url)?;
+    let image_model = normalize_public_option(request.image_model, "生图模型", 300)?;
+    if image_base_url.is_some() != image_model.is_some() {
+        return Err("生图 API 地址和生图模型需要同时填写。".to_owned());
+    }
+    if !(1..=1_800).contains(&request.timeout_seconds) {
+        return Err("请求超时应在 1–1800 秒之间。".to_owned());
+    }
+
+    if request.image_trusted_hosts.len() > 16 {
+        return Err("可信图片域名不能超过 16 个。".to_owned());
+    }
+    let mut image_trusted_hosts = Vec::new();
+    for host in request.image_trusted_hosts {
+        let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if normalized.is_empty()
+            || normalized.len() > 253
+            || normalized.starts_with(['.', '-'])
+            || normalized.ends_with('-')
+            || normalized
+                .bytes()
+                .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')))
+        {
+            return Err("可信图片域名格式无效。".to_owned());
+        }
+        if !image_trusted_hosts.contains(&normalized) {
+            image_trusted_hosts.push(normalized);
+        }
+    }
+
+    Ok(PrivateModelConfiguration {
+        name: request.name,
+        base_url,
+        api_key,
+        text_model,
+        image_base_url,
+        image_model,
+        image_trusted_hosts,
+        timeout_seconds: request.timeout_seconds,
+    })
 }
 
 fn validate_image_request(
@@ -1985,6 +2291,7 @@ mod tests {
             topic: "Cross-process compatibility",
             policy: StartRunPolicyWire {
                 require_content_approval: false,
+                max_wall_clock_seconds: 900,
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &disabled_optional_node_ids,
             },

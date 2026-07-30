@@ -1,11 +1,4 @@
-import type {
-  Article,
-  EvidenceItem,
-  PlatformDefinition,
-  RiskItem,
-  TaskRecord,
-  WorkflowStage,
-} from "../types";
+import type { Article, PlatformDefinition } from "../types";
 
 export const articles: Article[] = [
   {
@@ -85,69 +78,6 @@ export const articles: Article[] = [
   },
 ];
 
-export const workflowStages: WorkflowStage[] = [
-  { id: "research", label: "证据采集", agent: "研究员", state: "pending", optional: true },
-  { id: "outline", label: "结构规划", agent: "策划", state: "pending", optional: true },
-  { id: "draft", label: "正文写作", agent: "主笔", state: "pending" },
-  {
-    id: "natural-style",
-    label: "自然表达",
-    agent: "润色员",
-    state: "pending",
-    optional: true,
-  },
-  { id: "review", label: "内容审阅", agent: "审校员", state: "pending", optional: true },
-  { id: "risk", label: "风险巡检", agent: "审校员", state: "pending" },
-  {
-    id: "visual",
-    label: "视觉规划",
-    agent: "视觉编辑",
-    state: "pending",
-    optional: true,
-  },
-];
-
-export const evidenceItems: EvidenceItem[] = [
-  {
-    id: "ev-1",
-    title: "本地优先软件的七项原则",
-    source: "Ink & Switch · 2019",
-    usedAt: "第 2 段",
-    confidence: "高",
-  },
-  {
-    id: "ev-2",
-    title: "微信公众平台内容规范",
-    source: "平台官方说明",
-    usedAt: "风险巡检",
-    confidence: "高",
-  },
-  {
-    id: "ev-3",
-    title: "多 Agent 协作模式笔记",
-    source: "项目研究库",
-    usedAt: "流程章节",
-    confidence: "中",
-  },
-];
-
-export const riskItems: RiskItem[] = [
-  {
-    id: "risk-1",
-    severity: "medium",
-    title: "绝对化表达",
-    detail: "“真正需要”可能过强，建议改为“更需要”。",
-    location: "第 1 段",
-  },
-  {
-    id: "risk-2",
-    severity: "low",
-    title: "数据缺少出处",
-    detail: "当前没有量化数据，不影响发布；如补充数字需同步来源。",
-    location: "全文",
-  },
-];
-
 export const platforms: PlatformDefinition[] = [
   {
     id: "wechat",
@@ -169,29 +99,5 @@ export const platforms: PlatformDefinition[] = [
     shortName: "头条",
     limit: "信息流 · 强开场",
     status: "not_connected",
-  },
-];
-
-export const initialTasks: TaskRecord[] = [
-  {
-    id: "task-38",
-    title: "本地优先，才是创作者工具的底气",
-    platform: "wechat",
-    status: "queued",
-    scheduledFor: "今天 20:30",
-  },
-  {
-    id: "task-37",
-    title: "让封面先讲清楚文章",
-    platform: "toutiao",
-    status: "blocked",
-    scheduledFor: "等待连接",
-  },
-  {
-    id: "task-31",
-    title: "一个写作团队，住进一条工作流",
-    platform: "csdn",
-    status: "done",
-    scheduledFor: "昨天 18:10",
   },
 ];

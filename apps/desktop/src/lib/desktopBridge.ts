@@ -21,6 +21,15 @@ export interface SaveDraftReceipt {
   persistence: "memory" | "local_database";
 }
 
+export interface StoredArticleSummary {
+  articleId: string;
+  title: string;
+  markdown: string;
+  revisionId: string;
+  revisionNumber: number;
+  updatedAt: string;
+}
+
 export interface RunWorkflowRequest {
   articleId: string;
   revisionId: string;
@@ -171,10 +180,40 @@ export interface ConnectionProfilePublic {
   createdAt: string;
 }
 
+export interface ConfigureModelRequest {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  textModel: string;
+  imageBaseUrl: string | null;
+  imageModel: string | null;
+  imageTrustedHosts: string[];
+  timeoutSeconds: number;
+}
+
+export interface ModelConfigurationSummary {
+  name: string;
+  baseUrl: string;
+  textModel: string;
+  imageBaseUrl: string | null;
+  imageModel: string | null;
+  imageTrustedHosts: string[];
+  timeoutSeconds: number;
+  secretConfigured: boolean;
+  persistence: "session";
+}
+
+export interface ModelConnectionTestSummary {
+  provider: string;
+  model: string;
+  mocked: boolean;
+}
+
 export interface DesktopBridge {
   runtimeSnapshot(): Promise<RuntimeSnapshot>;
   ensureAgentRuntime(): Promise<RuntimeSnapshot>;
   stopAgentRuntime(): Promise<RuntimeSnapshot>;
+  listArticles(): Promise<StoredArticleSummary[]>;
   saveDraft(request: SaveDraftRequest): Promise<SaveDraftReceipt>;
   runWorkflow(request: RunWorkflowRequest): Promise<RunWorkflowSummary>;
   createPublishPlan(request: CreatePublishPlanRequest): Promise<PublishPlanSummary>;
@@ -187,6 +226,9 @@ export interface DesktopBridge {
   createConnectionProfile(
     request: CreateConnectionProfileRequest,
   ): Promise<ConnectionProfilePublic>;
+  configureModel(request: ConfigureModelRequest): Promise<ModelConfigurationSummary>;
+  modelConfiguration(): Promise<ModelConfigurationSummary | null>;
+  testModelConnection(): Promise<ModelConnectionTestSummary>;
 }
 
 const isTauriHost = () => typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -203,11 +245,13 @@ interface MockArticleState {
   revisionId: string;
   markdown: string;
   revisionNumber: number;
+  updatedAt: string;
 }
 
 const mockArticles = new Map<string, MockArticleState>();
 const mockPublishPlans = new Map<string, PublishPlanSummary>();
 const mockPublishReceipts = new Map<string, PublishReceiptSummary>();
+let mockModelConfiguration: ModelConfigurationSummary | null = null;
 
 const nextMockId = (prefix: string) => `${prefix}-${++mockSequence}`;
 
@@ -260,6 +304,23 @@ const mockBridge: DesktopBridge = {
       detail: "演示运行时已停止。",
     };
   },
+  async listArticles() {
+    await pause(40);
+    return [...mockArticles.entries()].map(([articleId, article]) => {
+      const heading = article.markdown
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("# "));
+      return {
+        articleId,
+        title: heading?.replace(/^#\s+/, "").trim() || "未命名文章",
+        markdown: article.markdown,
+        revisionId: article.revisionId,
+        revisionNumber: article.revisionNumber,
+        updatedAt: article.updatedAt,
+      };
+    });
+  },
   async saveDraft(request) {
     await pause(80);
     const current = mockArticles.get(request.articleId);
@@ -275,6 +336,7 @@ const mockBridge: DesktopBridge = {
       revisionId,
       markdown: request.markdown,
       revisionNumber: (current?.revisionNumber ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
     });
     return {
       revisionId,
@@ -308,6 +370,7 @@ const mockBridge: DesktopBridge = {
       revisionId: outputRevisionId,
       markdown: outputMarkdown,
       revisionNumber,
+      updatedAt: new Date().toISOString(),
     });
     return {
       runId: nextMockId("run"),
@@ -461,12 +524,39 @@ const mockBridge: DesktopBridge = {
     mockConnectionProfiles.push(profile);
     return profile;
   },
+  async configureModel(request) {
+    await pause(80);
+    mockModelConfiguration = {
+      name: request.name.trim(),
+      baseUrl: request.baseUrl.trim().replace(/\/+$/, ""),
+      textModel: request.textModel.trim(),
+      imageBaseUrl: request.imageBaseUrl?.trim().replace(/\/+$/, "") || null,
+      imageModel: request.imageModel?.trim() || null,
+      imageTrustedHosts: request.imageTrustedHosts,
+      timeoutSeconds: request.timeoutSeconds,
+      secretConfigured: Boolean(request.apiKey.trim()),
+      persistence: "session",
+    };
+    return { ...mockModelConfiguration };
+  },
+  async modelConfiguration() {
+    return mockModelConfiguration ? { ...mockModelConfiguration } : null;
+  },
+  async testModelConnection() {
+    await pause(120);
+    return {
+      provider: "mock",
+      model: mockModelConfiguration?.textModel ?? "deterministic-mock-v1",
+      mocked: true,
+    };
+  },
 };
 
 const tauriBridge: DesktopBridge = {
   runtimeSnapshot: () => invoke<RuntimeSnapshot>("runtime_snapshot"),
   ensureAgentRuntime: () => invoke<RuntimeSnapshot>("ensure_agent_runtime"),
   stopAgentRuntime: () => invoke<RuntimeSnapshot>("stop_agent_runtime"),
+  listArticles: () => invoke<StoredArticleSummary[]>("list_articles"),
   saveDraft: (request) => invoke<SaveDraftReceipt>("save_draft", { request }),
   runWorkflow: (request) => invoke<RunWorkflowSummary>("run_workflow", { request }),
   createPublishPlan: (request) =>
@@ -485,6 +575,12 @@ const tauriBridge: DesktopBridge = {
     invoke<ConnectionProfilePublic[]>("list_connection_profiles"),
   createConnectionProfile: (request) =>
     invoke<ConnectionProfilePublic>("create_connection_profile", { request }),
+  configureModel: (request) =>
+    invoke<ModelConfigurationSummary>("configure_model", { request }),
+  modelConfiguration: () =>
+    invoke<ModelConfigurationSummary | null>("model_configuration"),
+  testModelConnection: () =>
+    invoke<ModelConnectionTestSummary>("test_model_connection"),
 };
 
 /**
@@ -498,6 +594,8 @@ export const desktopBridge: DesktopBridge = {
     isTauriHost() ? tauriBridge.ensureAgentRuntime() : mockBridge.ensureAgentRuntime(),
   stopAgentRuntime: () =>
     isTauriHost() ? tauriBridge.stopAgentRuntime() : mockBridge.stopAgentRuntime(),
+  listArticles: () =>
+    isTauriHost() ? tauriBridge.listArticles() : mockBridge.listArticles(),
   saveDraft: (request) =>
     isTauriHost() ? tauriBridge.saveDraft(request) : mockBridge.saveDraft(request),
   runWorkflow: (request) =>
@@ -534,4 +632,16 @@ export const desktopBridge: DesktopBridge = {
     isTauriHost()
       ? tauriBridge.createConnectionProfile(request)
       : mockBridge.createConnectionProfile(request),
+  configureModel: (request) =>
+    isTauriHost()
+      ? tauriBridge.configureModel(request)
+      : mockBridge.configureModel(request),
+  modelConfiguration: () =>
+    isTauriHost()
+      ? tauriBridge.modelConfiguration()
+      : mockBridge.modelConfiguration(),
+  testModelConnection: () =>
+    isTauriHost()
+      ? tauriBridge.testModelConnection()
+      : mockBridge.testModelConnection(),
 };

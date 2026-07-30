@@ -56,6 +56,7 @@
     "topic": "Cross-process compatibility",
     "policy": {
       "require_content_approval": false,
+      "max_wall_clock_seconds": 900,
       "allow_remote_publish": false,
       "disabled_optional_node_ids": [
         "research"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI
@@ -22,9 +24,133 @@ from open_publisher_runtime.application.publishing import (
 from open_publisher_runtime.config import Settings
 from open_publisher_runtime.infrastructure.artifact_store import FileSystemArtifactStore
 from open_publisher_runtime.infrastructure.database import Database
-from open_publisher_runtime.infrastructure.providers import MockImageProvider, MockTextProvider
+from open_publisher_runtime.infrastructure.providers import (
+    MockImageProvider,
+    MockTextProvider,
+    OpenAICompatibleImageProvider,
+    OpenAICompatibleTextProvider,
+)
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
 from open_publisher_runtime.workflows.preset import PresetArticleWorkflow
+
+MODEL_API_KEY_ENV = "OPEN_PUBLISHER_MODEL_API_KEY"
+LEGACY_SILICONFLOW_API_KEY_ENV = "OPEN_PUBLISHER_SILICONFLOW_API_KEY"
+TEXT_BASE_URL_ENV = "OPEN_PUBLISHER_TEXT_BASE_URL"
+TEXT_MODEL_ENV = "OPEN_PUBLISHER_TEXT_MODEL"
+IMAGE_BASE_URL_ENV = "OPEN_PUBLISHER_IMAGE_BASE_URL"
+IMAGE_MODEL_ENV = "OPEN_PUBLISHER_IMAGE_MODEL"
+IMAGE_TRUSTED_HOSTS_ENV = "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS"
+MODEL_TIMEOUT_SECONDS_ENV = "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS"
+MODEL_ENV_VARIABLES = (
+    MODEL_API_KEY_ENV,
+    LEGACY_SILICONFLOW_API_KEY_ENV,
+    TEXT_BASE_URL_ENV,
+    TEXT_MODEL_ENV,
+    IMAGE_BASE_URL_ENV,
+    IMAGE_MODEL_ENV,
+    IMAGE_TRUSTED_HOSTS_ENV,
+    MODEL_TIMEOUT_SECONDS_ENV,
+)
+
+SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
+SILICONFLOW_TEXT_MODEL = "deepseek-ai/DeepSeek-V3.2"
+SILICONFLOW_IMAGE_MODEL = "Qwen/Qwen-Image"
+SILICONFLOW_IMAGE_HOSTS = frozenset({"s3.siliconflow.cn"})
+DEFAULT_MODEL_TIMEOUT_SECONDS = 120.0
+
+
+def _environment_value(environment: Mapping[str, str], name: str) -> str | None:
+    value = environment.get(name, "").strip()
+    return value or None
+
+
+def _model_timeout_seconds(environment: Mapping[str, str]) -> float:
+    raw_value = _environment_value(environment, MODEL_TIMEOUT_SECONDS_ENV)
+    if raw_value is None:
+        return DEFAULT_MODEL_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError as error:
+        raise ValueError(f"{MODEL_TIMEOUT_SECONDS_ENV} must be a number") from error
+    if not 1 <= timeout_seconds <= 1800:
+        raise ValueError(f"{MODEL_TIMEOUT_SECONDS_ENV} must be between 1 and 1800")
+    return timeout_seconds
+
+
+def _is_siliconflow_url(base_url: str) -> bool:
+    return urlparse(base_url).hostname == "api.siliconflow.cn"
+
+
+def model_access_from_env(
+    environment: Mapping[str, str] | None = None,
+) -> ModelAccessLayer:
+    values = os.environ if environment is None else environment
+    generic_api_key = _environment_value(values, MODEL_API_KEY_ENV)
+    legacy_api_key = _environment_value(values, LEGACY_SILICONFLOW_API_KEY_ENV)
+    api_key = generic_api_key or legacy_api_key
+    if api_key is None:
+        return ModelAccessLayer(
+            text_provider=MockTextProvider(),
+            image_provider=MockImageProvider(),
+        )
+
+    use_legacy_defaults = generic_api_key is None and legacy_api_key is not None
+    timeout_seconds = _model_timeout_seconds(values)
+    text_base_url = _environment_value(values, TEXT_BASE_URL_ENV)
+    text_model = _environment_value(values, TEXT_MODEL_ENV)
+    image_base_url = _environment_value(values, IMAGE_BASE_URL_ENV)
+    image_model = _environment_value(values, IMAGE_MODEL_ENV)
+    if use_legacy_defaults:
+        text_base_url = text_base_url or SILICONFLOW_BASE_URL
+        text_model = text_model or SILICONFLOW_TEXT_MODEL
+        image_base_url = image_base_url or SILICONFLOW_BASE_URL
+        image_model = image_model or SILICONFLOW_IMAGE_MODEL
+
+    text_provider = (
+        OpenAICompatibleTextProvider(
+            base_url=text_base_url,
+            api_key=api_key,
+            default_model=text_model,
+            timeout_seconds=timeout_seconds,
+            max_output_tokens=1400,
+        )
+        if text_base_url and text_model
+        else MockTextProvider()
+    )
+
+    trusted_hosts_value = _environment_value(values, IMAGE_TRUSTED_HOSTS_ENV)
+    trusted_hosts = frozenset(
+        host.strip()
+        for host in (trusted_hosts_value or "").split(",")
+        if host.strip()
+    )
+    image_provider = MockImageProvider()
+    if image_base_url and image_model:
+        siliconflow_image = _is_siliconflow_url(image_base_url)
+        if siliconflow_image and not trusted_hosts:
+            trusted_hosts = SILICONFLOW_IMAGE_HOSTS
+        image_provider = OpenAICompatibleImageProvider(
+            base_url=image_base_url,
+            api_key=api_key,
+            default_model=image_model,
+            timeout_seconds=timeout_seconds,
+            trusted_image_hosts=trusted_hosts,
+            size_field="image_size" if siliconflow_image else "size",
+            response_format=None if siliconflow_image else "b64_json",
+            extra_request_fields=(
+                {
+                    "batch_size": 1,
+                    "num_inference_steps": 20,
+                    "guidance_scale": 4.0,
+                }
+                if siliconflow_image
+                else None
+            ),
+        )
+    return ModelAccessLayer(
+        text_provider=text_provider,
+        image_provider=image_provider,
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -38,10 +164,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database = Database(runtime_settings.database_url)
         database.create_schema()
         blob_store = FileSystemArtifactStore(runtime_settings.artifact_dir)
-        model_access = ModelAccessLayer(
-            text_provider=MockTextProvider(),
-            image_provider=MockImageProvider(),
-        )
+        model_access = model_access_from_env()
         container = RuntimeContainer(
             database=database,
             blob_store=blob_store,

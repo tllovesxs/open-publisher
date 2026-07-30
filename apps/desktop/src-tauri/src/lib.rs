@@ -3,10 +3,12 @@ mod supervisor;
 use std::sync::Arc;
 
 use supervisor::{
-    ConnectionProfilePublic, CreateConnectionProfileRequest, CreatePublishPlanRequest,
-    GenerateImageRequest, GenerateImageSummary, ProcessPublishJobRequest, ProcessPublishJobSummary,
-    PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor, RunWorkflowRequest,
-    RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor,
+    ConfigureModelRequest, ConnectionProfilePublic, CreateConnectionProfileRequest,
+    CreatePublishPlanRequest, GenerateImageRequest, GenerateImageSummary,
+    ModelConfigurationSummary, ModelConnectionTestSummary, ProcessPublishJobRequest,
+    ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor,
+    RunWorkflowRequest, RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest,
+    SidecarSupervisor, StoredArticleSummary,
 };
 use tauri::Manager;
 
@@ -37,6 +39,16 @@ async fn stop_agent_runtime(
     tauri::async_runtime::spawn_blocking(move || supervisor.stop())
         .await
         .map_err(|_| "Python sidecar stop task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn list_articles(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<StoredArticleSummary>, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.list_articles())
+        .await
+        .map_err(|_| "article listing task was cancelled".to_owned())?
 }
 
 #[tauri::command]
@@ -148,6 +160,37 @@ async fn create_connection_profile(
         .map_err(|_| "connection creation task was cancelled".to_owned())?
 }
 
+#[tauri::command]
+async fn configure_model(
+    request: ConfigureModelRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<ModelConfigurationSummary, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.configure_model(request))
+        .await
+        .map_err(|_| "model configuration task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn model_configuration(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<ModelConfigurationSummary>, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.model_configuration())
+        .await
+        .map_err(|_| "model configuration lookup was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn test_model_connection(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<ModelConnectionTestSummary, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.test_model_connection())
+        .await
+        .map_err(|_| "model connection test was cancelled".to_owned())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -164,6 +207,7 @@ pub fn run() {
             runtime_snapshot,
             ensure_agent_runtime,
             stop_agent_runtime,
+            list_articles,
             save_draft,
             run_workflow,
             create_publish_plan,
@@ -173,7 +217,10 @@ pub fn run() {
             process_publish_job,
             generate_image,
             list_connection_profiles,
-            create_connection_profile
+            create_connection_profile,
+            configure_model,
+            model_configuration,
+            test_model_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running Open Publisher");

@@ -46,6 +46,16 @@ class VersionResponse(ApiModel):
     remote_publish_enabled: Literal[False] = False
 
 
+class ModelTestRequest(ApiModel):
+    pass
+
+
+class ModelTestResponse(ApiModel):
+    provider: str
+    model: str
+    mocked: bool
+
+
 class CreateArticleRequest(ApiModel):
     title: str = Field(min_length=1, max_length=500)
     markdown: str = Field(min_length=1)

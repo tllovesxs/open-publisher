@@ -30,6 +30,8 @@ from open_publisher_runtime.api.schemas import (
     GenerateImagesRequest,
     GenerateImagesResponse,
     ImportContentPackageResponse,
+    ModelTestRequest,
+    ModelTestResponse,
     PlatformCapabilitiesResponse,
     PlatformCapabilitySummary,
     ProcessJobResponse,
@@ -49,6 +51,7 @@ from open_publisher_runtime.application.harness import (
     WorkflowService,
 )
 from open_publisher_runtime.application.images import ImageGenerationService
+from open_publisher_runtime.application.model_access import TextGenerationRequest
 from open_publisher_runtime.application.platform_adapters import (
     WeChatOfficialApiAdapter,
     WeChatOfficialApiProbeInput,
@@ -127,6 +130,32 @@ def version() -> VersionResponse:
         api_version="v1",
         python=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         langgraph_available=langgraph_available,
+    )
+
+
+@router.post("/models/test", response_model=ModelTestResponse)
+def test_model_connection(
+    _request: ModelTestRequest,
+    container: ContainerDep,
+) -> ModelTestResponse:
+    try:
+        result = container.model_access.generate_text(
+            TextGenerationRequest(
+                purpose="connection-test",
+                prompt="Reply with OK.",
+                temperature=0,
+                max_output_tokens=8,
+            )
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="model connection test failed",
+        ) from error
+    return ModelTestResponse(
+        provider=result.provider,
+        model=result.model,
+        mocked=result.mocked,
     )
 
 

@@ -28,6 +28,7 @@ dev = [
 open-publisher-agent-runtime = "open_publisher_runtime.main:run"
 open-publisher-content-package = "open_publisher_runtime.content_package_cli:main"
 open-publisher-real-e2e = "open_publisher_runtime.real_e2e:main"
+open-publisher-real-api-e2e = "open_publisher_runtime.real_api_e2e:main"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

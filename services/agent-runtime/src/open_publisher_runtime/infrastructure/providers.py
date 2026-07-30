@@ -182,8 +182,9 @@ class OpenAICompatibleTextProvider:
             "temperature": request.temperature,
             **self.extra_request_fields,
         }
-        if self.max_output_tokens is not None:
-            request_payload["max_tokens"] = self.max_output_tokens
+        output_limit = request.max_output_tokens or self.max_output_tokens
+        if output_limit is not None:
+            request_payload["max_tokens"] = output_limit
         response = httpx.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},

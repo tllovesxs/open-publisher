@@ -14,6 +14,14 @@ describe("desktopBridge browser fallback", () => {
     });
     expect(receipt.revisionId).toContain("article-1-local");
     expect(receipt.persistence).toBe("memory");
+    const storedArticles = await desktopBridge.listArticles();
+    expect(storedArticles).toHaveLength(1);
+    expect(storedArticles[0]).toMatchObject({
+      articleId: "article-1",
+      markdown: "# draft",
+      revisionId: receipt.revisionId,
+      revisionNumber: 1,
+    });
 
     const workflow = await desktopBridge.runWorkflow({
       articleId: "article-1",
@@ -102,5 +110,28 @@ describe("desktopBridge browser fallback", () => {
     expect(profile).not.toHaveProperty("endpoint");
     expect(profile).not.toHaveProperty("token");
     expect(await desktopBridge.listConnectionProfiles()).toEqual([profile]);
+
+    const configuration = await desktopBridge.configureModel({
+      name: "Session model",
+      baseUrl: "https://example.com/v1",
+      apiKey: "test-only-secret",
+      textModel: "test-text-model",
+      imageBaseUrl: null,
+      imageModel: null,
+      imageTrustedHosts: [],
+      timeoutSeconds: 30,
+    });
+    expect(configuration).toMatchObject({
+      name: "Session model",
+      textModel: "test-text-model",
+      secretConfigured: true,
+      persistence: "session",
+    });
+    expect(configuration).not.toHaveProperty("apiKey");
+    expect(await desktopBridge.modelConfiguration()).toEqual(configuration);
+    expect(await desktopBridge.testModelConnection()).toMatchObject({
+      provider: "mock",
+      mocked: true,
+    });
   });
 });

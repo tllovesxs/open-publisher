@@ -13,6 +13,7 @@ class TextGenerationRequest(BaseModel):
     model: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
     temperature: float = Field(default=0.2, ge=0, le=2)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=32_768)
 
 
 class TextGenerationResponse(BaseModel):
@@ -78,4 +79,3 @@ class ModelAccessLayer:
 
     def generate_image(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
         return self.image_provider.generate(request)
-
