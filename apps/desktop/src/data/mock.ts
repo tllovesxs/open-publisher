@@ -86,19 +86,25 @@ export const articles: Article[] = [
 ];
 
 export const workflowStages: WorkflowStage[] = [
-  { id: "research", label: "证据采集", agent: "研究员", state: "done" },
-  { id: "outline", label: "结构规划", agent: "策划", state: "done" },
-  { id: "draft", label: "正文写作", agent: "主笔", state: "active" },
-  { id: "adapt", label: "平台适配", agent: "平台编辑", state: "pending" },
-  { id: "risk", label: "风险巡检", agent: "审校员", state: "pending" },
+  { id: "research", label: "证据采集", agent: "研究员", state: "pending", optional: true },
+  { id: "outline", label: "结构规划", agent: "策划", state: "pending", optional: true },
+  { id: "draft", label: "正文写作", agent: "主笔", state: "pending" },
   {
-    id: "approval",
-    label: "人工定稿",
-    agent: "作者",
+    id: "natural-style",
+    label: "自然表达",
+    agent: "润色员",
     state: "pending",
     optional: true,
   },
-  { id: "publish", label: "排队发布", agent: "发布服务", state: "pending" },
+  { id: "review", label: "内容审阅", agent: "审校员", state: "pending", optional: true },
+  { id: "risk", label: "风险巡检", agent: "审校员", state: "pending" },
+  {
+    id: "visual",
+    label: "视觉规划",
+    agent: "视觉编辑",
+    state: "pending",
+    optional: true,
+  },
 ];
 
 export const evidenceItems: EvidenceItem[] = [
@@ -148,21 +154,21 @@ export const platforms: PlatformDefinition[] = [
     name: "微信公众号",
     shortName: "公众号",
     limit: "长文 · 图文混排",
-    status: "connected",
+    status: "not_connected",
   },
   {
     id: "csdn",
     name: "CSDN",
     shortName: "CSDN",
     limit: "技术长文 · Markdown",
-    status: "connected",
+    status: "not_connected",
   },
   {
     id: "toutiao",
     name: "今日头条",
     shortName: "头条",
     limit: "信息流 · 强开场",
-    status: "needs_attention",
+    status: "not_connected",
   },
 ];
 

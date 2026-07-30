@@ -18,6 +18,7 @@ interface LeftNavigationProps {
   selectedArticleId: string;
   onNavigate: (nav: NavKey) => void;
   onSelectArticle: (articleId: string) => void;
+  onCreateArticle: () => void;
 }
 
 const primaryItems: { id: NavKey; label: string; icon: typeof LayoutDashboard }[] = [
@@ -40,6 +41,7 @@ export function LeftNavigation({
   selectedArticleId,
   onNavigate,
   onSelectArticle,
+  onCreateArticle,
 }: LeftNavigationProps) {
   const renderItem = ({ id, label, icon: Icon }: (typeof primaryItems)[number]) => (
     <button
@@ -70,7 +72,7 @@ export function LeftNavigation({
       <div className="draft-list">
         <div className="nav-section-label">
           <span>最近稿件</span>
-          <button aria-label="新建文章" type="button"><Plus size={14} /></button>
+          <button aria-label="新建文章" onClick={onCreateArticle} type="button"><Plus size={14} /></button>
         </div>
         {articles.map((article) => (
           <button

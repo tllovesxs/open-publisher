@@ -11,7 +11,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ContextRail } from "./components/ContextRail";
 import {
   ArticlesPage,
@@ -29,16 +29,37 @@ import { WorkflowStrip } from "./components/WorkflowStrip";
 import {
   articles as initialArticles,
   evidenceItems,
-  initialTasks,
   platforms,
   riskItems,
   workflowStages,
 } from "./data/mock";
-import { desktopBridge, type RuntimeSnapshot } from "./lib/desktopBridge";
+import {
+  desktopBridge,
+  type ConnectionProfilePublic,
+  type CreateConnectionProfileRequest,
+  type DisabledOptionalNodeId,
+  type PublishPlanSummary,
+  type PublishReceiptSummary,
+  type RuntimeSnapshot,
+  type RunWorkflowSummary,
+} from "./lib/desktopBridge";
 import type { NavKey, PlatformId, TaskRecord } from "./types";
 
 type EditorMode = "edit" | "split" | "preview";
 type Theme = "light" | "ink";
+type PublishAction = "prepare" | "approve" | "enqueue" | "process" | "refresh" | null;
+
+interface PublishSession {
+  articleId: string;
+  revisionId: string;
+  plan: PublishPlanSummary;
+  receipts: PublishReceiptSummary[];
+  idempotencyVerified: boolean;
+}
+
+interface ArticleWorkflowRun extends RunWorkflowSummary {
+  articleId: string;
+}
 
 function preferredTheme(): Theme {
   const saved = window.localStorage.getItem("open-publisher-theme");
@@ -66,20 +87,39 @@ export default function App() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
-  const [runningStageIndex, setRunningStageIndex] = useState<number | null>(null);
+  const [workflowRunning, setWorkflowRunning] = useState(false);
   const [workflowCompleted, setWorkflowCompleted] = useState(false);
+  const [lastWorkflowRun, setLastWorkflowRun] = useState<ArticleWorkflowRun | null>(null);
   const [disabledStages, setDisabledStages] = useState<Set<string>>(new Set());
   const [generatedCount, setGeneratedCount] = useState(0);
+  const [generatingAsset, setGeneratingAsset] = useState(false);
   const [enabledSkills, setEnabledSkills] = useState(
-    new Set(["social-card", "risk-words", "evidence"]),
+    new Set(["risk-words", "evidence"]),
   );
-  const [tasks, setTasks] = useState<TaskRecord[]>(initialTasks);
+  const [publishTargets, setPublishTargets] = useState<Set<PlatformId>>(
+    () => new Set(initialArticles[0].channels),
+  );
+  const [publishSession, setPublishSession] = useState<PublishSession | null>(null);
+  const [publishAction, setPublishAction] = useState<PublishAction>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [connectionProfiles, setConnectionProfiles] = useState<ConnectionProfilePublic[]>([]);
+  const [connectionsLoading, setConnectionsLoading] = useState(false);
+  const [connectionsError, setConnectionsError] = useState<string | null>(null);
+  const [connectionsRefreshKey, setConnectionsRefreshKey] = useState(0);
+  const [previewTrigger, setPreviewTrigger] = useState<HTMLElement | null>(null);
+  const previewDialogRef = useRef<HTMLElement>(null);
 
   const selectedArticle =
     articleItems.find((article) => article.id === selectedArticleId) ?? articleItems[0];
   const currentMarkdown = drafts[selectedArticle.id] ?? selectedArticle.markdown;
   const currentArticle = { ...selectedArticle, markdown: currentMarkdown };
   const dirty = dirtyIds.has(selectedArticle.id);
+  const currentPublishSession =
+    publishSession?.articleId === selectedArticle.id ? publishSession : null;
+  const publishSessionStale = Boolean(
+    currentPublishSession &&
+      (dirty || revisionIds[selectedArticle.id] !== currentPublishSession.revisionId),
+  );
 
   const displayedStages = useMemo(
     () =>
@@ -89,14 +129,26 @@ export default function App() {
     [disabledStages],
   );
 
-  const runOrder = useMemo(
-    () =>
-      workflowStages
-        .map((stage, index) => ({ stage, index }))
-        .filter(({ stage }) => !disabledStages.has(stage.id))
-        .map(({ index }) => index),
-    [disabledStages],
-  );
+  const tasks = useMemo<TaskRecord[]>(() => {
+    if (!publishSession) return [];
+    const article =
+      articleItems.find((item) => item.id === publishSession.articleId) ?? selectedArticle;
+    return publishSession.plan.jobs.map((job) => ({
+      id: job.id,
+      title: article.title,
+      platform: job.platform,
+      status:
+        job.state === "succeeded"
+          ? "done"
+          : job.state === "in_progress" || job.state === "reconciling"
+            ? "running"
+            : job.state === "pending" || job.state === "failed_retryable"
+              ? "queued"
+              : "blocked",
+      scheduledFor:
+        job.state === "succeeded" ? "本地演练已完成" : "SQLite Outbox",
+    }));
+  }, [articleItems, publishSession, selectedArticle]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -108,26 +160,41 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (activeNav !== "connections") return;
+    let cancelled = false;
+    setConnectionsLoading(true);
+    setConnectionsError(null);
+    void desktopBridge
+      .listConnectionProfiles()
+      .then((profiles) => {
+        if (!cancelled) {
+          setConnectionProfiles(profiles);
+          void desktopBridge.runtimeSnapshot().then(setRuntime).catch(() => undefined);
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        setConnectionsError(detail.slice(0, 160));
+      })
+      .finally(() => {
+        if (!cancelled) setConnectionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNav, connectionsRefreshKey]);
+
+  useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(null), 2800);
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
   useEffect(() => {
-    if (runningStageIndex === null) return;
-    const timeout = window.setTimeout(() => {
-      const orderPosition = runOrder.indexOf(runningStageIndex);
-      const nextIndex = runOrder[orderPosition + 1];
-      if (nextIndex === undefined) {
-        setRunningStageIndex(null);
-        setWorkflowCompleted(true);
-        setToast("工作流完成：已生成一份待审核修订");
-      } else {
-        setRunningStageIndex(nextIndex);
-      }
-    }, 620);
-    return () => window.clearTimeout(timeout);
-  }, [runOrder, runningStageIndex]);
+    setPublishTargets(new Set(selectedArticle.channels));
+    setPublishError(null);
+  }, [selectedArticle.id]);
 
   const selectArticle = (articleId: string) => {
     if (dirty) setToast("当前修改保留在本次会话中，离开前记得保存");
@@ -141,73 +208,132 @@ export default function App() {
     setDirtyIds((current) => new Set(current).add(selectedArticle.id));
   };
 
-  const saveDraft = async () => {
+  const persistRevision = async (
+    articleId: string,
+    markdown: string,
+    announce: boolean,
+  ): Promise<string> => {
     setSaving(true);
     try {
       const receipt = await desktopBridge.saveDraft({
-        articleId: selectedArticle.id,
-        baseRevision: revisionIds[selectedArticle.id] ?? null,
-        markdown: currentMarkdown,
+        articleId,
+        baseRevision: revisionIds[articleId] ?? null,
+        markdown,
       });
       setRevisionIds((current) => ({
         ...current,
-        [selectedArticle.id]: receipt.revisionId,
+        [articleId]: receipt.revisionId,
       }));
       setArticleItems((current) =>
         current.map((article) =>
-          article.id === selectedArticle.id
+          article.id === articleId
             ? {
                 ...article,
-                markdown: currentMarkdown,
+                markdown,
                 updatedAt: "刚刚",
-                wordCount: currentMarkdown.replace(/\s/g, "").length,
+                wordCount: markdown.replace(/\s/g, "").length,
               }
             : article,
         ),
       );
       setDirtyIds((current) => {
         const next = new Set(current);
-        next.delete(selectedArticle.id);
+        next.delete(articleId);
         return next;
       });
-      setToast(
-        receipt.persistence === "memory"
-          ? "修订已记入本地会话（演示模式）"
-          : "修订已保存到本地数据库",
-      );
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      setToast(`保存失败：${detail.slice(0, 120)}`);
+      if (announce) {
+        setToast(
+          receipt.persistence === "memory"
+            ? "修订已记入本地会话（演示模式）"
+            : "修订已保存到本地数据库",
+        );
+      }
+      return receipt.revisionId;
     } finally {
       setSaving(false);
     }
   };
 
-  const runWorkflow = async () => {
-    if (runningStageIndex !== null) return;
-    setWorkflowCompleted(false);
-    setRunningStageIndex(runOrder[0] ?? null);
+  const saveDraft = async () => {
     try {
-      const summary = await desktopBridge.runDemo({
-        title: selectedArticle.title,
+      await persistRevision(selectedArticle.id, currentMarkdown, true);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setToast(`保存失败：${detail.slice(0, 120)}`);
+    }
+  };
+
+  const ensureRevision = async (articleId: string, markdown: string) => {
+    const currentRevisionId = revisionIds[articleId];
+    if (currentRevisionId && !dirtyIds.has(articleId)) return currentRevisionId;
+    return persistRevision(articleId, markdown, false);
+  };
+
+  const runWorkflow = async () => {
+    if (workflowRunning) return;
+    const articleId = selectedArticle.id;
+    const inputMarkdown = currentMarkdown;
+    setWorkflowCompleted(false);
+    setWorkflowRunning(true);
+    try {
+      const revisionId = await ensureRevision(articleId, inputMarkdown);
+      const summary = await desktopBridge.runWorkflow({
+        articleId,
+        revisionId,
         topic: selectedArticle.deck,
-        sourceMarkdown: currentMarkdown,
-        platforms: selectedArticle.channels,
+        disabledOptionalNodeIds: [...disabledStages].filter(
+          (nodeId): nodeId is DisabledOptionalNodeId =>
+            nodeId === "research" ||
+            nodeId === "outline" ||
+            nodeId === "natural-style" ||
+            nodeId === "review" ||
+            nodeId === "visual",
+          ),
       });
-      setRuntime(await desktopBridge.runtimeSnapshot());
+      setRevisionIds((current) => ({
+        ...current,
+        [articleId]: summary.outputRevisionId,
+      }));
+      setDrafts((current) => ({
+        ...current,
+        [articleId]: summary.outputMarkdown,
+      }));
+      setArticleItems((current) =>
+        current.map((article) =>
+          article.id === articleId
+            ? {
+                ...article,
+                markdown: summary.outputMarkdown,
+                status: "review",
+                updatedAt: "刚刚",
+                wordCount: summary.outputMarkdown.replace(/\s/g, "").length,
+              }
+            : article,
+        ),
+      );
+      setDirtyIds((current) => {
+        const next = new Set(current);
+        next.delete(articleId);
+        return next;
+      });
+      setLastWorkflowRun({ ...summary, articleId });
+      setWorkflowCompleted(summary.status === "completed");
+      void desktopBridge.runtimeSnapshot().then(setRuntime).catch(() => undefined);
       setToast(
-        `工作流 ${summary.runStatus} · ${summary.artifactCount} 个产物 · ${summary.receipts.length} 个发布演练回执`,
+        `工作流已完成 · 修订 ${summary.outputRevisionNumber} · ${summary.artifacts.length} 个持久化产物`,
       );
     } catch (error) {
-      setRunningStageIndex(null);
+      setWorkflowCompleted(false);
       const detail = error instanceof Error ? error.message : String(error);
-      setToast(`工作流未启动：${detail.slice(0, 120)}`);
+      setToast(`工作流失败：${detail.slice(0, 120)}`);
+    } finally {
+      setWorkflowRunning(false);
     }
   };
 
   const toggleStage = (stageId: string) => {
     const stage = workflowStages.find((item) => item.id === stageId);
-    if (!stage?.optional || runningStageIndex !== null) return;
+    if (!stage?.optional || workflowRunning) return;
     setDisabledStages((current) => {
       const next = new Set(current);
       if (next.has(stageId)) next.delete(stageId);
@@ -218,6 +344,7 @@ export default function App() {
   };
 
   const toggleSkill = (skillId: string) => {
+    if (skillId === "social-card") return;
     setEnabledSkills((current) => {
       const next = new Set(current);
       if (next.has(skillId)) next.delete(skillId);
@@ -226,17 +353,236 @@ export default function App() {
     });
   };
 
-  const queuePublish = () => {
-    const task: TaskRecord = {
-      id: `task-${40 + tasks.length}`,
-      title: selectedArticle.title,
-      platform: selectedPlatform,
-      status: "queued",
-      scheduledFor: "今天 20:30",
-    };
-    setTasks((current) => [task, ...current]);
-    setToast("演练任务已加入本地 Outbox，没有访问真实平台");
+  const createConnection = async (request: CreateConnectionProfileRequest) => {
+    const profile = await desktopBridge.createConnectionProfile(request);
+    void desktopBridge.runtimeSnapshot().then(setRuntime).catch(() => undefined);
+    setConnectionProfiles((current) => [
+      profile,
+      ...current.filter((item) => item.id !== profile.id),
+    ]);
+    setToast(`已保存“${profile.name}”的公开配置与凭证引用`);
   };
+
+  const generateAsset = async () => {
+    if (generatingAsset) return;
+    setGeneratingAsset(true);
+    try {
+      const summary = await desktopBridge.generateImage({
+        prompt: `为《${selectedArticle.title}》生成一张克制、清晰、无品牌标识的文章封面。主题：${selectedArticle.deck}`,
+        size: "1536x1024",
+        model: null,
+      });
+      setGeneratedCount((count) => count + summary.artifactCount);
+      setToast(
+        `已保存 ${summary.artifactCount} 个配图 Artifact · ${summary.provider}/${summary.model}`,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setToast(`配图生成失败：${detail.slice(0, 120)}`);
+    } finally {
+      setGeneratingAsset(false);
+    }
+  };
+
+  const togglePublishTarget = (platform: PlatformId) => {
+    if (publishAction || currentPublishSession) return;
+    setPublishTargets((current) => {
+      const next = new Set(current);
+      if (next.has(platform)) next.delete(platform);
+      else next.add(platform);
+      return next;
+    });
+  };
+
+  const preparePublishPlan = async () => {
+    if (publishAction || publishTargets.size === 0) return;
+    const articleId = selectedArticle.id;
+    setPublishAction("prepare");
+    setPublishError(null);
+    try {
+      const revisionId = await ensureRevision(articleId, currentMarkdown);
+      const plan = await desktopBridge.createPublishPlan({
+        articleId,
+        revisionId,
+        platforms: [...publishTargets],
+      });
+      setPublishSession({
+        articleId,
+        revisionId,
+        plan,
+        receipts: [],
+        idempotencyVerified: false,
+      });
+      setToast(`发布计划已生成 · ${plan.variants.length} 个平台变体待检查`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`计划生成失败：${detail.slice(0, 180)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
+  const approvePublishPlan = async () => {
+    if (publishAction || !currentPublishSession || publishSessionStale) return;
+    setPublishAction("approve");
+    setPublishError(null);
+    try {
+      const plan = await desktopBridge.approvePublishPlan({
+        planId: currentPublishSession.plan.planId,
+      });
+      setPublishSession({ ...currentPublishSession, plan });
+      setToast("发布计划已由你明确批准，尚未执行任何平台动作");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`批准失败：${detail.slice(0, 180)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
+  const enqueuePublishPlan = async () => {
+    if (publishAction || !currentPublishSession || publishSessionStale) return;
+    setPublishAction("enqueue");
+    setPublishError(null);
+    try {
+      const request = { planId: currentPublishSession.plan.planId };
+      const first = await desktopBridge.enqueuePublishPlan(request);
+      const second = await desktopBridge.enqueuePublishPlan(request);
+      const firstIds = first.jobs.map((job) => job.id).sort();
+      const secondIds = second.jobs.map((job) => job.id).sort();
+      const idempotencyVerified =
+        firstIds.length > 0 &&
+        firstIds.length === secondIds.length &&
+        firstIds.every((id, index) => id === secondIds[index]);
+      if (!idempotencyVerified) {
+        throw new Error("重复入队返回了不同的任务集合");
+      }
+      setPublishSession({
+        ...currentPublishSession,
+        plan: second,
+        idempotencyVerified: true,
+      });
+      setToast(`幂等验证通过 · 两次入队均复用 ${second.jobs.length} 个 SQLite 任务`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`入队失败：${detail.slice(0, 180)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
+  const processPublishJobs = async () => {
+    if (publishAction || !currentPublishSession || publishSessionStale) return;
+    const processableJobs = currentPublishSession.plan.jobs.filter(
+      (job) => job.state === "pending" || job.state === "failed_retryable",
+    );
+    if (processableJobs.length === 0) return;
+    setPublishAction("process");
+    setPublishError(null);
+    try {
+      const receiptByJob = new Map(
+        currentPublishSession.receipts.map((receipt) => [receipt.jobId, receipt]),
+      );
+      for (const job of processableJobs) {
+        const result = await desktopBridge.processPublishJob({ jobId: job.id });
+        if (result.receipt) receiptByJob.set(result.receipt.jobId, result.receipt);
+      }
+      const plan = await desktopBridge.getPublishPlan({
+        planId: currentPublishSession.plan.planId,
+      });
+      setPublishSession({
+        ...currentPublishSession,
+        plan,
+        receipts: [...receiptByJob.values()],
+      });
+      setToast(`本地 dry-run 已完成 · ${receiptByJob.size} 个 Receipt 已写入 SQLite`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`执行失败：${detail.slice(0, 180)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
+  const refreshPublishPlan = async () => {
+    if (publishAction || !currentPublishSession) return;
+    setPublishAction("refresh");
+    setPublishError(null);
+    try {
+      const plan = await desktopBridge.getPublishPlan({
+        planId: currentPublishSession.plan.planId,
+      });
+      setPublishSession({ ...currentPublishSession, plan });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`刷新失败：${detail.slice(0, 180)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
+  const resetPublishPlan = () => {
+    if (publishAction) return;
+    setPublishSession(null);
+    setPublishTargets(new Set(selectedArticle.channels));
+    setPublishError(null);
+  };
+
+  const createArticle = () => {
+    const id = `art-local-${Date.now()}`;
+    const article = {
+      id,
+      title: "未命名文章",
+      deck: "从这里开始记录你的观点、证据和发布计划。",
+      markdown: "# 未命名文章\n\n从这里开始写作。",
+      status: "draft" as const,
+      updatedAt: "刚刚",
+      wordCount: 13,
+      channels: ["wechat", "csdn"] as PlatformId[],
+      collection: "未分类",
+    };
+    setArticleItems((current) => [article, ...current]);
+    setDrafts((current) => ({ ...current, [id]: article.markdown }));
+    setSelectedArticleId(id);
+    setActiveNav("workspace");
+    setMobileNavOpen(false);
+    setToast("已创建本地草稿");
+  };
+
+  const closePreview = () => {
+    setPreviewOpen(false);
+    window.setTimeout(() => previewTrigger?.focus(), 0);
+  };
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closePreview();
+        return;
+      }
+      if (event.key === "Tab") {
+        const focusable = Array.from(
+          previewDialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+          ) ?? [],
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewOpen, previewTrigger]);
 
   const navigate = (nav: NavKey) => {
     setActiveNav(nav);
@@ -265,6 +611,7 @@ export default function App() {
         return (
           <ArticlesPage
             articles={articleItems}
+            onCreate={createArticle}
             onOpen={selectArticle}
             selectedId={selectedArticle.id}
           />
@@ -273,9 +620,12 @@ export default function App() {
         return (
           <WorkflowPage
             disabledStages={disabledStages}
+            lastRun={
+              lastWorkflowRun?.articleId === selectedArticle.id ? lastWorkflowRun : null
+            }
             onRun={() => void runWorkflow()}
             onToggleStage={toggleStage}
-            running={runningStageIndex !== null}
+            running={workflowRunning}
             stages={displayedStages}
           />
         );
@@ -283,24 +633,40 @@ export default function App() {
         return (
           <AssetsPage
             generatedCount={generatedCount}
-            onGenerate={() => {
-              setGeneratedCount((count) => count + 1);
-              setToast("已生成一张演示素材，并记录提示词与模型信息");
-            }}
+            generating={generatingAsset}
+            onGenerate={generateAsset}
           />
         );
       case "publish":
         return (
           <PublishPage
-            onQueue={queuePublish}
+            action={publishAction}
+            articleTitle={selectedArticle.title}
+            error={publishError}
+            idempotencyVerified={currentPublishSession?.idempotencyVerified ?? false}
+            onApprove={() => void approvePublishPlan()}
+            onEnqueue={() => void enqueuePublishPlan()}
+            onPrepare={() => void preparePublishPlan()}
+            onProcess={() => void processPublishJobs()}
+            onRefresh={() => void refreshPublishPlan()}
+            onReset={resetPublishPlan}
+            onToggleTarget={togglePublishTarget}
+            plan={currentPublishSession?.plan ?? null}
             platforms={platforms}
-            tasks={tasks}
+            receipts={currentPublishSession?.receipts ?? []}
+            revisionId={revisionIds[selectedArticle.id] ?? null}
+            selectedTargets={publishTargets}
+            stale={publishSessionStale}
           />
         );
       case "connections":
         return (
           <ConnectionsPage
-            onCheck={(name) => setToast(`${name}：本地连接检查完成`)}
+            error={connectionsError}
+            loading={connectionsLoading}
+            onCreate={createConnection}
+            onRetry={() => setConnectionsRefreshKey((value) => value + 1)}
+            profiles={connectionProfiles}
           />
         );
       case "skills":
@@ -338,14 +704,14 @@ export default function App() {
           </span>
           <button
             className="button button--quiet run-button"
-            disabled={runningStageIndex !== null}
+            disabled={workflowRunning || saving}
             onClick={() => void runWorkflow()}
             type="button"
           >
-            {runningStageIndex !== null ? <span className="spinner" /> : <Play size={14} />}
-            {runningStageIndex !== null ? "运行中" : "运行工作流"}
+            {workflowRunning ? <span className="spinner" /> : <Play size={14} />}
+            {workflowRunning ? "运行中" : "运行工作流"}
           </button>
-          <button className="icon-button" onClick={() => setPreviewOpen(true)} type="button" aria-label="打开平台预览">
+          <button className="icon-button" onClick={(event) => { setPreviewTrigger(event.currentTarget); setPreviewOpen(true); }} type="button" aria-label="打开平台预览">
             <Eye size={17} />
           </button>
           <button
@@ -367,7 +733,7 @@ export default function App() {
 
       <WorkflowStrip
         completed={workflowCompleted}
-        runningIndex={runningStageIndex}
+        running={workflowRunning}
         stages={displayedStages}
       />
 
@@ -376,6 +742,7 @@ export default function App() {
           <LeftNavigation
             active={activeNav}
             articles={articleItems}
+            onCreateArticle={createArticle}
             onNavigate={navigate}
             onSelectArticle={selectArticle}
             selectedArticleId={selectedArticle.id}
@@ -391,12 +758,13 @@ export default function App() {
       </div>
 
       {previewOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setPreviewOpen(false)}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closePreview}>
           <section
             aria-label="平台预览"
             aria-modal="true"
             className="preview-dialog"
             onMouseDown={(event) => event.stopPropagation()}
+            ref={previewDialogRef}
             role="dialog"
           >
             <header>
@@ -406,7 +774,7 @@ export default function App() {
                   <button className={selectedPlatform === platform.id ? "is-active" : ""} key={platform.id} onClick={() => setSelectedPlatform(platform.id)} type="button">{platform.shortName}</button>
                 ))}
               </div>
-              <button className="icon-button" onClick={() => setPreviewOpen(false)} type="button" aria-label="关闭平台预览"><X size={18} /></button>
+              <button autoFocus className="icon-button" onClick={closePreview} type="button" aria-label="关闭平台预览"><X size={18} /></button>
             </header>
             <PlatformPreviewCard article={currentArticle} platform={selectedPlatform} />
           </section>

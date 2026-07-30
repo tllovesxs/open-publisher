@@ -13,6 +13,7 @@ import {
   Save,
   Sparkles,
 } from "lucide-react";
+import { useRef, useState } from "react";
 import { MarkdownPreview } from "./MarkdownPreview";
 import type { Article, PlatformDefinition, PlatformId } from "../types";
 
@@ -51,8 +52,25 @@ export function MarkdownWorkbench({
   onPlatformChange,
   platforms,
 }: MarkdownWorkbenchProps) {
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const [editorFeedback, setEditorFeedback] = useState<string | null>(null);
   const lines = markdown.split("\n").length;
   const characters = markdown.replace(/\s/g, "").length;
+
+  const applyMarkup = (prefix: string, suffix = prefix, placeholder = "文本") => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    const selected = markdown.slice(start, end) || placeholder;
+    onMarkdownChange(`${markdown.slice(0, start)}${prefix}${selected}${suffix}${markdown.slice(end)}`);
+    window.requestAnimationFrame(() => {
+      editor.focus();
+      editor.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
+    });
+  };
+
+  const insertBlock = (prefix: string, placeholder: string) => applyMarkup(prefix, "", placeholder);
 
   return (
     <section className="workbench" aria-label="Markdown 稿件工作台">
@@ -95,18 +113,18 @@ export function MarkdownWorkbench({
 
       <div className="editor-toolbar">
         <div className="editor-toolbar__tools" aria-label="格式工具">
-          <button aria-label="插入标题" type="button" title="标题"><Heading2 size={16} /></button>
-          <button aria-label="切换粗体" type="button" title="粗体"><Bold size={16} /></button>
-          <button aria-label="切换斜体" type="button" title="斜体"><Italic size={16} /></button>
-          <button aria-label="插入列表" type="button" title="列表"><List size={16} /></button>
-          <button aria-label="插入引用" type="button" title="引用"><Quote size={16} /></button>
-          <button aria-label="插入图片" type="button" title="插入图片"><ImagePlus size={16} /></button>
+          <button aria-label="插入标题" onClick={() => insertBlock("## ", "小节标题")} type="button" title="标题"><Heading2 size={16} /></button>
+          <button aria-label="切换粗体" onClick={() => applyMarkup("**")} type="button" title="粗体"><Bold size={16} /></button>
+          <button aria-label="切换斜体" onClick={() => applyMarkup("*")} type="button" title="斜体"><Italic size={16} /></button>
+          <button aria-label="插入列表" onClick={() => insertBlock("- ", "列表项")} type="button" title="列表"><List size={16} /></button>
+          <button aria-label="插入引用" onClick={() => insertBlock("> ", "引用内容")} type="button" title="引用"><Quote size={16} /></button>
+          <button aria-label="插入图片" onClick={() => applyMarkup("![图片说明](", ")", "https://")} type="button" title="插入图片"><ImagePlus size={16} /></button>
           <span className="toolbar-rule" />
-          <button aria-label="让 Agent 处理选中内容" className="ai-tool" type="button" title="让 Agent 处理选中内容">
+          <button aria-label="让 Agent 处理选中内容" className="ai-tool" onClick={() => setEditorFeedback("已记录选区请求；运行工作流后会生成新的候选修订。")} type="button" title="让 Agent 处理选中内容">
             <Sparkles size={15} />
             Agent
           </button>
-          <button aria-label="更多编辑工具" type="button" title="更多"><MoreHorizontal size={17} /></button>
+          <button aria-label="插入分隔线" onClick={() => insertBlock("\n---\n", "")} type="button" title="插入分隔线"><MoreHorizontal size={17} /></button>
         </div>
         <div className="mode-switch" aria-label="编辑器布局">
           {editorModes.map(({ id, label, icon: Icon }) => (
@@ -135,6 +153,7 @@ export function MarkdownWorkbench({
             <textarea
               aria-label="Markdown 正文"
               onChange={(event) => onMarkdownChange(event.target.value)}
+              ref={editorRef}
               spellCheck="false"
               value={markdown}
             />
@@ -158,6 +177,12 @@ export function MarkdownWorkbench({
         <span>{lines} 行</span>
         <span>{characters} 字</span>
       </footer>
+      {editorFeedback && (
+        <div className="editor-feedback" role="status">
+          <span>{editorFeedback}</span>
+          <button aria-label="关闭编辑器提示" onClick={() => setEditorFeedback(null)} type="button">关闭</button>
+        </div>
+      )}
     </section>
   );
 }

@@ -3,7 +3,7 @@ import type { WorkflowStage, WorkflowStageState } from "../types";
 
 interface WorkflowStripProps {
   stages: WorkflowStage[];
-  runningIndex: number | null;
+  running: boolean;
   completed: boolean;
 }
 
@@ -16,26 +16,30 @@ const stateIcon: Record<WorkflowStageState, typeof Circle> = {
 
 export function WorkflowStrip({
   stages,
-  runningIndex,
+  running,
   completed,
 }: WorkflowStripProps) {
-  const stateFor = (stage: WorkflowStage, index: number): WorkflowStageState => {
+  const stateFor = (stage: WorkflowStage): WorkflowStageState => {
+    if (stage.state === "skipped") return "skipped";
     if (completed) return "done";
-    if (runningIndex === null) return stage.state;
-    if (index < runningIndex) return "done";
-    if (index === runningIndex) return "active";
-    return "pending";
+    if (running) return "pending";
+    return stage.state;
   };
 
   return (
-    <section className="workflow-strip" aria-label="当前工作流">
+    <section
+      aria-busy={running}
+      aria-label="当前工作流"
+      className={`workflow-strip${running ? " is-running" : ""}`}
+    >
       <div className="workflow-strip__label">
         <span>FLOW</span>
         <strong>文章成稿线</strong>
+        <small>{running ? "本地运行中" : completed ? "最近运行已完成" : "等待运行"}</small>
       </div>
       <div className="workflow-strip__track">
         {stages.map((stage, index) => {
-          const state = stateFor(stage, index);
+          const state = stateFor(stage);
           const Icon = stateIcon[state];
           return (
             <div className={`stage stage--${state}`} key={stage.id}>

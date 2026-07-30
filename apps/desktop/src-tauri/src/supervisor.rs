@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     ffi::OsString,
     fs::{self, OpenOptions},
-    net::{Ipv4Addr, TcpListener},
+    net::{IpAddr, Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -14,7 +14,7 @@ use std::{
 use rand::{rngs::OsRng, RngCore};
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,29 +51,164 @@ pub struct SaveDraftReceipt {
     pub persistence: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunDemoRequest {
-    pub title: String,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RunWorkflowRequest {
+    pub article_id: String,
+    pub revision_id: String,
     pub topic: String,
-    pub source_markdown: String,
+    #[serde(default)]
+    pub disabled_optional_node_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowArtifactSummary {
+    pub id: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWorkflowSummary {
+    pub run_id: String,
+    pub status: String,
+    pub workflow_name: String,
+    pub workflow_version: String,
+    pub input_revision_id: String,
+    pub output_revision_id: String,
+    pub output_revision_number: u32,
+    pub output_markdown: String,
+    pub output_content_hash: String,
+    pub artifacts: Vec<WorkflowArtifactSummary>,
+    pub persistence: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreatePublishPlanRequest {
+    pub article_id: String,
+    pub revision_id: String,
     pub platforms: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DemoReceiptSummary {
-    pub status: String,
-    pub remote_id: String,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PublishPlanRequest {
+    pub plan_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProcessPublishJobRequest {
+    pub job_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct RunDemoSummary {
+pub struct PublishVariantSummary {
+    pub id: String,
+    pub platform: String,
+    pub account_ref: String,
+    pub title: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishJobSummary {
+    pub id: String,
+    pub plan_id: String,
+    pub variant_id: String,
+    pub platform: String,
+    pub account_ref: String,
+    pub operation: String,
+    pub idempotency_key: String,
+    pub payload_hash: String,
+    pub state: String,
+    pub remote_id: Option<String>,
+    pub last_error: Option<String>,
+    pub reconcile_required: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishPlanSummary {
+    pub plan_id: String,
+    pub revision_id: String,
+    pub status: String,
+    pub approval_status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub variants: Vec<PublishVariantSummary>,
+    pub jobs: Vec<PublishJobSummary>,
+    pub persistence: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishReceiptSummary {
+    pub id: String,
+    pub job_id: String,
+    pub status: String,
+    pub remote_id: String,
+    pub content_hash: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessPublishJobSummary {
+    pub job: PublishJobSummary,
+    pub receipt: Option<PublishReceiptSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateImageRequest {
+    pub prompt: String,
+    pub size: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateImageSummary {
     pub artifact_count: usize,
-    pub run_status: String,
-    pub plan_status: String,
-    pub receipts: Vec<DemoReceiptSummary>,
+    pub provider: String,
+    pub model: String,
+    pub mocked: bool,
+    pub remote_urls_ignored: usize,
+    pub media_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateConnectionProfileRequest {
+    pub name: String,
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub secret_env_var: Option<String>,
+    pub default_text_model: Option<String>,
+    pub default_image_model: Option<String>,
+    pub timeout_seconds: u16,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionProfilePublic {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub secret_scheme: String,
+    pub secret_configured: bool,
+    pub default_text_model: Option<String>,
+    pub default_image_model: Option<String>,
+    pub timeout_seconds: u16,
+    pub created_at: String,
 }
 
 /// The WebView talks only to this fixed command surface. Implementations own
@@ -83,7 +218,31 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
     fn ensure_started(&self) -> Result<RuntimeSnapshot, String>;
     fn stop(&self) -> Result<RuntimeSnapshot, String>;
     fn save_draft(&self, request: SaveDraftRequest) -> Result<SaveDraftReceipt, String>;
-    fn run_demo(&self, request: RunDemoRequest) -> Result<RunDemoSummary, String>;
+    fn run_workflow(&self, request: RunWorkflowRequest) -> Result<RunWorkflowSummary, String>;
+    fn create_publish_plan(
+        &self,
+        request: CreatePublishPlanRequest,
+    ) -> Result<PublishPlanSummary, String>;
+    fn get_publish_plan(&self, request: PublishPlanRequest) -> Result<PublishPlanSummary, String>;
+    fn approve_publish_plan(
+        &self,
+        request: PublishPlanRequest,
+    ) -> Result<PublishPlanSummary, String>;
+    fn enqueue_publish_plan(
+        &self,
+        request: PublishPlanRequest,
+    ) -> Result<PublishPlanSummary, String>;
+    fn process_publish_job(
+        &self,
+        request: ProcessPublishJobRequest,
+    ) -> Result<ProcessPublishJobSummary, String>;
+    fn generate_image(&self, request: GenerateImageRequest)
+        -> Result<GenerateImageSummary, String>;
+    fn list_connection_profiles(&self) -> Result<Vec<ConnectionProfilePublic>, String>;
+    fn create_connection_profile(
+        &self,
+        request: CreateConnectionProfileRequest,
+    ) -> Result<ConnectionProfilePublic, String>;
 }
 
 #[derive(Debug)]
@@ -117,22 +276,172 @@ struct PythonLaunch {
 #[derive(Debug, Clone, Copy)]
 enum ApiRoute<'a> {
     Health,
+    Articles,
     CreateArticle,
+    Article(&'a str),
     CreateRevision(&'a str),
-    CompleteDemo,
+    Workflows,
+    Runs,
+    PublishPlans,
+    PublishPlan(&'a str),
+    ApprovePublishPlan(&'a str),
+    EnqueuePublishPlan(&'a str),
+    ProcessPublishJob(&'a str),
+    GenerateImage,
+    Connections,
 }
 
 impl ApiRoute<'_> {
     fn path(self) -> String {
         match self {
             Self::Health => "/health".to_owned(),
+            Self::Articles => "/api/v1/articles".to_owned(),
             Self::CreateArticle => "/api/v1/articles".to_owned(),
+            Self::Article(article_id) => format!("/api/v1/articles/{article_id}"),
             Self::CreateRevision(article_id) => {
                 format!("/api/v1/articles/{article_id}/revisions")
             }
-            Self::CompleteDemo => "/api/v1/demo/complete".to_owned(),
+            Self::Workflows => "/api/v1/workflows".to_owned(),
+            Self::Runs => "/api/v1/runs".to_owned(),
+            Self::PublishPlans => "/api/v1/publish/plans".to_owned(),
+            Self::PublishPlan(plan_id) => format!("/api/v1/publish/plans/{plan_id}"),
+            Self::ApprovePublishPlan(plan_id) => {
+                format!("/api/v1/publish/plans/{plan_id}/approve")
+            }
+            Self::EnqueuePublishPlan(plan_id) => {
+                format!("/api/v1/publish/plans/{plan_id}/enqueue")
+            }
+            Self::ProcessPublishJob(job_id) => {
+                format!("/api/v1/publish/jobs/{job_id}/process")
+            }
+            Self::GenerateImage => "/api/v1/images/generate".to_owned(),
+            Self::Connections => "/api/v1/connections".to_owned(),
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct CreateArticleMetadataWire<'a> {
+    desktop_article_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateArticleRequestWire<'a> {
+    title: String,
+    markdown: &'a str,
+    metadata: CreateArticleMetadataWire<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateRevisionRequestWire<'a> {
+    markdown: &'a str,
+    parent_revision_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct StartRunPolicyWire<'a> {
+    require_content_approval: bool,
+    allow_remote_publish: bool,
+    disabled_optional_node_ids: &'a [String],
+}
+
+#[derive(Debug, Serialize)]
+struct StartRunRequestWire<'a> {
+    workflow_id: &'a str,
+    article_id: &'a str,
+    revision_id: &'a str,
+    topic: &'a str,
+    policy: StartRunPolicyWire<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublishTargetRequestWire {
+    platform: String,
+    account_ref: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreatePublishPlanRequestWire<'a> {
+    revision_id: &'a str,
+    targets: Vec<PublishTargetRequestWire>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApprovePublishPlanRequestWire<'a> {
+    actor_id: &'a str,
+    comment: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct EmptyRequestWire {}
+
+#[derive(Debug, Deserialize)]
+struct ArticleListItemWire {
+    id: String,
+    #[serde(default)]
+    metadata_json: HashMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArticleRevisionWire {
+    id: String,
+    number: u32,
+    markdown: String,
+    content_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArticleDetailWire {
+    latest_revision: ArticleRevisionWire,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowWire {
+    id: String,
+    name: String,
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunWire {
+    id: String,
+    input_revision_id: String,
+    output_revision_id: Option<String>,
+    status: String,
+    #[serde(default)]
+    state_json: HashMap<String, Value>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateImagesRequestWire<'a> {
+    prompt: &'a str,
+    size: &'a str,
+    model: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConnectionConfigRequestWire<'a> {
+    default_text_model: Option<&'a str>,
+    default_image_model: Option<&'a str>,
+    timeout_seconds: u16,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateConnectionRequestWire<'a> {
+    name: &'a str,
+    provider: &'a str,
+    base_url: Option<&'a str>,
+    secret_ref: &'a str,
+    config: ConnectionConfigRequestWire<'a>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HealthResponseWire {
+    status: String,
+    database: String,
+    publisher_mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,29 +456,105 @@ struct ArticleWithRevisionWire {
 }
 
 #[derive(Debug, Deserialize)]
-struct StatusWire {
+struct PublishPlanWire {
+    id: String,
+    revision_id: String,
     status: String,
-    #[serde(default)]
-    state_json: HashMap<String, Value>,
+    approval_status: String,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct DemoReceiptWire {
+struct PublishVariantWire {
+    id: String,
+    platform: String,
+    account_ref: String,
+    title: String,
+    content_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishJobWire {
+    id: String,
+    plan_id: String,
+    variant_id: String,
+    platform: String,
+    account_ref: String,
+    operation: String,
+    idempotency_key: String,
+    payload_hash: String,
+    state: String,
+    remote_id: Option<String>,
+    last_error: Option<String>,
+    reconcile_required: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishReceiptWire {
+    id: String,
+    job_id: String,
     status: String,
     remote_id: String,
+    content_hash: String,
+    created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ContentPackageWire {
-    assets: Vec<Value>,
+struct PublishPlanDetailWire {
+    plan: PublishPlanWire,
+    variants: Vec<PublishVariantWire>,
+    #[serde(default)]
+    jobs: Vec<PublishJobWire>,
 }
 
 #[derive(Debug, Deserialize)]
-struct DemoResponseWire {
-    run: StatusWire,
-    plan: StatusWire,
-    receipts: Vec<DemoReceiptWire>,
-    content_package: ContentPackageWire,
+struct EnqueuePublishPlanWire {
+    plan: PublishPlanWire,
+    jobs: Vec<PublishJobWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessPublishJobWire {
+    job: PublishJobWire,
+    receipt: Option<PublishReceiptWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeneratedArtifactWire {
+    media_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerateImageResponseWire {
+    provider: String,
+    model: String,
+    mocked: bool,
+    artifacts: Vec<GeneratedArtifactWire>,
+    remote_urls_ignored: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ConnectionConfigWire {
+    default_text_model: Option<String>,
+    default_image_model: Option<String>,
+    timeout_seconds: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionProfileWire {
+    id: String,
+    name: String,
+    provider: String,
+    base_url: Option<String>,
+    config_json: ConnectionConfigWire,
+    secret_scheme: String,
+    secret_configured: bool,
+    created_at: String,
 }
 
 pub struct PythonSidecarSupervisor {
@@ -184,7 +569,7 @@ impl PythonSidecarSupervisor {
         let repository_root = repository_root();
         let client = Client::builder()
             .connect_timeout(Duration::from_millis(350))
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(330))
             .no_proxy()
             .redirect(Policy::none())
             .build()
@@ -328,14 +713,11 @@ impl PythonSidecarSupervisor {
             .send();
         match response {
             Ok(response) if response.status().is_success() => response
-                .json::<Value>()
+                .json::<HealthResponseWire>()
                 .ok()
-                .and_then(|body| {
-                    body.get("status")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .is_some_and(|status| status == "ok"),
+                .is_some_and(|body| {
+                    body.status == "ok" && body.database == "ok" && body.publisher_mode == "dry_run"
+                }),
             _ => false,
         }
     }
@@ -369,6 +751,78 @@ impl PythonSidecarSupervisor {
             .map_err(|_| "local Python runtime returned an invalid response".to_owned())
     }
 
+    fn get_json<TResponse: DeserializeOwned>(
+        &self,
+        connection: &PrivateConnection,
+        route: ApiRoute<'_>,
+    ) -> Result<TResponse, String> {
+        let response = self
+            .client
+            .get(connection.url(route))
+            .bearer_auth(&connection.token)
+            .send()
+            .map_err(|error| {
+                if error.is_timeout() {
+                    "local Python runtime request timed out".to_owned()
+                } else {
+                    "local Python runtime connection failed".to_owned()
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(safe_http_error(status, response.json::<Value>().ok()));
+        }
+        response
+            .json()
+            .map_err(|_| "local Python runtime returned an invalid response".to_owned())
+    }
+
+    fn restore_article_mapping(
+        &self,
+        connection: &PrivateConnection,
+        desktop_article_id: &str,
+    ) -> Result<Option<BackendArticleMapping>, String> {
+        let articles: Vec<ArticleListItemWire> = self.get_json(connection, ApiRoute::Articles)?;
+        let Some(article) = articles.into_iter().rev().find(|article| {
+            article
+                .metadata_json
+                .get("desktop_article_id")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == desktop_article_id)
+        }) else {
+            return Ok(None);
+        };
+        let article_id = validate_backend_id(article.id, "article")?;
+        let detail: ArticleDetailWire =
+            self.get_json(connection, ApiRoute::Article(&article_id))?;
+        let revision_id = validate_backend_id(detail.latest_revision.id, "revision")?;
+        Ok(Some(BackendArticleMapping {
+            article_id,
+            revision_id,
+        }))
+    }
+
+    fn article_mapping(
+        &self,
+        state: &mut SupervisorState,
+        connection: &PrivateConnection,
+        desktop_article_id: &str,
+    ) -> Result<BackendArticleMapping, String> {
+        if !state.article_mappings.contains_key(desktop_article_id) {
+            if let Some(mapping) = self.restore_article_mapping(connection, desktop_article_id)? {
+                state
+                    .article_mappings
+                    .insert(desktop_article_id.to_owned(), mapping);
+            }
+        }
+        state
+            .article_mappings
+            .get(desktop_article_id)
+            .cloned()
+            .ok_or_else(|| "请先保存当前稿件，再运行工作流或创建发布计划。".to_owned())
+    }
+
     fn ensure_started_locked(
         &self,
         state: &mut SupervisorState,
@@ -397,19 +851,18 @@ impl PythonSidecarSupervisor {
         state.generation += 1;
         state.detail = "正在启动受保护的本地 Python sidecar…".to_owned();
 
-        let port = allocate_loopback_port().map_err(|error| {
-            fault_state(state, &error);
-            error
+        let port = allocate_loopback_port().inspect_err(|error| {
+            fault_state(state, error);
         })?;
         let connection = PrivateConnection {
             port,
             token: strong_token(),
         };
         let (child, launch_source) =
-            self.spawn_child(port, &connection.token).map_err(|error| {
-                fault_state(state, &error);
-                error
-            })?;
+            self.spawn_child(port, &connection.token)
+                .inspect_err(|error| {
+                    fault_state(state, error);
+                })?;
         state.child = Some(child);
         state.connection = Some(connection.clone());
 
@@ -494,6 +947,13 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             .connection
             .clone()
             .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        if !state.article_mappings.contains_key(&request.article_id) {
+            if let Some(mapping) = self.restore_article_mapping(&connection, &request.article_id)? {
+                state
+                    .article_mappings
+                    .insert(request.article_id.clone(), mapping);
+            }
+        }
 
         let revision_id = if let Some(mapping) = state.article_mappings.get(&request.article_id) {
             if request
@@ -503,25 +963,26 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             {
                 return Err("该稿件的基础修订已过期，请重新打开稿件后再保存。".to_owned());
             }
+            let payload = CreateRevisionRequestWire {
+                markdown: &request.markdown,
+                parent_revision_id: &mapping.revision_id,
+            };
             let response: IdWire = self.post_json(
                 &connection,
                 ApiRoute::CreateRevision(&mapping.article_id),
-                &json!({
-                    "markdown": request.markdown,
-                    "parent_revision_id": mapping.revision_id,
-                }),
+                &payload,
             )?;
             validate_backend_id(response.id, "revision")?
         } else {
-            let response: ArticleWithRevisionWire = self.post_json(
-                &connection,
-                ApiRoute::CreateArticle,
-                &json!({
-                    "title": title_from_markdown(&request.markdown, &request.article_id),
-                    "markdown": request.markdown,
-                    "metadata": {"desktop_article_id": request.article_id},
-                }),
-            )?;
+            let payload = CreateArticleRequestWire {
+                title: title_from_markdown(&request.markdown, &request.article_id),
+                markdown: &request.markdown,
+                metadata: CreateArticleMetadataWire {
+                    desktop_article_id: &request.article_id,
+                },
+            };
+            let response: ArticleWithRevisionWire =
+                self.post_json(&connection, ApiRoute::CreateArticle, &payload)?;
             let backend_article_id = validate_backend_id(response.article.id, "article")?;
             let backend_revision_id = validate_backend_id(response.revision.id, "revision")?;
             state.article_mappings.insert(
@@ -545,25 +1006,279 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         })
     }
 
-    fn run_demo(&self, request: RunDemoRequest) -> Result<RunDemoSummary, String> {
-        validate_demo(&request)?;
+    fn run_workflow(&self, request: RunWorkflowRequest) -> Result<RunWorkflowSummary, String> {
+        validate_workflow_request(&request)?;
         let mut state = self.lock_state()?;
         self.ensure_started_locked(&mut state)?;
         let connection = state
             .connection
             .clone()
             .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
-        let response: DemoResponseWire = self.post_json(
-            &connection,
-            ApiRoute::CompleteDemo,
-            &json!({
-                "title": request.title,
-                "topic": request.topic,
-                "source_markdown": request.source_markdown,
-                "platforms": request.platforms,
-            }),
+        let mapping = self.article_mapping(&mut state, &connection, &request.article_id)?;
+        if mapping.revision_id != request.revision_id {
+            return Err("当前修订与本地数据库不一致，请先重新保存稿件。".to_owned());
+        }
+
+        let workflows: Vec<WorkflowWire> = self.get_json(&connection, ApiRoute::Workflows)?;
+        let workflow = workflows
+            .into_iter()
+            .filter(|workflow| workflow.name == "mock-article")
+            .max_by(|left, right| left.version.cmp(&right.version))
+            .ok_or_else(|| "本地运行时没有可用的默认工作流。".to_owned())?;
+        let workflow_id = validate_backend_id(workflow.id, "workflow")?;
+        let payload = StartRunRequestWire {
+            workflow_id: &workflow_id,
+            article_id: &mapping.article_id,
+            revision_id: &mapping.revision_id,
+            topic: &request.topic,
+            policy: StartRunPolicyWire {
+                require_content_approval: false,
+                allow_remote_publish: false,
+                disabled_optional_node_ids: &request.disabled_optional_node_ids,
+            },
+        };
+        let run: WorkflowRunWire = self.post_json(&connection, ApiRoute::Runs, &payload)?;
+        if run.status != "completed" {
+            let detail = run
+                .error
+                .as_deref()
+                .filter(|error| error.len() <= 240)
+                .unwrap_or("工作流没有完成");
+            return Err(format!("本地工作流状态为 {}：{detail}", run.status));
+        }
+        if run.input_revision_id != mapping.revision_id {
+            return Err("本地运行时返回了不匹配的输入修订。".to_owned());
+        }
+        let output_revision_id = validate_backend_id(
+            run.output_revision_id
+                .clone()
+                .ok_or_else(|| "工作流没有生成输出修订。".to_owned())?,
+            "revision",
         )?;
-        Ok(summarize_demo(response))
+        let article: ArticleDetailWire =
+            self.get_json(&connection, ApiRoute::Article(&mapping.article_id))?;
+        if article.latest_revision.id != output_revision_id {
+            return Err("工作流输出修订不是文章的最新修订。".to_owned());
+        }
+        validate_revision_wire(&article.latest_revision)?;
+        if let Some(current) = state.article_mappings.get_mut(&request.article_id) {
+            current.revision_id.clone_from(&output_revision_id);
+        }
+        Ok(RunWorkflowSummary {
+            run_id: validate_backend_id(run.id, "workflow run")?,
+            status: run.status,
+            workflow_name: workflow.name,
+            workflow_version: workflow.version,
+            input_revision_id: mapping.revision_id,
+            output_revision_id,
+            output_revision_number: article.latest_revision.number,
+            output_markdown: article.latest_revision.markdown,
+            output_content_hash: article.latest_revision.content_hash,
+            artifacts: workflow_artifact_summaries(&run.state_json)?,
+            persistence: "local_database",
+        })
+    }
+
+    fn create_publish_plan(
+        &self,
+        request: CreatePublishPlanRequest,
+    ) -> Result<PublishPlanSummary, String> {
+        validate_create_publish_plan_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let mapping = self.article_mapping(&mut state, &connection, &request.article_id)?;
+        if mapping.revision_id != request.revision_id {
+            return Err("只能为当前已保存修订创建发布计划。".to_owned());
+        }
+        let targets = request
+            .platforms
+            .into_iter()
+            .map(|platform| PublishTargetRequestWire {
+                account_ref: format!("desktop-{platform}"),
+                platform,
+            })
+            .collect();
+        let payload = CreatePublishPlanRequestWire {
+            revision_id: &request.revision_id,
+            targets,
+        };
+        let detail: PublishPlanDetailWire =
+            self.post_json(&connection, ApiRoute::PublishPlans, &payload)?;
+        public_publish_plan(detail)
+    }
+
+    fn get_publish_plan(&self, request: PublishPlanRequest) -> Result<PublishPlanSummary, String> {
+        validate_publish_plan_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let detail: PublishPlanDetailWire =
+            self.get_json(&connection, ApiRoute::PublishPlan(&request.plan_id))?;
+        public_publish_plan(detail)
+    }
+
+    fn approve_publish_plan(
+        &self,
+        request: PublishPlanRequest,
+    ) -> Result<PublishPlanSummary, String> {
+        validate_publish_plan_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let payload = ApprovePublishPlanRequestWire {
+            actor_id: "user:desktop",
+            comment: "用户已在桌面端检查平台变体并明确批准本次 dry-run",
+        };
+        let detail: PublishPlanDetailWire = self.post_json(
+            &connection,
+            ApiRoute::ApprovePublishPlan(&request.plan_id),
+            &payload,
+        )?;
+        public_publish_plan(detail)
+    }
+
+    fn enqueue_publish_plan(
+        &self,
+        request: PublishPlanRequest,
+    ) -> Result<PublishPlanSummary, String> {
+        validate_publish_plan_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let existing: PublishPlanDetailWire =
+            self.get_json(&connection, ApiRoute::PublishPlan(&request.plan_id))?;
+        if existing.plan.id != request.plan_id {
+            return Err("本地运行时返回了不匹配的发布计划。".to_owned());
+        }
+        let revision_id = existing.plan.revision_id.clone();
+        let enqueued: EnqueuePublishPlanWire = self.post_json(
+            &connection,
+            ApiRoute::EnqueuePublishPlan(&request.plan_id),
+            &EmptyRequestWire {},
+        )?;
+        if enqueued.plan.id != request.plan_id
+            || enqueued.plan.revision_id != revision_id
+            || enqueued
+                .jobs
+                .iter()
+                .any(|job| job.plan_id != request.plan_id)
+        {
+            return Err("本地运行时返回了不匹配的 Outbox 任务。".to_owned());
+        }
+        public_publish_plan(PublishPlanDetailWire {
+            plan: enqueued.plan,
+            variants: existing.variants,
+            jobs: enqueued.jobs,
+        })
+    }
+
+    fn process_publish_job(
+        &self,
+        request: ProcessPublishJobRequest,
+    ) -> Result<ProcessPublishJobSummary, String> {
+        validate_process_publish_job_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let response: ProcessPublishJobWire = self.post_json(
+            &connection,
+            ApiRoute::ProcessPublishJob(&request.job_id),
+            &EmptyRequestWire {},
+        )?;
+        let summary = public_process_publish_job(&request.job_id, response)?;
+        let detail: PublishPlanDetailWire =
+            self.get_json(&connection, ApiRoute::PublishPlan(&summary.job.plan_id))?;
+        let plan = public_publish_plan(detail)?;
+        validate_process_summary_against_plan(&summary, &plan)?;
+        Ok(summary)
+    }
+
+    fn generate_image(
+        &self,
+        request: GenerateImageRequest,
+    ) -> Result<GenerateImageSummary, String> {
+        let normalized = validate_image_request(request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let payload = GenerateImagesRequestWire {
+            prompt: &normalized.prompt,
+            size: &normalized.size,
+            model: normalized.model.as_deref(),
+        };
+        let response: GenerateImageResponseWire =
+            self.post_json(&connection, ApiRoute::GenerateImage, &payload)?;
+        summarize_image_generation(response)
+    }
+
+    fn list_connection_profiles(&self) -> Result<Vec<ConnectionProfilePublic>, String> {
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let profiles: Vec<ConnectionProfileWire> =
+            self.get_json(&connection, ApiRoute::Connections)?;
+        profiles.into_iter().map(public_connection).collect()
+    }
+
+    fn create_connection_profile(
+        &self,
+        request: CreateConnectionProfileRequest,
+    ) -> Result<ConnectionProfilePublic, String> {
+        let normalized = validate_connection_request(request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+
+        let secret_ref = if normalized.provider == "mock" {
+            "mock://deterministic".to_owned()
+        } else {
+            format!(
+                "env://{}",
+                normalized
+                    .secret_env_var
+                    .as_deref()
+                    .expect("validated environment variable reference")
+            )
+        };
+        let payload = CreateConnectionRequestWire {
+            name: &normalized.name,
+            provider: &normalized.provider,
+            base_url: normalized.base_url.as_deref(),
+            secret_ref: &secret_ref,
+            config: ConnectionConfigRequestWire {
+                default_text_model: normalized.default_text_model.as_deref(),
+                default_image_model: normalized.default_image_model.as_deref(),
+                timeout_seconds: normalized.timeout_seconds,
+            },
+        };
+        let profile: ConnectionProfileWire =
+            self.post_json(&connection, ApiRoute::Connections, &payload)?;
+        public_connection(profile)
     }
 }
 
@@ -668,28 +1383,241 @@ fn validate_draft(request: &SaveDraftRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_demo(request: &RunDemoRequest) -> Result<(), String> {
-    if request.title.trim().is_empty() || request.title.chars().count() > 500 {
-        return Err("demo title must contain between 1 and 500 characters".to_owned());
+fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String> {
+    if request.article_id.trim().is_empty() || request.article_id.len() > 256 {
+        return Err("articleId must contain between 1 and 256 bytes".to_owned());
     }
+    validate_backend_id(request.revision_id.clone(), "revision")?;
     if request.topic.trim().is_empty() || request.topic.chars().count() > 500 {
-        return Err("demo topic must contain between 1 and 500 characters".to_owned());
+        return Err("workflow topic must contain between 1 and 500 characters".to_owned());
     }
-    if request.source_markdown.trim().is_empty() || request.source_markdown.len() > 8 * 1024 * 1024
-    {
-        return Err("demo Markdown must contain between 1 byte and 8 MiB".to_owned());
+    if request.disabled_optional_node_ids.len() > 5 {
+        return Err("workflow can disable at most five optional nodes".to_owned());
     }
-    if request.platforms.is_empty() || request.platforms.len() > 3 {
-        return Err("demo requires between one and three platforms".to_owned());
-    }
-    if request
-        .platforms
+    let disabled_nodes: HashSet<&str> = request
+        .disabled_optional_node_ids
         .iter()
-        .any(|platform| !matches!(platform.as_str(), "wechat" | "csdn" | "toutiao"))
+        .map(String::as_str)
+        .collect();
+    if disabled_nodes.len() != request.disabled_optional_node_ids.len()
+        || disabled_nodes.iter().any(|node_id| {
+            !matches!(
+                *node_id,
+                "research" | "outline" | "natural-style" | "review" | "visual"
+            )
+        })
     {
-        return Err("demo platform is not supported".to_owned());
+        return Err("workflow disabled node selection is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validate_create_publish_plan_request(request: &CreatePublishPlanRequest) -> Result<(), String> {
+    if request.article_id.trim().is_empty() || request.article_id.len() > 256 {
+        return Err("articleId must contain between 1 and 256 bytes".to_owned());
+    }
+    validate_backend_id(request.revision_id.clone(), "revision")?;
+    if request.platforms.is_empty() || request.platforms.len() > 3 {
+        return Err("发布计划需要选择 1–3 个平台。".to_owned());
+    }
+    if request.platforms.iter().collect::<HashSet<_>>().len() != request.platforms.len()
+        || request
+            .platforms
+            .iter()
+            .any(|platform| !supported_platform(platform))
+    {
+        return Err("发布平台选择无效或包含重复项。".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_publish_plan_request(request: &PublishPlanRequest) -> Result<(), String> {
+    validate_backend_id(request.plan_id.clone(), "publish plan").map(|_| ())
+}
+
+fn validate_process_publish_job_request(request: &ProcessPublishJobRequest) -> Result<(), String> {
+    validate_backend_id(request.job_id.clone(), "publish job").map(|_| ())
+}
+
+fn supported_platform(platform: &str) -> bool {
+    matches!(platform, "wechat" | "csdn" | "toutiao")
+}
+
+fn validate_connection_request(
+    mut request: CreateConnectionProfileRequest,
+) -> Result<CreateConnectionProfileRequest, String> {
+    request.name = request.name.trim().to_owned();
+    if request.name.is_empty()
+        || request.name.chars().count() > 200
+        || request.name.chars().any(char::is_control)
+    {
+        return Err("连接名称应为 1–200 个可见字符。".to_owned());
+    }
+
+    request.provider = request.provider.trim().to_ascii_lowercase();
+    if !matches!(request.provider.as_str(), "openai-compatible" | "mock") {
+        return Err("当前版本只支持 OpenAI Compatible 或 Mock 连接。".to_owned());
+    }
+    request.base_url = normalize_base_url(request.base_url)?;
+    request.default_text_model =
+        normalize_public_option(request.default_text_model, "默认文本模型", 200)?;
+    request.default_image_model =
+        normalize_public_option(request.default_image_model, "默认生图模型", 200)?;
+    if !(1..=300).contains(&request.timeout_seconds) {
+        return Err("超时时间应在 1–300 秒之间。".to_owned());
+    }
+
+    let secret_env_var = request
+        .secret_env_var
+        .take()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if request.provider == "mock" {
+        if request.base_url.is_some() || secret_env_var.is_some() {
+            return Err("Mock 连接不需要 Base URL 或环境变量。".to_owned());
+        }
+        request.secret_env_var = None;
+    } else {
+        let variable = secret_env_var
+            .filter(|value| valid_environment_variable(value))
+            .ok_or_else(|| {
+                "请输入有效的环境变量名，例如 OPENAI_API_KEY；不要粘贴 API Key。".to_owned()
+            })?;
+        request.secret_env_var = Some(variable);
+    }
+    Ok(request)
+}
+
+fn validate_image_request(
+    mut request: GenerateImageRequest,
+) -> Result<GenerateImageRequest, String> {
+    request.prompt = request.prompt.trim().to_owned();
+    if request.prompt.is_empty()
+        || request.prompt.chars().count() > 4_000
+        || request.prompt.chars().any(char::is_control)
+    {
+        return Err("配图提示词应为 1–4000 个可见字符。".to_owned());
+    }
+    if !matches!(
+        request.size.as_str(),
+        "512x512" | "768x768" | "1024x1024" | "1024x1536" | "1536x1024"
+    ) {
+        return Err("配图尺寸不在当前白名单中。".to_owned());
+    }
+    request.model = normalize_public_option(request.model, "生图模型", 200)?;
+    Ok(request)
+}
+
+fn normalize_base_url(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value
+        .map(|candidate| candidate.trim().trim_end_matches('/').to_owned())
+        .filter(|candidate| !candidate.is_empty())
+    else {
+        return Ok(None);
+    };
+    if value.len() > 2048 {
+        return Err("Base URL 过长。".to_owned());
+    }
+    let parsed = reqwest::Url::parse(&value).map_err(|_| "Base URL 必须是完整 URL。".to_owned())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "Base URL 必须包含主机名。".to_owned())?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        return Err("Base URL 必须使用 HTTPS；本机 loopback 地址可使用 HTTP。".to_owned());
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("Base URL 不能包含凭证、查询参数或片段。".to_owned());
+    }
+    Ok(Some(value))
+}
+
+fn normalize_public_option(
+    value: Option<String>,
+    label: &str,
+    maximum: usize,
+) -> Result<Option<String>, String> {
+    let value = value
+        .map(|candidate| candidate.trim().to_owned())
+        .filter(|candidate| !candidate.is_empty());
+    if value.as_ref().is_some_and(|candidate| {
+        candidate.chars().count() > maximum || candidate.chars().any(char::is_control)
+    }) {
+        return Err(format!("{label}不能超过 {maximum} 个可见字符。"));
+    }
+    Ok(value)
+}
+
+fn valid_environment_variable(value: &str) -> bool {
+    if value.len() < 2 || value.len() > 128 || !value.contains('_') {
+        return false;
+    }
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_uppercase())
+        && characters.all(|character| {
+            character == '_' || character.is_ascii_uppercase() || character.is_ascii_digit()
+        })
+}
+
+fn public_connection(profile: ConnectionProfileWire) -> Result<ConnectionProfilePublic, String> {
+    let id = validate_backend_id(profile.id, "connection")?;
+    let name = profile.name.trim().to_owned();
+    if name.is_empty() || name.chars().count() > 200 || name.chars().any(char::is_control) {
+        return Err("local Python runtime returned an invalid connection name".to_owned());
+    }
+    let provider = profile.provider.trim().to_ascii_lowercase();
+    if provider.is_empty()
+        || provider.len() > 100
+        || !provider
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("local Python runtime returned an invalid provider name".to_owned());
+    }
+    let secret_scheme = profile.secret_scheme.trim().to_ascii_lowercase();
+    if !matches!(
+        secret_scheme.as_str(),
+        "env" | "mock" | "keyring" | "stronghold"
+    ) {
+        return Err("local Python runtime returned an invalid secret scheme".to_owned());
+    }
+    if profile.created_at.is_empty() || profile.created_at.len() > 64 {
+        return Err("local Python runtime returned an invalid creation time".to_owned());
+    }
+    let timeout_seconds = profile.config_json.timeout_seconds.unwrap_or(30);
+    if !(1..=300).contains(&timeout_seconds) {
+        return Err("local Python runtime returned an invalid timeout".to_owned());
+    }
+
+    Ok(ConnectionProfilePublic {
+        id,
+        name,
+        provider,
+        base_url: normalize_base_url(profile.base_url)?,
+        secret_scheme,
+        secret_configured: profile.secret_configured,
+        default_text_model: normalize_public_option(
+            profile.config_json.default_text_model,
+            "default text model",
+            200,
+        )?,
+        default_image_model: normalize_public_option(
+            profile.config_json.default_image_model,
+            "default image model",
+            200,
+        )?,
+        timeout_seconds,
+        created_at: profile.created_at,
+    })
 }
 
 fn validate_backend_id(value: String, entity: &str) -> Result<String, String> {
@@ -714,37 +1642,462 @@ fn epoch_millis() -> Result<u64, String> {
     u64::try_from(millis).map_err(|_| "system clock value is out of range".to_owned())
 }
 
-fn summarize_demo(response: DemoResponseWire) -> RunDemoSummary {
-    let workflow_artifacts = response
-        .run
-        .state_json
-        .iter()
-        .filter(|(key, value)| key.ends_with("_artifact_id") && value.is_string())
-        .count();
-    RunDemoSummary {
-        artifact_count: workflow_artifacts + response.content_package.assets.len(),
-        run_status: response.run.status,
-        plan_status: response.plan.status,
-        receipts: response
-            .receipts
-            .into_iter()
-            .map(|receipt| DemoReceiptSummary {
-                status: receipt.status,
-                remote_id: receipt.remote_id,
-            })
-            .collect(),
+fn validate_revision_wire(revision: &ArticleRevisionWire) -> Result<(), String> {
+    validate_backend_id(revision.id.clone(), "revision")?;
+    if revision.number == 0
+        || revision.markdown.trim().is_empty()
+        || revision.markdown.len() > 8 * 1024 * 1024
+        || !valid_hash(&revision.content_hash)
+    {
+        return Err("local Python runtime returned an invalid article revision".to_owned());
     }
+    Ok(())
+}
+
+fn workflow_artifact_summaries(
+    state: &HashMap<String, Value>,
+) -> Result<Vec<WorkflowArtifactSummary>, String> {
+    const ARTIFACTS: [(&str, &str); 8] = [
+        ("research_artifact_id", "workflow.research"),
+        ("outline_artifact_id", "workflow.outline"),
+        ("raw_draft_artifact_id", "workflow.raw-draft"),
+        (
+            "natural_style_patch_artifact_id",
+            "workflow.natural-style-patch",
+        ),
+        ("canonical_draft_artifact_id", "workflow.canonical-draft"),
+        ("review_artifact_id", "workflow.review"),
+        ("risk_artifact_id", "workflow.risk"),
+        ("visual_plan_artifact_id", "workflow.visual-plan"),
+    ];
+    ARTIFACTS
+        .into_iter()
+        .filter_map(|(key, kind)| {
+            state
+                .get(key)
+                .and_then(Value::as_str)
+                .map(|id| (id.to_owned(), kind.to_owned()))
+        })
+        .map(|(id, kind)| {
+            Ok(WorkflowArtifactSummary {
+                id: validate_backend_id(id, "artifact")?,
+                kind,
+            })
+        })
+        .collect()
+}
+
+fn public_publish_plan(detail: PublishPlanDetailWire) -> Result<PublishPlanSummary, String> {
+    if detail.variants.is_empty()
+        || detail.variants.len() > 3
+        || detail.jobs.len() > 3
+        || !matches!(
+            detail.plan.status.as_str(),
+            "draft" | "approved" | "queued" | "running" | "completed" | "needs_attention"
+        )
+        || !matches!(
+            detail.plan.approval_status.as_str(),
+            "not_required" | "pending" | "approved" | "rejected"
+        )
+        || !valid_timestamp(&detail.plan.created_at)
+        || !valid_timestamp(&detail.plan.updated_at)
+    {
+        return Err("local Python runtime returned an invalid publish plan".to_owned());
+    }
+    let plan_id = validate_backend_id(detail.plan.id, "publish plan")?;
+    let revision_id = validate_backend_id(detail.plan.revision_id, "revision")?;
+    let variants = detail
+        .variants
+        .into_iter()
+        .map(public_publish_variant)
+        .collect::<Result<Vec<_>, _>>()?;
+    let jobs = detail
+        .jobs
+        .into_iter()
+        .map(public_publish_job)
+        .collect::<Result<Vec<_>, _>>()?;
+    if jobs.iter().any(|job| job.plan_id != plan_id) {
+        return Err("local Python runtime returned a job for another publish plan".to_owned());
+    }
+    Ok(PublishPlanSummary {
+        plan_id,
+        revision_id,
+        status: detail.plan.status,
+        approval_status: detail.plan.approval_status,
+        created_at: detail.plan.created_at,
+        updated_at: detail.plan.updated_at,
+        variants,
+        jobs,
+        persistence: "local_database",
+    })
+}
+
+fn public_publish_variant(variant: PublishVariantWire) -> Result<PublishVariantSummary, String> {
+    if !supported_platform(&variant.platform)
+        || variant.account_ref.trim().is_empty()
+        || variant.account_ref.chars().count() > 300
+        || variant.title.trim().is_empty()
+        || variant.title.chars().count() > 500
+        || !valid_hash(&variant.content_hash)
+    {
+        return Err("local Python runtime returned an invalid platform variant".to_owned());
+    }
+    Ok(PublishVariantSummary {
+        id: validate_backend_id(variant.id, "platform variant")?,
+        platform: variant.platform,
+        account_ref: variant.account_ref,
+        title: variant.title,
+        content_hash: variant.content_hash,
+    })
+}
+
+fn public_publish_job(job: PublishJobWire) -> Result<PublishJobSummary, String> {
+    if !supported_platform(&job.platform)
+        || job.account_ref.trim().is_empty()
+        || job.account_ref.chars().count() > 300
+        || !matches!(job.operation.as_str(), "dry_run" | "reconcile")
+        || !matches!(
+            job.state.as_str(),
+            "pending"
+                | "in_progress"
+                | "succeeded"
+                | "failed_retryable"
+                | "failed_terminal"
+                | "unknown"
+                | "reconciling"
+                | "cancelled"
+        )
+        || !valid_hash(&job.idempotency_key)
+        || !valid_hash(&job.payload_hash)
+        || !valid_timestamp(&job.created_at)
+        || !valid_timestamp(&job.updated_at)
+        || job
+            .remote_id
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 500)
+        || job
+            .last_error
+            .as_ref()
+            .is_some_and(|value| value.len() > 2_000)
+    {
+        return Err("local Python runtime returned an invalid publish job".to_owned());
+    }
+    Ok(PublishJobSummary {
+        id: validate_backend_id(job.id, "publish job")?,
+        plan_id: validate_backend_id(job.plan_id, "publish plan")?,
+        variant_id: validate_backend_id(job.variant_id, "platform variant")?,
+        platform: job.platform,
+        account_ref: job.account_ref,
+        operation: job.operation,
+        idempotency_key: job.idempotency_key,
+        payload_hash: job.payload_hash,
+        state: job.state,
+        remote_id: job.remote_id,
+        last_error: job.last_error,
+        reconcile_required: job.reconcile_required,
+        created_at: job.created_at,
+        updated_at: job.updated_at,
+    })
+}
+
+fn public_publish_receipt(receipt: PublishReceiptWire) -> Result<PublishReceiptSummary, String> {
+    if receipt.status.trim().is_empty()
+        || receipt.status.len() > 100
+        || receipt.remote_id.trim().is_empty()
+        || receipt.remote_id.len() > 500
+        || !valid_hash(&receipt.content_hash)
+        || !valid_timestamp(&receipt.created_at)
+    {
+        return Err("local Python runtime returned an invalid publish receipt".to_owned());
+    }
+    Ok(PublishReceiptSummary {
+        id: validate_backend_id(receipt.id, "publish receipt")?,
+        job_id: validate_backend_id(receipt.job_id, "publish job")?,
+        status: receipt.status,
+        remote_id: receipt.remote_id,
+        content_hash: receipt.content_hash,
+        created_at: receipt.created_at,
+    })
+}
+
+fn public_process_publish_job(
+    requested_job_id: &str,
+    response: ProcessPublishJobWire,
+) -> Result<ProcessPublishJobSummary, String> {
+    let job = public_publish_job(response.job)?;
+    if job.id != requested_job_id {
+        return Err("本地运行时返回了不匹配的发布任务。".to_owned());
+    }
+    let receipt = response.receipt.map(public_publish_receipt).transpose()?;
+    if receipt
+        .as_ref()
+        .is_some_and(|receipt| receipt.job_id != job.id)
+    {
+        return Err("本地运行时返回了与任务不匹配的发布回执。".to_owned());
+    }
+    Ok(ProcessPublishJobSummary { job, receipt })
+}
+
+fn validate_process_summary_against_plan(
+    summary: &ProcessPublishJobSummary,
+    plan: &PublishPlanSummary,
+) -> Result<(), String> {
+    let plan_job = plan
+        .jobs
+        .iter()
+        .find(|job| job.id == summary.job.id)
+        .filter(|job| {
+            plan.plan_id == summary.job.plan_id
+                && job.plan_id == summary.job.plan_id
+                && job.variant_id == summary.job.variant_id
+                && job.platform == summary.job.platform
+                && job.account_ref == summary.job.account_ref
+                && job.operation == summary.job.operation
+                && job.idempotency_key == summary.job.idempotency_key
+                && job.payload_hash == summary.job.payload_hash
+        })
+        .ok_or_else(|| "本地运行时返回了与计划不匹配的发布任务。".to_owned())?;
+    let variant = plan
+        .variants
+        .iter()
+        .find(|variant| {
+            variant.id == plan_job.variant_id
+                && variant.platform == plan_job.platform
+                && variant.account_ref == plan_job.account_ref
+        })
+        .ok_or_else(|| "本地运行时返回了与变体不匹配的发布任务。".to_owned())?;
+    if summary
+        .receipt
+        .as_ref()
+        .is_some_and(|receipt| receipt.content_hash != variant.content_hash)
+    {
+        return Err("本地运行时返回了与平台变体不匹配的发布回执。".to_owned());
+    }
+    Ok(())
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn valid_timestamp(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
+}
+
+fn summarize_image_generation(
+    response: GenerateImageResponseWire,
+) -> Result<GenerateImageSummary, String> {
+    let provider = normalize_public_option(Some(response.provider), "provider", 100)?
+        .ok_or_else(|| "local Python runtime returned an empty image provider".to_owned())?;
+    let model = normalize_public_option(Some(response.model), "model", 200)?
+        .ok_or_else(|| "local Python runtime returned an empty image model".to_owned())?;
+    if response.artifacts.len() > 4 || response.remote_urls_ignored > 100 {
+        return Err("local Python runtime returned an invalid image summary".to_owned());
+    }
+    let media_types = response
+        .artifacts
+        .into_iter()
+        .map(|artifact| artifact.media_type)
+        .collect::<Vec<_>>();
+    if media_types.iter().any(|media_type| {
+        !matches!(
+            media_type.as_str(),
+            "image/png"
+                | "image/jpeg"
+                | "image/gif"
+                | "image/webp"
+                | "image/avif"
+                | "image/svg+xml"
+        )
+    }) {
+        return Err("local Python runtime returned an unsupported image media type".to_owned());
+    }
+    if media_types.is_empty() {
+        return Err(
+            "image provider returned no storable bytes; URL-only output was ignored".to_owned(),
+        );
+    }
+    Ok(GenerateImageSummary {
+        artifact_count: media_types.len(),
+        provider,
+        model,
+        mocked: response.mocked,
+        remote_urls_ignored: response.remote_urls_ignored,
+        media_types,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::{
-        strong_token, summarize_demo, title_from_markdown, validate_demo, validate_draft,
-        ContentPackageWire, DemoReceiptWire, DemoResponseWire, PythonSidecarSupervisor,
-        RunDemoRequest, SaveDraftRequest, SidecarSupervisor, StatusWire,
+        public_process_publish_job, public_publish_job, public_publish_plan, strong_token,
+        title_from_markdown, validate_connection_request, validate_create_publish_plan_request,
+        validate_draft, validate_image_request, validate_process_publish_job_request,
+        validate_process_summary_against_plan, validate_publish_plan_request,
+        validate_workflow_request, ApprovePublishPlanRequestWire, ArticleDetailWire,
+        ArticleListItemWire, ArticleWithRevisionWire, ConnectionConfigRequestWire,
+        ConnectionProfilePublic, ConnectionProfileWire, CreateArticleMetadataWire,
+        CreateArticleRequestWire, CreateConnectionProfileRequest, CreateConnectionRequestWire,
+        CreatePublishPlanRequest, CreatePublishPlanRequestWire, CreateRevisionRequestWire,
+        EmptyRequestWire, EnqueuePublishPlanWire, GenerateImageRequest, GenerateImageResponseWire,
+        GenerateImagesRequestWire, HealthResponseWire, IdWire, ProcessPublishJobRequest,
+        ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
+        PythonSidecarSupervisor, RunWorkflowRequest, SaveDraftRequest, SidecarSupervisor,
+        StartRunPolicyWire, StartRunRequestWire, WorkflowRunWire, WorkflowWire,
     };
+
+    #[test]
+    fn canonical_sidecar_fixtures_match_rust_wire_dtos() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../packages/contracts/fixtures/v1/sidecar-protocol.json"
+        ))
+        .expect("canonical Sidecar fixtures");
+
+        let article = CreateArticleRequestWire {
+            title: "Desktop draft".to_owned(),
+            markdown: "# Desktop draft\n\nCanonical Markdown.",
+            metadata: CreateArticleMetadataWire {
+                desktop_article_id: "desktop:article:1",
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(article).expect("serialize article request"),
+            fixtures["CreateArticleRequest"]
+        );
+
+        let revision = CreateRevisionRequestWire {
+            markdown: "# Desktop draft\n\nSecond revision.",
+            parent_revision_id: "revision-1",
+        };
+        assert_eq!(
+            serde_json::to_value(revision).expect("serialize revision request"),
+            fixtures["CreateRevisionRequest"]
+        );
+
+        let disabled_optional_node_ids = vec!["research".to_owned()];
+        let run = StartRunRequestWire {
+            workflow_id: "workflow-1",
+            article_id: "article-1",
+            revision_id: "revision-2",
+            topic: "Cross-process compatibility",
+            policy: StartRunPolicyWire {
+                require_content_approval: false,
+                allow_remote_publish: false,
+                disabled_optional_node_ids: &disabled_optional_node_ids,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(run).expect("serialize workflow request"),
+            fixtures["StartRunRequest"]
+        );
+
+        let publish_plan = CreatePublishPlanRequestWire {
+            revision_id: "revision-3",
+            targets: vec![
+                PublishTargetRequestWire {
+                    platform: "wechat".to_owned(),
+                    account_ref: "desktop-wechat".to_owned(),
+                },
+                PublishTargetRequestWire {
+                    platform: "csdn".to_owned(),
+                    account_ref: "desktop-csdn".to_owned(),
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(publish_plan).expect("serialize publish plan request"),
+            fixtures["CreatePublishPlanRequest"]
+        );
+
+        let approval = ApprovePublishPlanRequestWire {
+            actor_id: "user:desktop",
+            comment: "User reviewed the platform variants and approved this dry-run.",
+        };
+        assert_eq!(
+            serde_json::to_value(approval).expect("serialize approval request"),
+            fixtures["ApprovePublishPlanRequest"]
+        );
+        assert_eq!(
+            serde_json::to_value(EmptyRequestWire {}).expect("serialize empty request"),
+            fixtures["EmptyRequest"]
+        );
+
+        let image = GenerateImagesRequestWire {
+            prompt: "A restrained editorial cover",
+            size: "1024x1024",
+            model: None,
+        };
+        assert_eq!(
+            serde_json::to_value(image).expect("serialize image request"),
+            fixtures["GenerateImagesRequest"]
+        );
+
+        let connection = CreateConnectionRequestWire {
+            name: "Deterministic Mock",
+            provider: "mock",
+            base_url: None,
+            secret_ref: "mock://deterministic",
+            config: ConnectionConfigRequestWire {
+                default_text_model: Some("mock-text"),
+                default_image_model: None,
+                timeout_seconds: 30,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(connection).expect("serialize connection request"),
+            fixtures["CreateConnectionProfileRequest"]
+        );
+
+        serde_json::from_value::<HealthResponseWire>(fixtures["HealthResponse"].clone())
+            .expect("health response wire");
+        serde_json::from_value::<ArticleWithRevisionWire>(
+            fixtures["CreateArticleResponse"].clone(),
+        )
+        .expect("article response wire");
+        serde_json::from_value::<IdWire>(fixtures["CreateRevisionResponse"].clone())
+            .expect("revision response wire");
+        serde_json::from_value::<Vec<ArticleListItemWire>>(
+            fixtures["ListArticlesResponse"].clone(),
+        )
+        .expect("article list response wire");
+        serde_json::from_value::<ArticleDetailWire>(fixtures["ArticleDetailResponse"].clone())
+            .expect("article detail response wire");
+        serde_json::from_value::<Vec<WorkflowWire>>(fixtures["ListWorkflowsResponse"].clone())
+            .expect("workflow list response wire");
+        serde_json::from_value::<WorkflowRunWire>(fixtures["WorkflowRunResponse"].clone())
+            .expect("workflow run response wire");
+        serde_json::from_value::<PublishPlanDetailWire>(
+            fixtures["PublishPlanDetailResponse"].clone(),
+        )
+        .expect("publish plan response wire");
+        serde_json::from_value::<EnqueuePublishPlanWire>(
+            fixtures["EnqueuePublishPlanResponse"].clone(),
+        )
+        .expect("enqueue response wire");
+        serde_json::from_value::<ProcessPublishJobWire>(
+            fixtures["ProcessPublishJobResponse"].clone(),
+        )
+        .expect("process job response wire");
+        serde_json::from_value::<GenerateImageResponseWire>(
+            fixtures["GenerateImagesResponse"].clone(),
+        )
+        .expect("image response wire");
+        serde_json::from_value::<ConnectionProfileWire>(
+            fixtures["ConnectionProfilePublic"].clone(),
+        )
+        .expect("connection response wire");
+        serde_json::from_value::<Vec<ConnectionProfileWire>>(
+            fixtures["ListConnectionProfilesResponse"].clone(),
+        )
+        .expect("connection list response wire");
+
+        let mut leaked_connection = fixtures["ConnectionProfilePublic"].clone();
+        leaked_connection["secret_ref"] = serde_json::json!("env://MUST_NOT_LEAK");
+        assert!(serde_json::from_value::<ConnectionProfileWire>(leaked_connection).is_err());
+    }
 
     #[test]
     fn generated_tokens_are_strong_and_unique() {
@@ -763,13 +2116,46 @@ mod tests {
             markdown: "# hello".to_owned(),
         })
         .is_ok());
-        assert!(validate_demo(&RunDemoRequest {
-            title: "Demo".to_owned(),
+        assert!(validate_workflow_request(&RunWorkflowRequest {
+            article_id: "desktop-article".to_owned(),
+            revision_id: "revision-1".to_owned(),
             topic: "Local first".to_owned(),
-            source_markdown: "# Source".to_owned(),
-            platforms: vec!["wechat".to_owned()],
+            disabled_optional_node_ids: vec!["research".to_owned()],
         })
         .is_ok());
+        assert!(validate_workflow_request(&RunWorkflowRequest {
+            article_id: "desktop-article".to_owned(),
+            revision_id: "revision-1".to_owned(),
+            topic: "Local first".to_owned(),
+            disabled_optional_node_ids: vec!["risk".to_owned()],
+        })
+        .is_err());
+        assert!(
+            validate_create_publish_plan_request(&CreatePublishPlanRequest {
+                article_id: "desktop-article".to_owned(),
+                revision_id: "revision-1".to_owned(),
+                platforms: vec!["wechat".to_owned(), "csdn".to_owned()],
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_create_publish_plan_request(&CreatePublishPlanRequest {
+                article_id: "desktop-article".to_owned(),
+                revision_id: "revision-1".to_owned(),
+                platforms: vec!["wechat".to_owned(), "wechat".to_owned()],
+            })
+            .is_err()
+        );
+        assert!(validate_publish_plan_request(&PublishPlanRequest {
+            plan_id: "plan-1".to_owned(),
+        })
+        .is_ok());
+        assert!(
+            validate_process_publish_job_request(&ProcessPublishJobRequest {
+                job_id: "job-1".to_owned(),
+            })
+            .is_ok()
+        );
     }
 
     #[test]
@@ -781,29 +2167,165 @@ mod tests {
     }
 
     #[test]
-    fn demo_response_is_reduced_to_a_safe_summary() {
-        let summary = summarize_demo(DemoResponseWire {
-            run: StatusWire {
-                status: "completed".to_owned(),
-                state_json: HashMap::from([(
-                    "outline_artifact_id".to_owned(),
-                    serde_json::json!("artifact-1"),
-                )]),
-            },
-            plan: StatusWire {
-                status: "completed".to_owned(),
-                state_json: HashMap::new(),
-            },
-            receipts: vec![DemoReceiptWire {
-                status: "published".to_owned(),
-                remote_id: "dry-run-1".to_owned(),
-            }],
-            content_package: ContentPackageWire {
-                assets: vec![serde_json::json!({"private": "discarded"})],
-            },
+    fn image_generation_inputs_are_bounded() {
+        assert!(validate_image_request(GenerateImageRequest {
+            prompt: "一张克制的文章封面".to_owned(),
+            size: "1536x1024".to_owned(),
+            model: None,
+        })
+        .is_ok());
+        assert!(validate_image_request(GenerateImageRequest {
+            prompt: "cover".to_owned(),
+            size: "999x999".to_owned(),
+            model: None,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn connection_inputs_accept_references_but_reject_secret_shaped_values() {
+        let valid = validate_connection_request(CreateConnectionProfileRequest {
+            name: "Local model".to_owned(),
+            provider: "openai-compatible".to_owned(),
+            base_url: Some("http://127.0.0.1:11434/v1".to_owned()),
+            secret_env_var: Some("OPEN_PUBLISHER_MODEL_KEY".to_owned()),
+            default_text_model: Some("example-text".to_owned()),
+            default_image_model: None,
+            timeout_seconds: 30,
+        })
+        .expect("public connection fields");
+        assert_eq!(
+            valid.secret_env_var.as_deref(),
+            Some("OPEN_PUBLISHER_MODEL_KEY")
+        );
+
+        let invalid = validate_connection_request(CreateConnectionProfileRequest {
+            name: "Unsafe".to_owned(),
+            provider: "openai-compatible".to_owned(),
+            base_url: Some("http://models.example.com/v1".to_owned()),
+            secret_env_var: Some("sk-plaintext-secret".to_owned()),
+            default_text_model: None,
+            default_image_model: None,
+            timeout_seconds: 30,
         });
-        assert_eq!(summary.artifact_count, 2);
-        assert_eq!(summary.receipts[0].remote_id, "dry-run-1");
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn public_connection_dto_has_no_secret_reference() {
+        let serialized = serde_json::to_value(ConnectionProfilePublic {
+            id: "connection-1".to_owned(),
+            name: "Mock".to_owned(),
+            provider: "mock".to_owned(),
+            base_url: None,
+            secret_scheme: "mock".to_owned(),
+            secret_configured: true,
+            default_text_model: Some("mock-text".to_owned()),
+            default_image_model: None,
+            timeout_seconds: 30,
+            created_at: "2026-07-30T00:00:00Z".to_owned(),
+        })
+        .expect("serialize public profile");
+        assert!(serialized.get("secretRef").is_none());
+        assert!(serialized.get("secretEnvVar").is_none());
+        assert!(serialized.get("apiKey").is_none());
+        assert!(serialized.get("endpoint").is_none());
+        assert!(serialized.get("token").is_none());
+
+        let injected =
+            serde_json::from_value::<CreateConnectionProfileRequest>(serde_json::json!({
+                "name": "unsafe",
+                "provider": "openai-compatible",
+                "baseUrl": "https://example.com/v1",
+                "secretEnvVar": "OPENAI_API_KEY",
+                "defaultTextModel": null,
+                "defaultImageModel": null,
+                "timeoutSeconds": 30,
+                "apiKey": "plaintext-must-be-rejected"
+            }));
+        assert!(injected.is_err());
+    }
+
+    #[test]
+    fn granular_publish_responses_are_reduced_to_safe_summaries() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../packages/contracts/fixtures/v1/sidecar-protocol.json"
+        ))
+        .expect("canonical Sidecar fixtures");
+        let summary = public_publish_plan(
+            serde_json::from_value::<PublishPlanDetailWire>(
+                fixtures["PublishPlanDetailResponse"].clone(),
+            )
+            .expect("publish plan response"),
+        )
+        .expect("safe publish plan");
+        assert_eq!(summary.status, "draft");
+        assert_eq!(summary.variants.len(), 2);
+        assert!(summary.jobs.is_empty());
+
+        let enqueued = serde_json::from_value::<EnqueuePublishPlanWire>(
+            fixtures["EnqueuePublishPlanResponse"].clone(),
+        )
+        .expect("enqueue response");
+        let job = public_publish_job(enqueued.jobs.into_iter().next().expect("enqueued job"))
+            .expect("safe publish job");
+        assert_eq!(job.operation, "dry_run");
+        assert_eq!(job.state, "pending");
+
+        let process_fixture = fixtures["ProcessPublishJobResponse"].clone();
+        let mut consistent_process = process_fixture.clone();
+        consistent_process["receipt"]["content_hash"] = serde_json::Value::String("c".repeat(64));
+        let processed = public_process_publish_job(
+            "job-1",
+            serde_json::from_value::<ProcessPublishJobWire>(consistent_process.clone())
+                .expect("process response"),
+        )
+        .expect("safe process response");
+        assert_eq!(processed.job.state, "succeeded");
+        let receipt = processed.receipt.as_ref().expect("dry-run receipt");
+        assert_eq!(receipt.remote_id, "dry-run-job-1");
+        assert_ne!(receipt.content_hash, processed.job.payload_hash);
+
+        let mut completed_plan_fixture = fixtures["PublishPlanDetailResponse"].clone();
+        completed_plan_fixture["plan"]["status"] =
+            serde_json::Value::String("completed".to_owned());
+        completed_plan_fixture["plan"]["approval_status"] =
+            serde_json::Value::String("approved".to_owned());
+        completed_plan_fixture["jobs"] =
+            serde_json::Value::Array(vec![consistent_process["job"].clone()]);
+        let completed_plan = public_publish_plan(
+            serde_json::from_value::<PublishPlanDetailWire>(completed_plan_fixture)
+                .expect("completed plan response"),
+        )
+        .expect("safe completed plan");
+        validate_process_summary_against_plan(&processed, &completed_plan)
+            .expect("process result belongs to plan variant");
+
+        let mut wrong_job = process_fixture.clone();
+        wrong_job["job"]["id"] = serde_json::Value::String("job-other".to_owned());
+        assert!(public_process_publish_job(
+            "job-1",
+            serde_json::from_value(wrong_job).expect("wrong job response"),
+        )
+        .is_err());
+
+        let mut wrong_receipt = process_fixture.clone();
+        wrong_receipt["receipt"]["job_id"] = serde_json::Value::String("job-other".to_owned());
+        assert!(public_process_publish_job(
+            "job-1",
+            serde_json::from_value(wrong_receipt).expect("wrong receipt response"),
+        )
+        .is_err());
+
+        let mut wrong_hash_fixture = process_fixture;
+        wrong_hash_fixture["receipt"]["content_hash"] = serde_json::Value::String("f".repeat(64));
+        let wrong_hash = public_process_publish_job(
+            "job-1",
+            serde_json::from_value(wrong_hash_fixture).expect("wrong hash response"),
+        )
+        .expect("hash relationship requires plan context");
+        assert!(validate_process_summary_against_plan(&wrong_hash, &completed_plan).is_err());
+
         let serialized = serde_json::to_value(summary).expect("serialize summary");
         assert!(serialized.get("endpoint").is_none());
         assert!(serialized.get("token").is_none());
@@ -828,17 +2350,121 @@ mod tests {
             .expect("draft persists");
         assert_eq!(saved.persistence, "local_database");
 
-        let summary = supervisor
-            .run_demo(RunDemoRequest {
-                title: "Desktop smoke".to_owned(),
+        let profile = supervisor
+            .create_connection_profile(CreateConnectionProfileRequest {
+                name: "Desktop smoke mock".to_owned(),
+                provider: "mock".to_owned(),
+                base_url: None,
+                secret_env_var: None,
+                default_text_model: Some("mock-text".to_owned()),
+                default_image_model: Some("mock-image".to_owned()),
+                timeout_seconds: 12,
+            })
+            .expect("connection reference persists");
+        assert_eq!(profile.secret_scheme, "mock");
+        let mut profiles = Vec::new();
+        for _ in 0..10 {
+            profiles = supervisor
+                .list_connection_profiles()
+                .expect("connections list");
+            if profiles.iter().any(|candidate| candidate.id == profile.id) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, profile.id);
+        assert_eq!(profiles[0].secret_scheme, "mock");
+
+        let workflow = supervisor
+            .run_workflow(RunWorkflowRequest {
+                article_id: "desktop-smoke".to_owned(),
+                revision_id: saved.revision_id,
                 topic: "Private sidecar bridge".to_owned(),
-                source_markdown: "# Input\n\nRun the deterministic demo.".to_owned(),
+                disabled_optional_node_ids: Vec::new(),
+            })
+            .expect("workflow completes");
+        assert_eq!(workflow.status, "completed");
+        assert_eq!(workflow.artifacts.len(), 8);
+        assert!(workflow.output_markdown.contains("canonical draft"));
+
+        let customized = supervisor
+            .run_workflow(RunWorkflowRequest {
+                article_id: "desktop-smoke".to_owned(),
+                revision_id: workflow.output_revision_id,
+                topic: "Optional node selection".to_owned(),
+                disabled_optional_node_ids: vec!["research".to_owned(), "natural-style".to_owned()],
+            })
+            .expect("customized workflow completes");
+        assert_eq!(customized.artifacts.len(), 5);
+
+        let plan = supervisor
+            .create_publish_plan(CreatePublishPlanRequest {
+                article_id: "desktop-smoke".to_owned(),
+                revision_id: customized.output_revision_id,
                 platforms: vec!["wechat".to_owned(), "csdn".to_owned()],
             })
-            .expect("demo completes");
-        assert_eq!(summary.run_status, "completed");
-        assert_eq!(summary.artifact_count, 3);
-        assert_eq!(summary.receipts.len(), 2);
+            .expect("publish plan persists");
+        assert_eq!(plan.status, "draft");
+        assert_eq!(plan.approval_status, "pending");
+        assert_eq!(plan.variants.len(), 2);
+        assert!(plan.jobs.is_empty());
+
+        let plan_request = PublishPlanRequest {
+            plan_id: plan.plan_id.clone(),
+        };
+        assert!(supervisor
+            .enqueue_publish_plan(plan_request.clone())
+            .is_err());
+        let approved = supervisor
+            .approve_publish_plan(plan_request.clone())
+            .expect("explicit approval persists");
+        assert_eq!(approved.approval_status, "approved");
+
+        let first_enqueue = supervisor
+            .enqueue_publish_plan(plan_request.clone())
+            .expect("first enqueue succeeds");
+        let second_enqueue = supervisor
+            .enqueue_publish_plan(plan_request.clone())
+            .expect("second enqueue is idempotent");
+        let mut first_job_ids = first_enqueue
+            .jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>();
+        let mut second_job_ids = second_enqueue
+            .jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>();
+        first_job_ids.sort();
+        second_job_ids.sort();
+        assert_eq!(first_job_ids, second_job_ids);
+        assert_eq!(first_job_ids.len(), 2);
+
+        for job_id in first_job_ids {
+            let processed = supervisor
+                .process_publish_job(ProcessPublishJobRequest { job_id })
+                .expect("dry-run job completes");
+            assert_eq!(processed.job.state, "succeeded");
+            assert!(processed.receipt.is_some());
+        }
+        let completed = supervisor
+            .get_publish_plan(plan_request)
+            .expect("completed plan reloads");
+        assert_eq!(completed.status, "completed");
+        assert!(completed.jobs.iter().all(|job| job.state == "succeeded"));
+
+        let image = supervisor
+            .generate_image(GenerateImageRequest {
+                prompt: "Desktop smoke cover".to_owned(),
+                size: "1024x1024".to_owned(),
+                model: None,
+            })
+            .expect("mock image persists");
+        assert!(image.mocked);
+        assert_eq!(image.artifact_count, 1);
+        assert_eq!(image.media_types, vec!["image/svg+xml"]);
         supervisor.stop().expect("sidecar stops");
     }
 }

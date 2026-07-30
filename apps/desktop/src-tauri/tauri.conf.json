@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev:web",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm build:web",
+    "beforeBuildCommand": "pnpm build:bundle-inputs",
     "frontendDist": "../dist"
   },
   "app": {
