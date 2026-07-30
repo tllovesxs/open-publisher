@@ -245,6 +245,7 @@ export interface ContentPackageEntry {
 }
 
 export interface ContentPackageManifest extends ContractBase {
+  sourceApp: string;
   articleRevisionId: Identifier;
   entries: ContentPackageEntry[];
   platformVariantIds: Identifier[];

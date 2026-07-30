@@ -4,8 +4,12 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from open_publisher_runtime.application.platform_adapters import (
+    CapabilityReport,
+    PlatformName,
+)
 from open_publisher_runtime.domain.contracts import ContentPackageV1
 from open_publisher_runtime.domain.entities import (
     Article,
@@ -113,6 +117,68 @@ class ConnectionProfilePublic(ApiModel):
         )
 
 
+class ArtifactPublic(ApiModel):
+    id: str
+    kind: str
+    media_type: str
+    content_hash: str
+    size_bytes: int
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    @classmethod
+    def from_artifact(cls, artifact: Artifact) -> ArtifactPublic:
+        return cls(
+            id=artifact.id,
+            kind=artifact.kind,
+            media_type=artifact.media_type,
+            content_hash=artifact.content_hash,
+            size_bytes=artifact.size_bytes,
+            metadata_json=artifact.metadata_json,
+            created_at=artifact.created_at,
+        )
+
+
+class GenerateImagesRequest(ApiModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    size: Literal[
+        "512x512",
+        "768x768",
+        "1024x1024",
+        "1024x1536",
+        "1536x1024",
+    ] = "1024x1024"
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("image prompt cannot be blank")
+        return value
+
+
+class GenerateImagesResponse(ApiModel):
+    provider: str
+    model: str
+    mocked: bool
+    artifacts: list[ArtifactPublic]
+    remote_urls_ignored: int = Field(ge=0)
+
+
+class PlatformCapabilitySummary(ApiModel):
+    platform: PlatformName
+    reports: list[CapabilityReport]
+    fallback_selected: Literal[False] = False
+
+
+class PlatformCapabilitiesResponse(ApiModel):
+    evaluation: Literal["static_offline"] = "static_offline"
+    platforms: list[PlatformCapabilitySummary]
+    network_probe_performed: Literal[False] = False
+    remote_write_performed: Literal[False] = False
+
+
 class PublishTargetRequest(ApiModel):
     platform: str = Field(min_length=1, max_length=100)
     account_ref: str = Field(min_length=1, max_length=300)
@@ -131,6 +197,16 @@ class PublishTargetRequest(ApiModel):
 class CreatePublishPlanRequest(ApiModel):
     revision_id: str
     targets: list[PublishTargetRequest] = Field(min_length=1)
+    selected_asset_ids: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("selected_asset_ids")
+    @classmethod
+    def validate_unique_selected_asset_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("selected_asset_ids must not contain duplicates")
+        if any(not asset_id.strip() for asset_id in value):
+            raise ValueError("selected_asset_ids cannot contain blank values")
+        return value
 
 
 class ApprovePublishPlanRequest(ApiModel):
@@ -157,7 +233,8 @@ class ProcessJobResponse(ApiModel):
 class ExportContentPackageRequest(ApiModel):
     article_id: str
     revision_id: str | None = None
-    artifact_ids: list[str] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list, max_length=64)
+    platform_variant_ids: list[str] = Field(default_factory=list, max_length=32)
 
 
 class ImportContentPackageResponse(ApiModel):
@@ -173,6 +250,16 @@ class DemoRequest(ApiModel):
         default="这是一段由用户提供的原始素材，运行时将基于它创建不可变修订。"
     )
     platforms: list[str] = Field(default_factory=lambda: ["csdn", "wechat", "toutiao"])
+    disabled_optional_node_ids: list[
+        Literal["research", "outline", "natural-style", "review", "visual"]
+    ] = Field(default_factory=list, max_length=5)
+
+    @field_validator("disabled_optional_node_ids")
+    @classmethod
+    def validate_unique_disabled_nodes(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("disabled_optional_node_ids must not contain duplicates")
+        return value
 
 
 class DemoResponse(ApiModel):

@@ -11,9 +11,14 @@ from open_publisher_runtime import __version__
 from open_publisher_runtime.api.dependencies import RuntimeContainer, require_sidecar_token
 from open_publisher_runtime.api.routes import router
 from open_publisher_runtime.api.schemas import HealthResponse
-from open_publisher_runtime.application.harness import WorkflowService
+from open_publisher_runtime.application.articles import ArticleService
+from open_publisher_runtime.application.artifacts import ArtifactService
+from open_publisher_runtime.application.harness import RunController, WorkflowService
 from open_publisher_runtime.application.model_access import ModelAccessLayer
-from open_publisher_runtime.application.publishing import DeterministicDryRunPublisher
+from open_publisher_runtime.application.publishing import (
+    DeterministicDryRunPublisher,
+    PublishOutboxService,
+)
 from open_publisher_runtime.config import Settings
 from open_publisher_runtime.infrastructure.artifact_store import FileSystemArtifactStore
 from open_publisher_runtime.infrastructure.database import Database
@@ -48,6 +53,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with database.session() as session:
             repository = SqlAlchemyRuntimeRepository(session)
             WorkflowService(repository).ensure_presets()
+            artifacts = ArtifactService(repository, blob_store)
+            articles = ArticleService(repository, artifacts)
+            RunController(
+                repository=repository,
+                artifact_service=artifacts,
+                article_service=articles,
+                workflow_runner=container.workflow_runner,
+            ).recover_interrupted_runs()
+            PublishOutboxService(
+                repository=repository,
+                artifact_service=artifacts,
+                publisher=container.dry_run_publisher,
+            ).recover_interrupted_jobs()
         yield
         database.dispose()
 

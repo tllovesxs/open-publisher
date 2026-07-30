@@ -21,6 +21,9 @@ const ajv = new Ajv2020({ allErrors: true, strictSchema: true, strictTypes: fals
 addFormats(ajv);
 schemas.forEach((schema) => ajv.addSchema(schema));
 const hash = `sha256:${"a".repeat(64)}`;
+const sidecarFixtures = JSON.parse(
+  await readFile(new URL("../fixtures/v1/sidecar-protocol.json", import.meta.url), "utf8"),
+);
 
 test("canonical Markdown revision validates and unknown fields fail", () => {
   const validate = ajv.getSchema(
@@ -289,6 +292,7 @@ test("content package paths are portable and duplicate-safe", () => {
   const manifest = {
     schemaVersion: "1.0",
     id: "package:1",
+    sourceApp: "open-publisher",
     articleRevisionId: "revision:1",
     entries: [
       {
@@ -304,6 +308,8 @@ test("content package paths are portable and duplicate-safe", () => {
     createdAt: "2026-07-30T00:00:00.000Z",
   };
   assert.equal(validateSchema(manifest), true, JSON.stringify(validateSchema.errors));
+  const { sourceApp: _sourceApp, ...missingSourceApp } = manifest;
+  assert.equal(validateSchema(missingSourceApp), false);
   assert.equal(
     validateSchema({
       ...manifest,
@@ -367,6 +373,46 @@ test("connection endpoints reject embedded credentials without echoing values", 
   });
   assert.equal(querySecret.valid, false);
   assert.equal(querySecret.errors.join(" ").includes("do-not-echo"), false);
+});
+
+test("canonical Sidecar fixtures validate each Rust/Python wire definition", () => {
+  const schemaId = "https://schemas.openpublisher.dev/v1/sidecar-protocol.schema.json";
+  for (const [definition, fixture] of Object.entries(sidecarFixtures)) {
+    const validate = ajv.compile({ $ref: `${schemaId}#/$defs/${definition}` });
+    assert.equal(validate(fixture), true, `${definition}: ${JSON.stringify(validate.errors)}`);
+  }
+
+  const processedJob = sidecarFixtures.ProcessPublishJobResponse;
+  const processedVariant = sidecarFixtures.PublishPlanDetailResponse.variants.find(
+    (variant) => variant.id === processedJob.job.variant_id,
+  );
+  assert.ok(processedVariant, "processed job fixture must reference a known platform variant");
+  assert.equal(processedJob.receipt.content_hash, processedVariant.content_hash);
+  assert.notEqual(
+    processedJob.receipt.content_hash,
+    processedJob.job.payload_hash,
+    "receipt content_hash represents canonical platform content, not the transport payload",
+  );
+
+  const validateDemo = ajv.compile({ $ref: `${schemaId}#/$defs/CompleteDemoRequest` });
+  assert.equal(
+    validateDemo({
+      ...sidecarFixtures.CompleteDemoRequest,
+      api_key: "must-not-cross-the-boundary",
+    }),
+    false,
+  );
+
+  const validateConnection = ajv.compile({
+    $ref: `${schemaId}#/$defs/ConnectionProfilePublic`,
+  });
+  assert.equal(
+    validateConnection({
+      ...sidecarFixtures.ConnectionProfilePublic,
+      secret_ref: "env://MUST_NOT_LEAK",
+    }),
+    false,
+  );
 });
 
 test("publish jobs expose explicit unknown and reconciling states", () => {

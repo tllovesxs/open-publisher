@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import html
 import os
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -12,6 +14,10 @@ from open_publisher_runtime.application.model_access import (
     TextGenerationRequest,
     TextGenerationResponse,
 )
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
 
 
 class EnvironmentSecretResolver:
@@ -42,7 +48,15 @@ class MockTextProvider:
         source = str(request.context.get("source_markdown") or "").strip()
         topic = str(request.context.get("topic") or title).strip()
 
-        if request.purpose == "outline":
+        if request.purpose == "research":
+            text = (
+                "## 研究卡片\n\n"
+                f"- 主题：{topic}\n"
+                "- 已知素材：仅使用用户提供内容与可验证的通用方法\n"
+                "- 事实边界：不补造统计数字、机构背书或人物引语\n"
+                "- 写作角度：问题背景、实践路径、风险边界、下一步"
+            )
+        elif request.purpose == "outline":
             text = (
                 f"# {title}：写作大纲\n\n"
                 f"1. 为什么关注「{topic}」\n"
@@ -59,6 +73,17 @@ class MockTextProvider:
                 "## 实践建议\n\n"
                 "从可回滚的最小闭环开始，记录每一步产物，最后再适配不同发布平台。"
             )
+        elif request.purpose == "naturalize":
+            naturalized = source.replace(
+                "先明确目标和约束，再将可验证的步骤拆分执行，并保留人工修订空间。",
+                "先把目标和边界说清楚，再逐步验证；关键判断仍留给作者确认。",
+            ).replace(
+                "从可回滚的最小闭环开始，记录每一步产物，最后再适配不同发布平台。",
+                "可以先跑通一个可回滚的小闭环，留下过程产物，再逐个平台校准表达。",
+            )
+            if naturalized == source:
+                naturalized = f"{source}\n\n> 本稿已完成自然表达整理，事实边界保持不变。"
+            text = naturalized
         elif request.purpose == "review":
             text = (
                 "## 审核结果\n\n"
@@ -66,6 +91,22 @@ class MockTextProvider:
                 "- 事实：当前为演示内容，无外部事实声明\n"
                 "- 合规：未发现演示规则中的硬错误\n"
                 "- 建议：正式发布前由用户确认平台预览"
+            )
+        elif request.purpose == "risk":
+            text = (
+                "## 风险检查\n\n"
+                "- 事实风险：未发现无来源的数字、引语或权威背书\n"
+                "- 合规风险：未发现演示规则中的违禁表达\n"
+                "- 平台风险：标题与正文仍需在发布预览中人工确认\n"
+                "- 结论：低风险，可进入人工审核"
+            )
+        elif request.purpose == "visual":
+            text = (
+                "## 视觉计划\n\n"
+                "- 封面：单一核心标题，留出平台裁切安全区\n"
+                "- 配图 1：目标、约束、执行三段式流程图\n"
+                "- 配图 2：风险检查清单卡片\n"
+                "- 约束：不生成品牌标识、人物肖像或未经证实的数据图"
             )
         else:
             text = f"[mock:{request.purpose}] {request.prompt[:200]}"
@@ -85,11 +126,17 @@ class MockImageProvider:
         return "mock"
 
     def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
-        safe_prompt = request.prompt.replace("<", "&lt;").replace(">", "&gt;")[:120]
+        safe_prompt = html.escape(request.prompt, quote=True)[:120]
+        try:
+            width_text, height_text = request.size.casefold().split("x", maxsplit=1)
+            width = int(width_text)
+            height = int(height_text)
+        except (TypeError, ValueError):
+            width = height = 1024
         svg = (
-            '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">'
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
             '<rect width="100%" height="100%" fill="#172033"/>'
-            '<text x="64" y="512" fill="#ffffff" font-size="32">'
+            f'<text x="64" y="{height // 2}" fill="#ffffff" font-size="32">'
             f"{safe_prompt}</text></svg>"
         )
         return ImageGenerationResponse(
@@ -108,25 +155,39 @@ class OpenAICompatibleTextProvider:
         api_key: str,
         default_model: str,
         timeout_seconds: float = 60,
+        max_output_tokens: int | None = None,
+        extra_request_fields: dict[str, Any] | None = None,
     ) -> None:
+        if max_output_tokens is not None and not 1 <= max_output_tokens <= 32_768:
+            raise ValueError("text output token limit must be between 1 and 32768")
+        reserved_fields = {"model", "messages", "temperature", "max_tokens"}
+        extra_fields = dict(extra_request_fields or {})
+        if reserved_fields.intersection(extra_fields):
+            raise ValueError("extra text request fields cannot replace reserved fields")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
         self.timeout_seconds = timeout_seconds
+        self.max_output_tokens = max_output_tokens
+        self.extra_request_fields = extra_fields
 
     @property
     def name(self) -> str:
         return "openai-compatible"
 
     def generate(self, request: TextGenerationRequest) -> TextGenerationResponse:
+        request_payload = {
+            "model": request.model or self.default_model,
+            "messages": [{"role": "user", "content": request.prompt}],
+            "temperature": request.temperature,
+            **self.extra_request_fields,
+        }
+        if self.max_output_tokens is not None:
+            request_payload["max_tokens"] = self.max_output_tokens
         response = httpx.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": request.model or self.default_model,
-                "messages": [{"role": "user", "content": request.prompt}],
-                "temperature": request.temperature,
-            },
+            json=request_payload,
             timeout=self.timeout_seconds,
         )
         response.raise_for_status()
@@ -151,36 +212,99 @@ class OpenAICompatibleImageProvider:
         api_key: str,
         default_model: str,
         timeout_seconds: float = 120,
+        trusted_image_hosts: frozenset[str] = frozenset(),
+        max_download_bytes: int = 10 * 1024 * 1024,
+        size_field: str = "size",
+        response_format: str | None = "b64_json",
+        extra_request_fields: dict[str, Any] | None = None,
     ) -> None:
+        if size_field not in {"size", "image_size"}:
+            raise ValueError("image size field must be 'size' or 'image_size'")
+        reserved_fields = {"model", "prompt", "size", "image_size", "response_format"}
+        extra_fields = dict(extra_request_fields or {})
+        if reserved_fields.intersection(extra_fields):
+            raise ValueError("extra image request fields cannot replace reserved fields")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
         self.timeout_seconds = timeout_seconds
+        self.trusted_image_hosts = frozenset(
+            host.strip().casefold() for host in trusted_image_hosts if host.strip()
+        )
+        self.max_download_bytes = max_download_bytes
+        self.size_field = size_field
+        self.response_format = response_format
+        self.extra_request_fields = extra_fields
 
     @property
     def name(self) -> str:
         return "openai-compatible"
 
+    def _download_trusted_image(self, url: str) -> str:
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.hostname is None
+            or parsed.hostname.casefold() not in self.trusted_image_hosts
+        ):
+            raise ValueError("image provider returned a URL outside the trusted host allowlist")
+        if parsed.port not in {None, 443}:
+            raise ValueError("image provider returned a URL with an unsupported port")
+
+        chunks: list[bytes] = []
+        received = 0
+        with httpx.stream(
+            "GET",
+            url,
+            follow_redirects=False,
+            timeout=self.timeout_seconds,
+        ) as response:
+            response.raise_for_status()
+            if response.is_redirect:
+                raise ValueError("trusted image download cannot follow redirects")
+            for chunk in response.iter_bytes():
+                received += len(chunk)
+                if received > self.max_download_bytes:
+                    raise ValueError("downloaded image exceeds the provider size limit")
+                chunks.append(chunk)
+        return base64.b64encode(b"".join(chunks)).decode("ascii")
+
     def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
+        request_payload = {
+            "model": request.model or self.default_model,
+            "prompt": request.prompt,
+            self.size_field: request.size,
+            **self.extra_request_fields,
+        }
+        if self.response_format is not None:
+            request_payload["response_format"] = self.response_format
         response = httpx.post(
             f"{self.base_url}/images/generations",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": request.model or self.default_model,
-                "prompt": request.prompt,
-                "size": request.size,
-                "response_format": "b64_json",
-            },
+            json=request_payload,
             timeout=self.timeout_seconds,
         )
         response.raise_for_status()
         payload = response.json()
+        items = [
+            item
+            for collection in (payload.get("data", []), payload.get("images", []))
+            if isinstance(collection, list)
+            for item in collection
+            if isinstance(item, dict)
+        ]
+        urls = _unique_strings([str(item["url"]) for item in items if item.get("url")])
+        images_base64 = _unique_strings(
+            [str(item["b64_json"]) for item in items if item.get("b64_json")]
+        )
+        if self.trusted_image_hosts:
+            images_base64.extend(self._download_trusted_image(url) for url in urls)
+            images_base64 = _unique_strings(images_base64)
         return ImageGenerationResponse(
             provider=self.name,
             model=request.model or self.default_model,
-            urls=[item["url"] for item in payload.get("data", []) if item.get("url")],
-            images_base64=[
-                item["b64_json"] for item in payload.get("data", []) if item.get("b64_json")
-            ],
+            urls=urls,
+            images_base64=images_base64,
         )
-

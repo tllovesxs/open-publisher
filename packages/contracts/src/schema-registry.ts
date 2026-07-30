@@ -15,6 +15,7 @@ export const SCHEMA_IDS = {
   PlatformAdapterManifest:
     "https://schemas.openpublisher.dev/v1/platform-adapter-manifest.schema.json",
   RunEvent: "https://schemas.openpublisher.dev/v1/run-event.schema.json",
+  SidecarProtocol: "https://schemas.openpublisher.dev/v1/sidecar-protocol.schema.json",
 } as const;
 
 export type ContractSchemaName = keyof typeof SCHEMA_IDS;

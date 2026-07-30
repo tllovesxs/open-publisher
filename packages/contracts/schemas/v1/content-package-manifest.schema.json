@@ -7,6 +7,7 @@
   "required": [
     "schemaVersion",
     "id",
+    "sourceApp",
     "articleRevisionId",
     "entries",
     "platformVariantIds",
@@ -19,6 +20,13 @@
     },
     "id": {
       "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"
+    },
+    "sourceApp": {
+      "description": "Human-readable application identifier that produced the package.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
     },
     "articleRevisionId": {
       "$ref": "https://schemas.openpublisher.dev/v1/common.schema.json#/$defs/Identifier"

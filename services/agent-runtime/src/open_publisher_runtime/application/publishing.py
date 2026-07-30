@@ -24,6 +24,8 @@ from open_publisher_runtime.domain.enums import (
     PublishPlanStatus,
 )
 
+P0_RISK_POLICY_VERSION = "p0-dry-run-risk.v1"
+
 
 class PublishTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -108,11 +110,53 @@ class PublishOutboxService:
         self.artifact_service = artifact_service
         self.publisher = publisher
 
+    def recover_interrupted_jobs(self) -> list[PublishJob]:
+        interrupted = list(
+            self.repository.list_publish_jobs_by_states(
+                [PublishJobState.IN_PROGRESS, PublishJobState.RECONCILING]
+            )
+        )
+        affected_plan_ids: set[str] = set()
+        for job in interrupted:
+            affected_plan_ids.add(job.plan_id)
+            receipt = self.repository.get_publish_receipt_for_job(job.id)
+            if receipt is not None:
+                job.state = PublishJobState.SUCCEEDED
+                job.remote_id = receipt.remote_id
+                job.reconcile_required = False
+                job.last_error = None
+                job.updated_at = utc_now()
+                self.repository.update_publish_job(job)
+                continue
+
+            for attempt in self.repository.list_publish_attempts(job.id):
+                if attempt.state is PublishAttemptState.IN_PROGRESS:
+                    attempt.state = PublishAttemptState.UNKNOWN
+                    attempt.error = (
+                        "runtime stopped before the external operation outcome was recorded"
+                    )
+                    attempt.completed_at = utc_now()
+                    self.repository.update_publish_attempt(attempt)
+            job.state = PublishJobState.UNKNOWN
+            job.reconcile_required = True
+            job.last_error = (
+                "runtime restarted during an external operation; reconciliation required"
+            )
+            job.updated_at = utc_now()
+            self.repository.update_publish_job(job)
+
+        for plan_id in affected_plan_ids:
+            self._refresh_plan(plan_id)
+        if interrupted:
+            self.repository.commit()
+        return interrupted
+
     def create_plan(
         self,
         *,
         revision_id: str,
         targets: list[PublishTarget],
+        selected_asset_ids: list[str] | None = None,
     ) -> tuple[PublishPlan, list[PlatformVariant]]:
         revision = self.repository.get_revision(revision_id)
         if revision is None:
@@ -122,6 +166,19 @@ class PublishOutboxService:
             raise LookupError(f"article {revision.article_id} not found")
         if not targets:
             raise ValueError("publish plan requires at least one target")
+        normalized_asset_ids = [
+            asset_id.strip() for asset_id in (selected_asset_ids or [])
+        ]
+        if any(not asset_id for asset_id in normalized_asset_ids):
+            raise ValueError("selected asset ids cannot be blank")
+        if len(normalized_asset_ids) != len(set(normalized_asset_ids)):
+            raise ValueError("selected asset ids must be unique")
+        selected_asset_hashes: list[str] = []
+        for artifact_id in normalized_asset_ids:
+            artifact = self.repository.get_artifact(artifact_id)
+            if artifact is None:
+                raise LookupError(f"selected asset {artifact_id} not found")
+            selected_asset_hashes.append(artifact.content_hash)
 
         variants: list[PlatformVariant] = []
         for target in targets:
@@ -160,6 +217,7 @@ class PublishOutboxService:
                 content_hash=artifact.content_hash,
                 metadata_json={
                     **target.metadata,
+                    "producer": "deterministic-platform-transform.v1",
                     "connection_profile_id": target.connection_profile_id,
                     "simulate_outcome": target.simulate_outcome,
                 },
@@ -173,6 +231,10 @@ class PublishOutboxService:
             approval_status=ApprovalStatus.PENDING,
             plan_json={
                 "mode": "dry_run",
+                "requested_operation": PublishOperation.DRY_RUN.value,
+                "risk_policy_version": P0_RISK_POLICY_VERSION,
+                "selected_asset_ids": normalized_asset_ids,
+                "selected_asset_hashes": selected_asset_hashes,
                 "variant_ids": [variant.id for variant in variants],
                 "target_hashes": [
                     str(variant.metadata_json["target_hash"]) for variant in variants
@@ -226,10 +288,37 @@ class PublishOutboxService:
             target_hashes.append(self._target_hash(variant))
         if not target_hashes:
             raise ValueError("publish plan has no targets to approve")
+        requested_operation = str(plan.plan_json.get("requested_operation") or "")
+        if requested_operation != PublishOperation.DRY_RUN.value:
+            raise ValueError("the P0 publisher only supports the dry_run operation")
+        risk_policy_version = str(plan.plan_json.get("risk_policy_version") or "")
+        if not risk_policy_version:
+            raise ValueError("publish plan risk policy version is missing")
+        selected_asset_ids = plan.plan_json.get("selected_asset_ids", [])
+        selected_asset_hashes = plan.plan_json.get("selected_asset_hashes", [])
+        if (
+            not isinstance(selected_asset_ids, list)
+            or any(not isinstance(value, str) or not value for value in selected_asset_ids)
+            or len(selected_asset_ids) != len(set(selected_asset_ids))
+        ):
+            raise ValueError("publish plan selected asset ids are invalid")
+        if not isinstance(selected_asset_hashes, list):
+            raise ValueError("publish plan selected asset hashes are invalid")
+        current_asset_hashes: list[str] = []
+        for artifact_id in selected_asset_ids:
+            artifact = self.repository.get_artifact(artifact_id)
+            if artifact is None:
+                raise LookupError(f"selected asset {artifact_id} not found")
+            current_asset_hashes.append(artifact.content_hash)
+        if selected_asset_hashes != current_asset_hashes:
+            raise ValueError("publish plan selected assets changed after plan creation")
         binding = {
             "revision_id": revision.id,
             "revision_hash": revision.content_hash,
             "target_hashes": target_hashes,
+            "selected_asset_hashes": current_asset_hashes,
+            "requested_operation": requested_operation,
+            "risk_policy_version": risk_policy_version,
         }
         return {
             **binding,
@@ -275,9 +364,73 @@ class PublishOutboxService:
         if not isinstance(grant, dict):
             raise ValueError("publish plan approval grant is missing")
         current_binding = self._approval_binding(plan)
-        for key in ("revision_id", "revision_hash", "target_hashes", "binding_hash"):
-            if grant.get(key) != current_binding[key]:
+        for key, expected_value in current_binding.items():
+            if grant.get(key) != expected_value:
                 raise ValueError("publish plan content changed after approval")
+
+    @staticmethod
+    def _job_payload(variant: PlatformVariant) -> dict[str, object]:
+        return {
+            "mode": "dry_run",
+            "variant_id": variant.id,
+            "content_hash": variant.content_hash,
+            "simulate_outcome": variant.metadata_json.get("simulate_outcome", "success"),
+        }
+
+    @staticmethod
+    def _payload_hash(payload: dict[str, object]) -> str:
+        payload_bytes = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(payload_bytes).hexdigest()
+
+    @staticmethod
+    def _idempotency_key(
+        *,
+        plan_id: str,
+        variant: PlatformVariant,
+        payload_hash: str,
+    ) -> str:
+        return hashlib.sha256(
+            (
+                f"dry-run-v1:{plan_id}:{variant.id}:{variant.platform}:"
+                f"{variant.account_ref}:{payload_hash}"
+            ).encode()
+        ).hexdigest()
+
+    def _validate_job_execution(self, job: PublishJob) -> PlatformVariant:
+        plan = self.repository.get_publish_plan(job.plan_id)
+        if plan is None:
+            raise LookupError(f"publish plan {job.plan_id} not found")
+        self._validate_approval(plan)
+        variant_ids = [str(value) for value in plan.plan_json.get("variant_ids", [])]
+        if job.variant_id not in variant_ids:
+            raise ValueError("publish job variant is no longer part of its approved plan")
+        variant = self.repository.get_variant(job.variant_id)
+        if variant is None:
+            raise LookupError(f"platform variant {job.variant_id} not found")
+
+        expected_payload = self._job_payload(variant)
+        expected_payload_hash = self._payload_hash(expected_payload)
+        expected_idempotency_key = self._idempotency_key(
+            plan_id=plan.id,
+            variant=variant,
+            payload_hash=expected_payload_hash,
+        )
+        expected_connection_id = variant.metadata_json.get("connection_profile_id")
+        if (
+            job.operation is not PublishOperation.DRY_RUN
+            or job.platform != variant.platform
+            or job.account_ref != variant.account_ref
+            or job.connection_profile_id != expected_connection_id
+            or job.payload_json != expected_payload
+            or job.payload_hash != expected_payload_hash
+            or job.idempotency_key != expected_idempotency_key
+        ):
+            raise ValueError("publish job changed after its approved plan was enqueued")
+        return variant
 
     @staticmethod
     def _render_variant(*, platform: str, title: str, markdown: str) -> str:
@@ -299,24 +452,13 @@ class PublishOutboxService:
             variant = self.repository.get_variant(variant_id)
             if variant is None:
                 raise LookupError(f"platform variant {variant_id} not found")
-            payload = {
-                "mode": "dry_run",
-                "variant_id": variant.id,
-                "content_hash": variant.content_hash,
-                "simulate_outcome": variant.metadata_json.get("simulate_outcome", "success"),
-            }
-            payload_bytes = json.dumps(
-                payload,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-            payload_hash = hashlib.sha256(payload_bytes).hexdigest()
-            idempotency_key = hashlib.sha256(
-                (
-                    f"dry-run-v1:{plan.id}:{variant.id}:{variant.platform}:"
-                    f"{variant.account_ref}:{payload_hash}"
-                ).encode()
-            ).hexdigest()
+            payload = self._job_payload(variant)
+            payload_hash = self._payload_hash(payload)
+            idempotency_key = self._idempotency_key(
+                plan_id=plan.id,
+                variant=variant,
+                payload_hash=payload_hash,
+            )
             existing = self.repository.get_publish_job_by_idempotency(idempotency_key)
             if existing:
                 jobs.append(existing)
@@ -348,9 +490,7 @@ class PublishOutboxService:
             raise ValueError("UNKNOWN jobs must be reconciled before retry")
         if job.state not in {PublishJobState.PENDING, PublishJobState.FAILED_RETRYABLE}:
             raise ValueError(f"publish job cannot be processed from state {job.state}")
-        variant = self.repository.get_variant(job.variant_id)
-        if variant is None:
-            raise LookupError(f"platform variant {job.variant_id} not found")
+        variant = self._validate_job_execution(job)
 
         claimed = self.repository.claim_publish_job(
             job.id,
@@ -439,9 +579,7 @@ class PublishOutboxService:
             return job, self.repository.get_publish_receipt_for_job(job.id)
         if job.state is not PublishJobState.UNKNOWN:
             raise ValueError("only UNKNOWN publish jobs can be reconciled")
-        variant = self.repository.get_variant(job.variant_id)
-        if variant is None:
-            raise LookupError(f"platform variant {job.variant_id} not found")
+        variant = self._validate_job_execution(job)
 
         claimed = self.repository.claim_publish_job(
             job.id,

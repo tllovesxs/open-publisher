@@ -36,11 +36,16 @@ def test_content_package_v1_round_trip(client, article_payload) -> None:
     created = client.post("/api/v1/articles", json=article_payload).json()
     exported = client.post(
         "/api/v1/content-packages/export",
-        json={"article_id": created["article"]["id"]},
+        json={
+            "article_id": created["article"]["id"],
+            "artifact_ids": [created["revision"]["artifact_id"]],
+        },
     )
     assert exported.status_code == 200, exported.text
     package = exported.json()
     assert package["schema_version"] == "content-package.v1"
+    assert package["assets"][0]["path"].endswith(".md")
+    assert package["assets"][0]["metadata"]["artifact_id"] == created["revision"]["artifact_id"]
 
     imported = client.post("/api/v1/content-packages/import", json=package)
     assert imported.status_code == 201, imported.text
@@ -69,6 +74,60 @@ def test_complete_demo_closes_the_local_loop_without_network(client, monkeypatch
     assert payload["plan"]["status"] == "completed"
     assert len(payload["receipts"]) == 3
     assert all(receipt["status"] == "dry_run_succeeded" for receipt in payload["receipts"])
+    assert {asset["kind"] for asset in payload["content_package"]["assets"]} == {
+        "workflow.research",
+        "workflow.outline",
+        "workflow.raw-draft",
+        "workflow.natural-style-patch",
+        "workflow.canonical-draft",
+        "workflow.review-report",
+        "workflow.risk-report",
+        "workflow.visual-plan",
+        "platform-variant.csdn",
+        "platform-variant.wechat",
+        "platform-variant.toutiao",
+    }
+    assert set(payload["content_package"]["metadata"]["platform_variant_ids"]) == {
+        variant["id"] for variant in payload["variants"]
+    }
+
+
+def test_complete_demo_honors_optional_node_selection(client) -> None:
+    response = client.post(
+        "/api/v1/demo/complete",
+        json={
+            "title": "精简闭环",
+            "topic": "显式跳过可选节点",
+            "source_markdown": "只保留正文和必经风险审核。",
+            "platforms": ["wechat"],
+            "disabled_optional_node_ids": [
+                "research",
+                "outline",
+                "natural-style",
+                "review",
+                "visual",
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["run"]["state_json"]["engine"] in {
+        "langgraph-customized",
+        "sequential-customized",
+    }
+    assert payload["run"]["state_json"]["disabled_optional_node_ids"] == [
+        "research",
+        "outline",
+        "natural-style",
+        "review",
+        "visual",
+    ]
+    assert {asset["kind"] for asset in payload["content_package"]["assets"]} == {
+        "workflow.raw-draft",
+        "workflow.risk-report",
+        "platform-variant.wechat",
+    }
 
 
 @pytest.mark.parametrize(

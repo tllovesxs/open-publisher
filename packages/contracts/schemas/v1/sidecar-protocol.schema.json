@@ -1,0 +1,1230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/sidecar-protocol.schema.json",
+  "title": "SidecarProtocol",
+  "description": "Canonical snake_case contracts exposed by the authenticated Python Sidecar. The Rust desktop consumes the granular article, workflow, publishing, image, and connection subset; the complete demo contract remains covered for development compatibility. Requests are closed. Response projections allow documented server fields that Rust intentionally ignores, except for secret-sensitive connection profiles.",
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ContentHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "JsonValue": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        }
+      ]
+    },
+    "JsonObject": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      }
+    },
+    "NullableModelName": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "HealthResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "database",
+        "publisher_mode"
+      ],
+      "properties": {
+        "status": {
+          "const": "ok"
+        },
+        "database": {
+          "const": "ok"
+        },
+        "publisher_mode": {
+          "const": "dry_run"
+        }
+      }
+    },
+    "CreateArticleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "markdown",
+        "metadata"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8388608,
+          "pattern": ".*\\S.*"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "required": [
+            "desktop_article_id"
+          ],
+          "properties": {
+            "desktop_article_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": ".*\\S.*"
+            }
+          }
+        }
+      }
+    },
+    "IdProjection": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        }
+      },
+      "additionalProperties": true
+    },
+    "CreateArticleResponse": {
+      "type": "object",
+      "required": [
+        "article",
+        "revision"
+      ],
+      "properties": {
+        "article": {
+          "$ref": "#/$defs/IdProjection"
+        },
+        "revision": {
+          "$ref": "#/$defs/IdProjection"
+        }
+      },
+      "additionalProperties": true
+    },
+    "CreateRevisionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "markdown",
+        "parent_revision_id"
+      ],
+      "properties": {
+        "markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8388608,
+          "pattern": ".*\\S.*"
+        },
+        "parent_revision_id": {
+          "$ref": "#/$defs/Identifier"
+        }
+      }
+    },
+    "CreateRevisionResponse": {
+      "$ref": "#/$defs/IdProjection"
+    },
+    "ArticleListItemProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "metadata_json"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "metadata_json": {
+          "$ref": "#/$defs/JsonObject"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ListArticlesResponse": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ArticleListItemProjection"
+      }
+    },
+    "ArticleRevisionProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "number",
+        "markdown",
+        "content_hash"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8388608,
+          "pattern": ".*\\S.*"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ArticleDetailResponse": {
+      "type": "object",
+      "required": [
+        "latest_revision"
+      ],
+      "properties": {
+        "latest_revision": {
+          "$ref": "#/$defs/ArticleRevisionProjection"
+        }
+      },
+      "additionalProperties": true
+    },
+    "WorkflowProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "additionalProperties": true
+    },
+    "ListWorkflowsResponse": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/WorkflowProjection"
+      }
+    },
+    "OptionalWorkflowNodeId": {
+      "enum": [
+        "research",
+        "outline",
+        "natural-style",
+        "review",
+        "visual"
+      ]
+    },
+    "StartRunPolicyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "require_content_approval",
+        "allow_remote_publish",
+        "disabled_optional_node_ids"
+      ],
+      "properties": {
+        "require_content_approval": {
+          "type": "boolean"
+        },
+        "max_revision_loops": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "max_model_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "max_wall_clock_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "allow_remote_publish": {
+          "const": false
+        },
+        "disabled_optional_node_ids": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/OptionalWorkflowNodeId"
+          }
+        }
+      }
+    },
+    "StartRunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_id",
+        "article_id",
+        "revision_id",
+        "topic",
+        "policy"
+      ],
+      "properties": {
+        "workflow_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "article_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": ".*\\S.*"
+        },
+        "policy": {
+          "$ref": "#/$defs/StartRunPolicyRequest"
+        }
+      }
+    },
+    "WorkflowRunResponse": {
+      "type": "object",
+      "required": [
+        "id",
+        "input_revision_id",
+        "output_revision_id",
+        "status",
+        "state_json",
+        "error"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "input_revision_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "output_revision_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "state_json": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "CompleteDemoRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "topic",
+        "source_markdown",
+        "platforms",
+        "disabled_optional_node_ids"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": ".*\\S.*"
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": ".*\\S.*"
+        },
+        "source_markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8388608,
+          "pattern": ".*\\S.*"
+        },
+        "platforms": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "csdn",
+              "wechat",
+              "toutiao"
+            ]
+          }
+        },
+        "disabled_optional_node_ids": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "research",
+              "outline",
+              "natural-style",
+              "review",
+              "visual"
+            ]
+          }
+        }
+      }
+    },
+    "RunStatusProjection": {
+      "type": "object",
+      "required": [
+        "status",
+        "state_json"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "state_json": {
+          "$ref": "#/$defs/JsonObject"
+        }
+      },
+      "additionalProperties": true
+    },
+    "PlanStatusProjection": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "additionalProperties": true
+    },
+    "ReceiptProjection": {
+      "type": "object",
+      "required": [
+        "status",
+        "remote_id"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "remote_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      },
+      "additionalProperties": true
+    },
+    "ContentPackageProjection": {
+      "type": "object",
+      "required": [
+        "assets"
+      ],
+      "properties": {
+        "assets": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "CompleteDemoResponse": {
+      "type": "object",
+      "required": [
+        "run",
+        "plan",
+        "receipts",
+        "content_package"
+      ],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/RunStatusProjection"
+        },
+        "plan": {
+          "$ref": "#/$defs/PlanStatusProjection"
+        },
+        "receipts": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/ReceiptProjection"
+          }
+        },
+        "content_package": {
+          "$ref": "#/$defs/ContentPackageProjection"
+        }
+      },
+      "additionalProperties": true
+    },
+    "PublishTargetRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "account_ref"
+      ],
+      "properties": {
+        "platform": {
+          "enum": [
+            "csdn",
+            "wechat",
+            "toutiao"
+          ]
+        },
+        "account_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": ".*\\S.*"
+        },
+        "connection_profile_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": ".*\\S.*"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "simulate_outcome": {
+          "enum": [
+            "success",
+            "unknown",
+            "unknown_then_success",
+            "retryable_failure",
+            "terminal_failure"
+          ]
+        }
+      }
+    },
+    "CreatePublishPlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision_id",
+        "targets"
+      ],
+      "properties": {
+        "revision_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/PublishTargetRequest"
+          }
+        },
+        "selected_asset_ids": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Identifier"
+          }
+        }
+      }
+    },
+    "ApprovePublishPlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor_id",
+        "comment"
+      ],
+      "properties": {
+        "actor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": ".*\\S.*"
+        },
+        "comment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": ".*\\S.*"
+        }
+      }
+    },
+    "EmptyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "PublishPlanProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "revision_id",
+        "status",
+        "approval_status",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "approved",
+            "queued",
+            "running",
+            "completed",
+            "needs_attention"
+          ]
+        },
+        "approval_status": {
+          "enum": [
+            "not_required",
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": true
+    },
+    "PublishVariantProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "platform",
+        "account_ref",
+        "title",
+        "content_hash"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "platform": {
+          "enum": [
+            "csdn",
+            "wechat",
+            "toutiao"
+          ]
+        },
+        "account_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": ".*\\S.*"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": ".*\\S.*"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        }
+      },
+      "additionalProperties": true
+    },
+    "PublishJobProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "plan_id",
+        "variant_id",
+        "platform",
+        "account_ref",
+        "operation",
+        "idempotency_key",
+        "payload_hash",
+        "state",
+        "remote_id",
+        "last_error",
+        "reconcile_required",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "variant_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "platform": {
+          "enum": [
+            "csdn",
+            "wechat",
+            "toutiao"
+          ]
+        },
+        "account_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": ".*\\S.*"
+        },
+        "operation": {
+          "enum": [
+            "dry_run",
+            "reconcile"
+          ]
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "payload_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "succeeded",
+            "failed_retryable",
+            "failed_terminal",
+            "unknown",
+            "reconciling",
+            "cancelled"
+          ]
+        },
+        "remote_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_error": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reconcile_required": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": true
+    },
+    "PublishReceiptWireProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "job_id",
+        "status",
+        "remote_id",
+        "content_hash",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "job_id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "remote_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": true
+    },
+    "PublishPlanDetailResponse": {
+      "type": "object",
+      "required": [
+        "plan",
+        "variants",
+        "jobs"
+      ],
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/PublishPlanProjection"
+        },
+        "variants": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/PublishVariantProjection"
+          }
+        },
+        "jobs": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/PublishJobProjection"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "EnqueuePublishPlanResponse": {
+      "type": "object",
+      "required": [
+        "plan",
+        "jobs"
+      ],
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/PublishPlanProjection"
+        },
+        "jobs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/PublishJobProjection"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "ProcessPublishJobResponse": {
+      "type": "object",
+      "required": [
+        "job",
+        "receipt"
+      ],
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/PublishJobProjection"
+        },
+        "receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PublishReceiptWireProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "GenerateImagesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt",
+        "size",
+        "model"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": ".*\\S.*"
+        },
+        "size": {
+          "enum": [
+            "512x512",
+            "768x768",
+            "1024x1024",
+            "1024x1536",
+            "1536x1024"
+          ]
+        },
+        "model": {
+          "$ref": "#/$defs/NullableModelName"
+        }
+      }
+    },
+    "GeneratedArtifactPublic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "media_type",
+        "content_hash",
+        "size_bytes",
+        "metadata_json",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "media_type": {
+          "enum": [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/avif",
+            "image/svg+xml"
+          ]
+        },
+        "content_hash": {
+          "$ref": "#/$defs/ContentHash"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20971520
+        },
+        "metadata_json": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "GenerateImagesResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "mocked",
+        "artifacts",
+        "remote_urls_ignored"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "mocked": {
+          "type": "boolean"
+        },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/GeneratedArtifactPublic"
+          }
+        },
+        "remote_urls_ignored": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "ConnectionConfigRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_text_model",
+        "default_image_model",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "default_text_model": {
+          "$ref": "#/$defs/NullableModelName"
+        },
+        "default_image_model": {
+          "$ref": "#/$defs/NullableModelName"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
+      }
+    },
+    "CreateConnectionProfileRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "provider",
+        "base_url",
+        "secret_ref",
+        "config"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": ".*\\S.*"
+        },
+        "provider": {
+          "enum": [
+            "mock",
+            "openai-compatible"
+          ]
+        },
+        "base_url": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secret_ref": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 1000,
+          "pattern": "^(env|mock|keyring|stronghold)://[A-Za-z0-9_][A-Za-z0-9_./-]*$"
+        },
+        "config": {
+          "$ref": "#/$defs/ConnectionConfigRequest"
+        }
+      }
+    },
+    "ConnectionConfigProjection": {
+      "type": "object",
+      "properties": {
+        "default_text_model": {
+          "$ref": "#/$defs/NullableModelName"
+        },
+        "default_image_model": {
+          "$ref": "#/$defs/NullableModelName"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      }
+    },
+    "ConnectionProfilePublic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "provider",
+        "base_url",
+        "config_json",
+        "secret_scheme",
+        "secret_configured",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "base_url": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_json": {
+          "$ref": "#/$defs/ConnectionConfigProjection"
+        },
+        "secret_scheme": {
+          "enum": [
+            "env",
+            "mock",
+            "keyring",
+            "stronghold"
+          ]
+        },
+        "secret_configured": {
+          "const": true
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "ListConnectionProfilesResponse": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ConnectionProfilePublic"
+      }
+    }
+  }
+}

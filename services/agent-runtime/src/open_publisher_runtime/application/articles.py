@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from open_publisher_runtime.application.artifacts import ArtifactService
@@ -60,14 +61,15 @@ class ArticleService:
         elif latest:
             parent_revision_id = latest.id
 
+        content_hash = hashlib.sha256(normalized_markdown.encode("utf-8")).hexdigest()
+        if latest and latest.content_hash == content_hash:
+            return latest
         artifact = self.artifact_service.put_text(
             kind="article.markdown",
             text=normalized_markdown,
             media_type="text/markdown; charset=utf-8",
             metadata={"article_id": article_id},
         )
-        if latest and latest.content_hash == artifact.content_hash:
-            return latest
         revision = ArticleRevision(
             article_id=article_id,
             number=self.repository.next_revision_number(article_id),
@@ -77,6 +79,7 @@ class ArticleService:
             parent_revision_id=parent_revision_id,
         )
         article.updated_at = utc_now()
+        self.repository.update_article(article)
         return self.repository.add_revision(revision)
 
     def get_article_with_latest_revision(

@@ -36,7 +36,7 @@ class ArtifactORM(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     kind: Mapped[str] = mapped_column(String(100), index=True)
     media_type: Mapped[str] = mapped_column(String(200))
-    content_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
     size_bytes: Mapped[int] = mapped_column(Integer)
     storage_path: Mapped[str] = mapped_column(String(1000))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -200,4 +200,3 @@ class PublishReceiptORM(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-

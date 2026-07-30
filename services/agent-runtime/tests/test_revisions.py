@@ -18,9 +18,14 @@ def test_article_revisions_are_immutable_and_numbered(client, article_payload) -
 
     detail = client.get(f"/api/v1/articles/{article_id}")
     assert detail.status_code == 200
-    revisions = detail.json()["revisions"]
+    detail_payload = detail.json()
+    revisions = detail_payload["revisions"]
     assert [revision["number"] for revision in revisions] == [1, 2]
     assert revisions[0]["markdown"] == article_payload["markdown"]
+    assert (
+        detail_payload["article"]["updated_at"]
+        > created_payload["article"]["updated_at"]
+    )
 
 
 def test_revision_parent_must_be_latest_revision_of_same_article(client) -> None:

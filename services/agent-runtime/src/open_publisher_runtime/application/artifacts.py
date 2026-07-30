@@ -30,9 +30,6 @@ class ArtifactService:
         metadata: dict[str, Any] | None = None,
     ) -> Artifact:
         content_hash = self.digest(data)
-        existing = self.repository.get_artifact_by_hash(content_hash)
-        if existing:
-            return existing
         storage_path = self.blob_store.put(content_hash, data)
         artifact = Artifact(
             kind=kind,
@@ -90,4 +87,3 @@ class ArtifactService:
 
     def read_text(self, artifact_id: str) -> str:
         return self.read_bytes(artifact_id).decode("utf-8")
-

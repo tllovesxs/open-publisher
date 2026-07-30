@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import mimetypes
 
 from open_publisher_runtime.application.articles import ArticleService
 from open_publisher_runtime.application.artifacts import ArtifactService
@@ -33,6 +34,7 @@ class ContentPackageService:
         article_id: str,
         revision_id: str | None = None,
         artifact_ids: list[str] | None = None,
+        platform_variant_ids: list[str] | None = None,
     ) -> ContentPackageV1:
         article = self.repository.get_article(article_id)
         if article is None:
@@ -44,6 +46,15 @@ class ContentPackageService:
         )
         if revision is None or revision.article_id != article_id:
             raise LookupError("revision does not belong to the requested article")
+        variant_ids = platform_variant_ids or []
+        if len(variant_ids) != len(set(variant_ids)):
+            raise ValueError("platform variant ids must be unique")
+        for variant_id in variant_ids:
+            variant = self.repository.get_variant(variant_id)
+            if variant is None or variant.revision_id != revision.id:
+                raise LookupError(
+                    "platform variant does not belong to the requested revision"
+                )
 
         assets: list[ContentPackageAssetV1] = []
         for artifact_id in artifact_ids or []:
@@ -51,14 +62,21 @@ class ContentPackageService:
             if artifact is None:
                 raise LookupError(f"artifact {artifact_id} not found")
             data = self.artifact_service.read_bytes(artifact.id)
+            media_type = artifact.media_type.split(";", maxsplit=1)[0].strip().lower()
+            extension = mimetypes.guess_extension(media_type) or ""
+            if extension == ".jpe":
+                extension = ".jpg"
             assets.append(
                 ContentPackageAssetV1(
-                    path=f"assets/{artifact.content_hash}",
+                    path=f"assets/{artifact.content_hash}{extension}",
                     kind=artifact.kind,
                     media_type=artifact.media_type,
                     content_base64=base64.b64encode(data).decode("ascii"),
                     content_hash=artifact.content_hash,
-                    metadata=artifact.metadata_json,
+                    metadata={
+                        **artifact.metadata_json,
+                        "artifact_id": artifact.id,
+                    },
                 )
             )
 
@@ -73,6 +91,7 @@ class ContentPackageService:
             metadata={
                 "article_id": article.id,
                 "revision_id": revision.id,
+                "platform_variant_ids": variant_ids,
             },
         )
 

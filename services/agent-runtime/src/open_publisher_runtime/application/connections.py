@@ -27,6 +27,17 @@ FORBIDDEN_NORMALIZED_KEYS = {
 }
 AUTHORIZATION_VALUE = re.compile(r"^\s*(?:bearer|basic)\s+\S+", re.IGNORECASE)
 ENV_REFERENCE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+LIKELY_SECRET_VALUE = re.compile(
+    r"(?:"
+    r"\bsk-[A-Za-z0-9_-]{16,}\b"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bgh[pousr]_[A-Za-z0-9]{24,}\b"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{16,}\b"
+    r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+    r"|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _normalized_key(value: object) -> str:
@@ -64,8 +75,11 @@ def _validate_public_config(value: Any, *, path: str = "config") -> None:
         for index, child in enumerate(value):
             _validate_public_config(child, path=f"{path}[{index}]")
         return
-    if isinstance(value, str) and AUTHORIZATION_VALUE.match(value):
-        raise ValueError(f"connection {path} cannot contain an authorization value")
+    if isinstance(value, str):
+        if AUTHORIZATION_VALUE.match(value):
+            raise ValueError(f"connection {path} cannot contain an authorization value")
+        if LIKELY_SECRET_VALUE.search(value):
+            raise ValueError(f"connection {path} appears to contain credential material")
 
 
 def _validate_secret_ref(secret_ref: str) -> str:

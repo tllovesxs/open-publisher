@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from time import monotonic
 
 from open_publisher_runtime.application.articles import ArticleService
 from open_publisher_runtime.application.artifacts import ArtifactService
@@ -18,6 +19,17 @@ from open_publisher_runtime.workflows.preset import (
     PresetArticleWorkflow,
     PresetWorkflowInput,
     preset_definition,
+)
+
+WORKFLOW_ARTIFACT_STATE_KEYS = (
+    "research_artifact_id",
+    "outline_artifact_id",
+    "raw_draft_artifact_id",
+    "natural_style_patch_artifact_id",
+    "canonical_draft_artifact_id",
+    "review_artifact_id",
+    "risk_artifact_id",
+    "visual_plan_artifact_id",
 )
 
 
@@ -47,7 +59,7 @@ class EventRecorder:
 
 class WorkflowService:
     PRESET_NAME = "mock-article"
-    PRESET_VERSION = "1.0.0"
+    PRESET_VERSION = "1.1.0"
 
     def __init__(self, repository: RuntimeRepository) -> None:
         self.repository = repository
@@ -89,6 +101,31 @@ class RunController:
         self.workflow_runner = workflow_runner
         self.events = EventRecorder(repository)
 
+    def recover_interrupted_runs(self) -> list[WorkflowRun]:
+        recovered: list[WorkflowRun] = []
+        for run in self.repository.list_runs_by_statuses([RunStatus.RUNNING]):
+            run.status = RunStatus.FAILED
+            run.error = (
+                "RuntimeRestart: the Sidecar stopped while the workflow was running; "
+                "start a new run from the immutable input revision"
+            )
+            run.completed_at = utc_now()
+            self.repository.update_run(run)
+            self.events.record(
+                run_id=run.id,
+                aggregate_type="workflow_run",
+                aggregate_id=run.id,
+                event_type="run.failed",
+                payload={
+                    "error_type": "RuntimeRestart",
+                    "recovered_on_startup": True,
+                },
+            )
+            recovered.append(run)
+        if recovered:
+            self.repository.commit()
+        return recovered
+
     def start(
         self,
         *,
@@ -108,6 +145,13 @@ class RunController:
         if revision is None or revision.article_id != article_id:
             raise LookupError("input revision does not belong to the requested article")
 
+        disabled_optional_node_ids = tuple(policy.disabled_optional_node_ids)
+        enabled_model_node_ids = self.workflow_runner.enabled_model_node_ids(
+            disabled_optional_node_ids
+        )
+        required_model_calls = self.workflow_runner.required_model_calls_for(
+            disabled_optional_node_ids
+        )
         run = WorkflowRun(
             workflow_id=workflow.id,
             article_id=article.id,
@@ -125,8 +169,21 @@ class RunController:
                 "definition_hash": workflow.definition_hash,
                 "definition": workflow.definition_json,
                 "policy": policy.model_dump(mode="json"),
+                "node_selection": {
+                    "enabled_node_ids": list(enabled_model_node_ids),
+                    "disabled_optional_node_ids": list(disabled_optional_node_ids),
+                    "required_model_calls": required_model_calls,
+                },
             },
-            state_json={},
+            state_json={
+                "budget": {
+                    "model_calls_limit": policy.max_model_calls,
+                    "model_calls_reserved": 0,
+                    "model_calls_used": 0,
+                    "max_parallel": policy.max_parallel,
+                    "max_wall_clock_seconds": policy.max_wall_clock_seconds,
+                }
+            },
         )
         self.repository.add_run(run)
         self.events.record(
@@ -146,60 +203,163 @@ class RunController:
             aggregate_id=run.id,
             event_type="run.started",
         )
+        for node_id in disabled_optional_node_ids:
+            self.events.record(
+                run_id=run.id,
+                aggregate_type="workflow_run",
+                aggregate_id=run.id,
+                event_type="run.node_skipped",
+                payload={
+                    "node_id": node_id,
+                    "reason": "disabled_by_run_policy",
+                },
+            )
         # The running claim and audit events must be visible before model I/O starts.
         self.repository.commit()
 
         try:
-            if policy.max_model_calls < self.workflow_runner.required_model_calls:
+            if policy.max_model_calls < required_model_calls:
                 raise ValueError(
                     "run policy model-call budget is smaller than the preset requirement "
-                    f"({policy.max_model_calls} < {self.workflow_runner.required_model_calls})"
+                    f"({policy.max_model_calls} < {required_model_calls})"
                 )
+            budget_state = dict(run.state_json["budget"])
+            budget_state["model_calls_reserved"] = required_model_calls
+            run.state_json = {**run.state_json, "budget": budget_state}
+            self.repository.update_run(run)
+            self.events.record(
+                run_id=run.id,
+                aggregate_type="workflow_run",
+                aggregate_id=run.id,
+                event_type="run.budget_reserved",
+                payload={
+                    "model_calls": required_model_calls,
+                    "max_parallel": policy.max_parallel,
+                    "max_wall_clock_seconds": policy.max_wall_clock_seconds,
+                },
+            )
+            # The exact model-call claim is durable before the first provider operation.
+            self.repository.commit()
+            workflow_started = monotonic()
             output = self.workflow_runner.run(
                 PresetWorkflowInput(
                     title=article.title,
                     topic=(topic or article.title).strip(),
                     source_markdown=revision.markdown,
+                ),
+                disabled_optional_node_ids=disabled_optional_node_ids,
+                max_parallel=policy.max_parallel,
+            )
+            elapsed_seconds = monotonic() - workflow_started
+            budget_state["model_calls_used"] = required_model_calls
+            run.state_json = {**run.state_json, "budget": budget_state}
+            self.repository.update_run(run)
+            # Preserve consumed budget even if later artifact validation or the deadline fails.
+            self.repository.commit()
+            if elapsed_seconds > policy.max_wall_clock_seconds:
+                raise TimeoutError(
+                    "workflow exceeded its wall-clock budget "
+                    f"({elapsed_seconds:.3f}s > {policy.max_wall_clock_seconds}s)"
                 )
-            )
-            outline_artifact = self.artifact_service.put_text(
-                kind="workflow.outline",
-                text=output.outline,
-                media_type="text/markdown; charset=utf-8",
-                metadata={"run_id": run.id, "workflow_id": workflow.id},
-            )
-            review_artifact = self.artifact_service.put_text(
-                kind="workflow.review-report",
-                text=output.review_report,
-                media_type="text/markdown; charset=utf-8",
-                metadata={"run_id": run.id, "workflow_id": workflow.id},
-            )
-            draft_artifact = self.artifact_service.put_text(
-                kind="workflow.canonical-draft",
-                text=output.canonical_markdown,
-                media_type="text/markdown; charset=utf-8",
-                metadata={
-                    "run_id": run.id,
-                    "workflow_id": workflow.id,
-                    "input_revision_id": revision.id,
-                },
-            )
-            run.state_json = {
-                "engine": output.engine,
-                "outline_artifact_id": outline_artifact.id,
-                "review_artifact_id": review_artifact.id,
-                "pending_draft_artifact_id": draft_artifact.id,
-                "input_revision_hash": revision.content_hash,
+            artifact_metadata = {
+                "run_id": run.id,
+                "workflow_id": workflow.id,
+                "input_revision_id": revision.id,
             }
+            enabled_node_ids = set(enabled_model_node_ids)
+            state_json: dict[str, object] = {
+                "engine": output.engine,
+                "enabled_node_ids": list(enabled_model_node_ids),
+                "disabled_optional_node_ids": list(disabled_optional_node_ids),
+                "required_model_calls": required_model_calls,
+                "input_revision_hash": revision.content_hash,
+                "budget": budget_state,
+            }
+            if "research" in enabled_node_ids:
+                research_artifact = self.artifact_service.put_text(
+                    kind="workflow.research",
+                    text=output.research_report,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                state_json["research_artifact_id"] = research_artifact.id
+            if "outline" in enabled_node_ids:
+                outline_artifact = self.artifact_service.put_text(
+                    kind="workflow.outline",
+                    text=output.outline,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                state_json["outline_artifact_id"] = outline_artifact.id
+            raw_draft_artifact = self.artifact_service.put_text(
+                kind="workflow.raw-draft",
+                text=output.raw_draft,
+                media_type="text/markdown; charset=utf-8",
+                metadata=artifact_metadata,
+            )
+            state_json["raw_draft_artifact_id"] = raw_draft_artifact.id
+            pending_draft_artifact_id = raw_draft_artifact.id
+            if "natural-style" in enabled_node_ids:
+                natural_style_patch_artifact = self.artifact_service.put_text(
+                    kind="workflow.natural-style-patch",
+                    text=output.natural_style_patch,
+                    media_type="text/x-diff; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                canonical_draft_artifact = self.artifact_service.put_text(
+                    kind="workflow.canonical-draft",
+                    text=output.canonical_markdown,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                state_json["natural_style_patch_artifact_id"] = (
+                    natural_style_patch_artifact.id
+                )
+                state_json["canonical_draft_artifact_id"] = canonical_draft_artifact.id
+                pending_draft_artifact_id = canonical_draft_artifact.id
+            if "review" in enabled_node_ids:
+                review_artifact = self.artifact_service.put_text(
+                    kind="workflow.review-report",
+                    text=output.review_report,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                state_json["review_artifact_id"] = review_artifact.id
+            risk_artifact = self.artifact_service.put_text(
+                kind="workflow.risk-report",
+                text=output.risk_report,
+                media_type="text/markdown; charset=utf-8",
+                metadata=artifact_metadata,
+            )
+            state_json["risk_artifact_id"] = risk_artifact.id
+            if "visual" in enabled_node_ids:
+                visual_plan_artifact = self.artifact_service.put_text(
+                    kind="workflow.visual-plan",
+                    text=output.visual_plan,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                state_json["visual_plan_artifact_id"] = visual_plan_artifact.id
+            state_json["pending_draft_artifact_id"] = pending_draft_artifact_id
+            run.state_json = state_json
 
             if policy.require_content_approval:
                 run.status = RunStatus.WAITING_APPROVAL
-                run.interrupt_json = {
+                interrupt_json: dict[str, object] = {
                     "type": "content_approval",
-                    "draft_artifact_id": draft_artifact.id,
-                    "review_artifact_id": review_artifact.id,
+                    "draft_artifact_id": pending_draft_artifact_id,
+                    "risk_artifact_id": risk_artifact.id,
                     "actions": ["approve", "reject"],
                 }
+                if "review_artifact_id" in state_json:
+                    interrupt_json["review_artifact_id"] = state_json[
+                        "review_artifact_id"
+                    ]
+                if "visual_plan_artifact_id" in state_json:
+                    interrupt_json["visual_plan_artifact_id"] = state_json[
+                        "visual_plan_artifact_id"
+                    ]
+                run.interrupt_json = interrupt_json
                 self.repository.update_run(run)
                 self.events.record(
                     run_id=run.id,

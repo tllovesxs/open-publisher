@@ -69,6 +69,21 @@ def test_connection_profile_rejects_nested_secrets_and_returns_public_dto(client
     )
     assert sensitive_query.status_code == 409
 
+    neutral_key_secret = client.post(
+        "/api/v1/connections",
+        json={
+            "name": "unsafe-neutral-key",
+            "provider": "openai-compatible",
+            "secret_ref": "env://OPENAI_API_KEY",
+            "config": {
+                "options": [
+                    {"value": "sk-this-is-obviously-a-plaintext-secret-123456"}
+                ]
+            },
+        },
+    )
+    assert neutral_key_secret.status_code == 409
+
     insecure_remote_url = client.post(
         "/api/v1/connections",
         json={

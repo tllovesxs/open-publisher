@@ -22,7 +22,7 @@ from open_publisher_runtime.domain.entities import (
     WorkflowRun,
     utc_now,
 )
-from open_publisher_runtime.domain.enums import PublishJobState
+from open_publisher_runtime.domain.enums import PublishJobState, RunStatus
 from open_publisher_runtime.infrastructure.orm import (
     ArticleORM,
     ArticleRevisionORM,
@@ -73,6 +73,9 @@ class SqlAlchemyRuntimeRepository:
     def add_article(self, article: Article) -> Article:
         return self._add(ArticleORM, article)
 
+    def update_article(self, article: Article) -> Article:
+        return self._update(ArticleORM, article)
+
     def get_article(self, article_id: str) -> Article | None:
         obj = self.session.get(ArticleORM, article_id)
         return _domain(Article, obj) if obj else None
@@ -120,12 +123,6 @@ class SqlAlchemyRuntimeRepository:
         obj = self.session.get(ArtifactORM, artifact_id)
         return _domain(Artifact, obj) if obj else None
 
-    def get_artifact_by_hash(self, content_hash: str) -> Artifact | None:
-        obj = self.session.scalar(
-            select(ArtifactORM).where(ArtifactORM.content_hash == content_hash)
-        )
-        return _domain(Artifact, obj) if obj else None
-
     def add_workflow(self, workflow: Workflow) -> Workflow:
         return self._add(WorkflowORM, workflow)
 
@@ -144,7 +141,10 @@ class SqlAlchemyRuntimeRepository:
 
     def list_workflows(self) -> Sequence[Workflow]:
         objects = self.session.scalars(
-            select(WorkflowORM).order_by(WorkflowORM.name, WorkflowORM.version)
+            select(WorkflowORM).order_by(
+                WorkflowORM.name,
+                WorkflowORM.version.desc(),
+            )
         ).all()
         return [_domain(Workflow, obj) for obj in objects]
 
@@ -157,6 +157,16 @@ class SqlAlchemyRuntimeRepository:
     def get_run(self, run_id: str) -> WorkflowRun | None:
         obj = self.session.get(WorkflowRunORM, run_id)
         return _domain(WorkflowRun, obj) if obj else None
+
+    def list_runs_by_statuses(self, statuses: Sequence[RunStatus]) -> Sequence[WorkflowRun]:
+        if not statuses:
+            return []
+        objects = self.session.scalars(
+            select(WorkflowRunORM)
+            .where(WorkflowRunORM.status.in_([status.value for status in statuses]))
+            .order_by(WorkflowRunORM.created_at, WorkflowRunORM.id)
+        ).all()
+        return [_domain(WorkflowRun, obj) for obj in objects]
 
     def add_event(self, event: RuntimeEvent) -> RuntimeEvent:
         return self._add(RuntimeEventORM, event)
@@ -247,6 +257,19 @@ class SqlAlchemyRuntimeRepository:
         objects = self.session.scalars(
             select(PublishJobORM)
             .where(PublishJobORM.plan_id == plan_id)
+            .order_by(PublishJobORM.created_at, PublishJobORM.id)
+        ).all()
+        return [_domain(PublishJob, obj) for obj in objects]
+
+    def list_publish_jobs_by_states(
+        self,
+        states: Sequence[PublishJobState],
+    ) -> Sequence[PublishJob]:
+        if not states:
+            return []
+        objects = self.session.scalars(
+            select(PublishJobORM)
+            .where(PublishJobORM.state.in_([state.value for state in states]))
             .order_by(PublishJobORM.created_at, PublishJobORM.id)
         ).all()
         return [_domain(PublishJob, obj) for obj in objects]

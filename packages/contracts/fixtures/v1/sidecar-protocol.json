@@ -1,0 +1,272 @@
+{
+  "HealthResponse": {
+    "status": "ok",
+    "database": "ok",
+    "publisher_mode": "dry_run"
+  },
+  "CreateArticleRequest": {
+    "title": "Desktop draft",
+    "markdown": "# Desktop draft\n\nCanonical Markdown.",
+    "metadata": {
+      "desktop_article_id": "desktop:article:1"
+    }
+  },
+  "CreateArticleResponse": {
+    "article": {
+      "id": "article-1"
+    },
+    "revision": {
+      "id": "revision-1"
+    }
+  },
+  "CreateRevisionRequest": {
+    "markdown": "# Desktop draft\n\nSecond revision.",
+    "parent_revision_id": "revision-1"
+  },
+  "CreateRevisionResponse": {
+    "id": "revision-2"
+  },
+  "ListArticlesResponse": [
+    {
+      "id": "article-1",
+      "metadata_json": {
+        "desktop_article_id": "desktop:article:1"
+      }
+    }
+  ],
+  "ArticleDetailResponse": {
+    "latest_revision": {
+      "id": "revision-2",
+      "number": 2,
+      "markdown": "# Desktop draft\n\nSecond revision.",
+      "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "ListWorkflowsResponse": [
+    {
+      "id": "workflow-1",
+      "name": "mock-article",
+      "version": "1.0.0"
+    }
+  ],
+  "StartRunRequest": {
+    "workflow_id": "workflow-1",
+    "article_id": "article-1",
+    "revision_id": "revision-2",
+    "topic": "Cross-process compatibility",
+    "policy": {
+      "require_content_approval": false,
+      "allow_remote_publish": false,
+      "disabled_optional_node_ids": [
+        "research"
+      ]
+    }
+  },
+  "WorkflowRunResponse": {
+    "id": "run-1",
+    "input_revision_id": "revision-2",
+    "output_revision_id": "revision-3",
+    "status": "completed",
+    "state_json": {
+      "outline_artifact_id": "artifact-outline-1",
+      "canonical_draft_artifact_id": "artifact-draft-1"
+    },
+    "error": null
+  },
+  "CompleteDemoRequest": {
+    "title": "Protocol demo",
+    "topic": "Cross-process compatibility",
+    "source_markdown": "# Source\n\nDeterministic input.",
+    "platforms": [
+      "wechat",
+      "csdn"
+    ],
+    "disabled_optional_node_ids": [
+      "research"
+    ]
+  },
+  "CompleteDemoResponse": {
+    "run": {
+      "status": "completed",
+      "state_json": {
+        "draft_artifact_id": "artifact:1"
+      }
+    },
+    "plan": {
+      "status": "completed"
+    },
+    "receipts": [
+      {
+        "status": "published",
+        "remote_id": "dry-run:1"
+      }
+    ],
+    "content_package": {
+      "assets": []
+    }
+  },
+  "GenerateImagesRequest": {
+    "prompt": "A restrained editorial cover",
+    "size": "1024x1024",
+    "model": null
+  },
+  "GenerateImagesResponse": {
+    "provider": "mock",
+    "model": "deterministic-svg-v1",
+    "mocked": true,
+    "artifacts": [
+      {
+        "id": "artifact-image-1",
+        "kind": "image.generated",
+        "media_type": "image/svg+xml",
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 512,
+        "metadata_json": {
+          "requested_size": "1024x1024"
+        },
+        "created_at": "2026-07-30T00:00:00Z"
+      }
+    ],
+    "remote_urls_ignored": 0
+  },
+  "CreateConnectionProfileRequest": {
+    "name": "Deterministic Mock",
+    "provider": "mock",
+    "base_url": null,
+    "secret_ref": "mock://deterministic",
+    "config": {
+      "default_text_model": "mock-text",
+      "default_image_model": null,
+      "timeout_seconds": 30
+    }
+  },
+  "ConnectionProfilePublic": {
+    "id": "connection-1",
+    "name": "Deterministic Mock",
+    "provider": "mock",
+    "base_url": null,
+    "config_json": {
+      "default_text_model": "mock-text",
+      "default_image_model": null,
+      "timeout_seconds": 30
+    },
+    "secret_scheme": "mock",
+    "secret_configured": true,
+    "created_at": "2026-07-30T00:00:00Z"
+  },
+  "ListConnectionProfilesResponse": [
+    {
+      "id": "connection-1",
+      "name": "Deterministic Mock",
+      "provider": "mock",
+      "base_url": null,
+      "config_json": {
+        "default_text_model": "mock-text",
+        "default_image_model": null,
+        "timeout_seconds": 30
+      },
+      "secret_scheme": "mock",
+      "secret_configured": true,
+      "created_at": "2026-07-30T00:00:00Z"
+    }
+  ],
+  "CreatePublishPlanRequest": {
+    "revision_id": "revision-3",
+    "targets": [
+      {
+        "platform": "wechat",
+        "account_ref": "desktop-wechat"
+      },
+      {
+        "platform": "csdn",
+        "account_ref": "desktop-csdn"
+      }
+    ]
+  },
+  "ApprovePublishPlanRequest": {
+    "actor_id": "user:desktop",
+    "comment": "User reviewed the platform variants and approved this dry-run."
+  },
+  "EmptyRequest": {},
+  "PublishPlanDetailResponse": {
+    "plan": {
+      "id": "plan-1",
+      "revision_id": "revision-3",
+      "status": "draft",
+      "approval_status": "pending",
+      "created_at": "2026-07-30T00:00:00Z",
+      "updated_at": "2026-07-30T00:00:00Z"
+    },
+    "variants": [
+      {
+        "id": "variant-wechat-1",
+        "platform": "wechat",
+        "account_ref": "desktop-wechat",
+        "title": "Desktop draft",
+        "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "id": "variant-csdn-1",
+        "platform": "csdn",
+        "account_ref": "desktop-csdn",
+        "title": "Desktop draft",
+        "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ],
+    "jobs": []
+  },
+  "EnqueuePublishPlanResponse": {
+    "plan": {
+      "id": "plan-1",
+      "revision_id": "revision-3",
+      "status": "queued",
+      "approval_status": "approved",
+      "created_at": "2026-07-30T00:00:00Z",
+      "updated_at": "2026-07-30T00:01:00Z"
+    },
+    "jobs": [
+      {
+        "id": "job-1",
+        "plan_id": "plan-1",
+        "variant_id": "variant-wechat-1",
+        "platform": "wechat",
+        "account_ref": "desktop-wechat",
+        "operation": "dry_run",
+        "idempotency_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "payload_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "state": "pending",
+        "remote_id": null,
+        "last_error": null,
+        "reconcile_required": false,
+        "created_at": "2026-07-30T00:01:00Z",
+        "updated_at": "2026-07-30T00:01:00Z"
+      }
+    ]
+  },
+  "ProcessPublishJobResponse": {
+    "job": {
+      "id": "job-1",
+      "plan_id": "plan-1",
+      "variant_id": "variant-wechat-1",
+      "platform": "wechat",
+      "account_ref": "desktop-wechat",
+      "operation": "dry_run",
+      "idempotency_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "payload_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "state": "succeeded",
+      "remote_id": "dry-run-job-1",
+      "last_error": null,
+      "reconcile_required": false,
+      "created_at": "2026-07-30T00:01:00Z",
+      "updated_at": "2026-07-30T00:02:00Z"
+    },
+    "receipt": {
+      "id": "receipt-1",
+      "job_id": "job-1",
+      "status": "dry_run_succeeded",
+      "remote_id": "dry-run-job-1",
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "created_at": "2026-07-30T00:02:00Z"
+    }
+  }
+}

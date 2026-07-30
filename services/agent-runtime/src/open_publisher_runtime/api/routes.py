@@ -16,6 +16,7 @@ from open_publisher_runtime.api.schemas import (
     ApprovePublishPlanRequest,
     ArticleDetail,
     ArticleWithRevision,
+    ArtifactPublic,
     ConnectionProfilePublic,
     CreateArticleRequest,
     CreateConnectionProfileRequest,
@@ -26,7 +27,11 @@ from open_publisher_runtime.api.schemas import (
     DemoResponse,
     EnqueueResponse,
     ExportContentPackageRequest,
+    GenerateImagesRequest,
+    GenerateImagesResponse,
     ImportContentPackageResponse,
+    PlatformCapabilitiesResponse,
+    PlatformCapabilitySummary,
     ProcessJobResponse,
     PublishPlanDetail,
     ResumeRunRequest,
@@ -38,7 +43,19 @@ from open_publisher_runtime.application.articles import ArticleService
 from open_publisher_runtime.application.artifacts import ArtifactService
 from open_publisher_runtime.application.connections import ConnectionService
 from open_publisher_runtime.application.content_packages import ContentPackageService
-from open_publisher_runtime.application.harness import RunController
+from open_publisher_runtime.application.harness import (
+    WORKFLOW_ARTIFACT_STATE_KEYS,
+    RunController,
+    WorkflowService,
+)
+from open_publisher_runtime.application.images import ImageGenerationService
+from open_publisher_runtime.application.platform_adapters import (
+    WeChatOfficialApiAdapter,
+    WeChatOfficialApiProbeInput,
+    browser_extension_capability,
+    manual_export_capability,
+    unsupported_official_api_capability,
+)
 from open_publisher_runtime.application.publishing import (
     PublishOutboxService,
     PublishTarget,
@@ -110,6 +127,55 @@ def version() -> VersionResponse:
         api_version="v1",
         python=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         langgraph_available=langgraph_available,
+    )
+
+
+@router.get(
+    "/platforms/capabilities",
+    response_model=PlatformCapabilitiesResponse,
+)
+def platform_capabilities() -> PlatformCapabilitiesResponse:
+    """Describe only the reviewed, offline baseline; never choose a fallback route."""
+
+    return PlatformCapabilitiesResponse(
+        platforms=[
+            PlatformCapabilitySummary(
+                platform="wechat",
+                reports=[
+                    WeChatOfficialApiAdapter.probe(WeChatOfficialApiProbeInput()),
+                    browser_extension_capability(
+                        "wechat",
+                        installed=False,
+                        paired=False,
+                    ),
+                    manual_export_capability("wechat"),
+                ],
+            ),
+            PlatformCapabilitySummary(
+                platform="csdn",
+                reports=[
+                    unsupported_official_api_capability("csdn"),
+                    browser_extension_capability(
+                        "csdn",
+                        installed=False,
+                        paired=False,
+                    ),
+                    manual_export_capability("csdn"),
+                ],
+            ),
+            PlatformCapabilitySummary(
+                platform="toutiao",
+                reports=[
+                    unsupported_official_api_capability("toutiao"),
+                    browser_extension_capability(
+                        "toutiao",
+                        installed=False,
+                        paired=False,
+                    ),
+                    manual_export_capability("toutiao"),
+                ],
+            ),
+        ],
     )
 
 
@@ -283,6 +349,41 @@ def catalog(session: SessionDep) -> RuntimeCatalog:
 
 
 @router.post(
+    "/images/generate",
+    response_model=GenerateImagesResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_images(
+    request: GenerateImagesRequest,
+    session: SessionDep,
+    container: ContainerDep,
+) -> GenerateImagesResponse:
+    repository = SqlAlchemyRuntimeRepository(session)
+    artifacts = ArtifactService(repository, container.blob_store)
+    service = ImageGenerationService(
+        model_access=container.model_access,
+        artifact_service=artifacts,
+    )
+    try:
+        result = service.generate(
+            prompt=request.prompt,
+            size=request.size,
+            model=request.model,
+        )
+        return GenerateImagesResponse(
+            provider=result.provider,
+            model=result.model,
+            mocked=result.mocked,
+            artifacts=[
+                ArtifactPublic.from_artifact(artifact) for artifact in result.artifacts
+            ],
+            remote_urls_ignored=result.remote_urls_ignored,
+        )
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+@router.post(
     "/publish/plans",
     response_model=PublishPlanDetail,
     status_code=status.HTTP_201_CREATED,
@@ -298,6 +399,7 @@ def create_publish_plan(
         plan, variants = publishing.create_plan(
             revision_id=request.revision_id,
             targets=targets,
+            selected_asset_ids=request.selected_asset_ids,
         )
         return PublishPlanDetail(plan=plan, variants=variants)
     except Exception as error:
@@ -406,6 +508,7 @@ def export_content_package(
             article_id=request.article_id,
             revision_id=request.revision_id,
             artifact_ids=request.artifact_ids,
+            platform_variant_ids=request.platform_variant_ids,
         )
     except Exception as error:
         raise _translate_error(error) from error
@@ -446,15 +549,13 @@ def complete_demo(
             markdown=request.source_markdown,
             metadata={"demo": True},
         )
-        workflows = list(repository.list_workflows())
-        if not workflows:
-            raise RuntimeError("preset workflow is unavailable")
+        workflow = WorkflowService(repository).ensure_presets()
         run = controller.start(
-            workflow_id=workflows[0].id,
+            workflow_id=workflow.id,
             article_id=article.id,
             revision_id=input_revision.id,
             topic=request.topic,
-            policy=request_policy_no_approval(),
+            policy=request_policy_no_approval(request.disabled_optional_node_ids),
         )
         if run.output_revision_id is None:
             raise RuntimeError("demo workflow did not produce a revision")
@@ -486,7 +587,18 @@ def complete_demo(
                 receipts.append(receipt)
         refreshed_plan = repository.get_publish_plan(plan.id)
         assert refreshed_plan is not None
-        package = packages.export(article_id=article.id, revision_id=output_revision.id)
+        workflow_artifact_ids = [
+            str(run.state_json[key])
+            for key in WORKFLOW_ARTIFACT_STATE_KEYS
+            if run.state_json.get(key)
+        ]
+        variant_artifact_ids = [variant.body_artifact_id for variant in variants]
+        package = packages.export(
+            article_id=article.id,
+            revision_id=output_revision.id,
+            artifact_ids=[*workflow_artifact_ids, *variant_artifact_ids],
+            platform_variant_ids=[variant.id for variant in variants],
+        )
         return DemoResponse(
             article=article,
             input_revision=input_revision,
@@ -502,10 +614,15 @@ def complete_demo(
         raise _translate_error(error) from error
 
 
-def request_policy_no_approval():
+def request_policy_no_approval(disabled_optional_node_ids: list[str] | None = None):
     from open_publisher_runtime.domain.policies import RunPolicy
 
-    return RunPolicy(require_content_approval=False)
+    return RunPolicy.model_validate(
+        {
+            "require_content_approval": False,
+            "disabled_optional_node_ids": disabled_optional_node_ids or [],
+        }
+    )
 
 
 def no_content() -> Response:
