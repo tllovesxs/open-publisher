@@ -6,8 +6,19 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_VENV = ROOT / "services" / "agent-runtime" / ".venv"
+PYTHON = next(
+    (
+        str(candidate)
+        for candidate in (
+            RUNTIME_VENV / "Scripts" / "python.exe",
+            RUNTIME_VENV / "bin" / "python",
+        )
+        if candidate.is_file()
+    ),
+    sys.executable,
+)
 
 
 @dataclass(frozen=True)
@@ -21,8 +32,8 @@ CHECKS = (
     Check("TypeScript checks", ("pnpm", "check"), "pnpm"),
     Check("TypeScript tests", ("pnpm", "test"), "pnpm"),
     Check("Web builds", ("pnpm", "build"), "pnpm"),
-    Check("Python lint", (sys.executable, "-m", "ruff", "check", "."), sys.executable),
-    Check("Python tests", (sys.executable, "-m", "pytest"), sys.executable),
+    Check("Python lint", (PYTHON, "-m", "ruff", "check", "."), PYTHON),
+    Check("Python tests", (PYTHON, "-m", "pytest"), PYTHON),
     Check(
         "Rust formatting",
         (
@@ -44,25 +55,63 @@ CHECKS = (
         ("cargo", "test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml"),
         "cargo",
     ),
+    Check(
+        "Development Sidecar smoke",
+        (
+            "cargo",
+            "test",
+            "--manifest-path",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "supervisor::tests::development_sidecar_round_trip",
+            "--",
+            "--ignored",
+            "--exact",
+        ),
+        "cargo",
+    ),
+    Check(
+        "Rust clippy",
+        (
+            "cargo",
+            "clippy",
+            "--manifest-path",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ),
+        "cargo",
+    ),
 )
 
 
-def program_exists(program: str) -> bool:
+def resolve_program(program: str) -> str | None:
     if Path(program).is_file():
-        return True
-    return shutil.which(program) is not None
+        return str(Path(program))
+    return shutil.which(program)
 
 
 def main() -> int:
     failures: list[str] = []
 
     for check in CHECKS:
-        if not program_exists(check.required_program):
+        executable = resolve_program(check.required_program)
+        if executable is None:
             print(f"[skip] {check.name}: missing {check.required_program}")
             continue
 
         print(f"[run] {check.name}")
-        result = subprocess.run(check.command, cwd=ROOT, check=False)
+        command = check.command
+        if command[0] == check.required_program:
+            command = (executable, *command[1:])
+        try:
+            result = subprocess.run(command, cwd=ROOT, check=False)
+        except OSError as error:
+            print(f"[fail] {check.name}: could not start {executable}: {error}")
+            failures.append(check.name)
+            continue
         if result.returncode != 0:
             failures.append(check.name)
 

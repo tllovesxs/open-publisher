@@ -12,17 +12,25 @@ const expectedHosts = [
   "https://mp.toutiao.com/*",
   "https://mp.weixin.qq.com/*",
 ];
+const expectedPermissions = ["activeTab", "storage"];
 const forbiddenPermissions = new Set([
   "cookies",
   "declarativeNetRequest",
+  "nativeMessaging",
   "scripting",
   "unlimitedStorage",
   "webRequest",
 ]);
 
 if (manifest.manifest_version !== 3) throw new Error("Extension must use Manifest V3");
+if (JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)) {
+  throw new Error("permissions must contain only activeTab and storage");
+}
 if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(expectedHosts)) {
   throw new Error("host_permissions must contain only the three reviewed editor origins");
+}
+if ("externally_connectable" in manifest) {
+  throw new Error("P0 must not expose an externally_connectable message endpoint");
 }
 for (const permission of manifest.permissions ?? []) {
   if (forbiddenPermissions.has(permission)) {

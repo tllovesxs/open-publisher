@@ -38,7 +38,7 @@ document.querySelector("#pair").addEventListener("click", async () => {
 document.querySelector("#fill").addEventListener("click", async () => {
   const nonce = nonceElement.value.trim();
   if (!validatePairingNonce(nonce)) {
-    setStatus("请重新输入桌面端配对码后再填充。");
+    setStatus("请重新输入本地配对码后再填充。");
     return;
   }
 
