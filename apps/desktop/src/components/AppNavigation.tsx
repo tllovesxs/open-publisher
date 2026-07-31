@@ -1,9 +1,11 @@
 import {
   BookOpenText,
+  Bot,
+  Images,
   Moon,
   PenLine,
-  Send,
   Settings,
+  LayoutTemplate,
   Sun,
   X,
 } from "lucide-react";
@@ -27,7 +29,9 @@ const navigation: Array<{
 }> = [
   { id: "create", label: "创作", icon: PenLine },
   { id: "articles", label: "文章", icon: BookOpenText },
-  { id: "publish", label: "发布", icon: Send },
+  { id: "agents", label: "智能体", icon: Bot },
+  { id: "templates", label: "模板", icon: LayoutTemplate },
+  { id: "media", label: "素材库", icon: Images },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
@@ -50,7 +54,7 @@ export function AppNavigation({
           </span>
           <div>
             <strong>Open Publisher</strong>
-            <small>写作与多平台发布</small>
+            <small>本地内容工作台</small>
           </div>
           <button
             aria-label="关闭导航"

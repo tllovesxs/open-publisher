@@ -1,6 +1,7 @@
 import { Menu, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
+import { AgentsPage } from "./components/AgentsPage";
 import { ArticlesPage } from "./components/ArticlesPage";
 import {
   CreatePage,
@@ -9,12 +10,20 @@ import {
   type CreationRequest,
 } from "./components/CreatePage";
 import { LifecycleRail } from "./components/LifecycleRail";
+import { MediaPage } from "./components/MediaPage";
 import type { EditorMode } from "./components/MarkdownWorkbench";
 import {
   PublishingPage,
   type PublishAction,
 } from "./components/PublishingPage";
 import { SettingsPage } from "./components/SettingsPage";
+import { TemplatesPage } from "./components/TemplatesPage";
+import {
+  availableSkills,
+  defaultAgents,
+  defaultMediaAssets,
+  defaultTemplates,
+} from "./data/contentStudio";
 import { articles as browserExamples, platforms } from "./data/mock";
 import {
   desktopBridge,
@@ -28,7 +37,14 @@ import {
   type RunWorkflowSummary,
   type StoredArticleSummary,
 } from "./lib/desktopBridge";
-import type { Article, NavKey, PlatformId } from "./types";
+import type {
+  Article,
+  MarkdownTemplate,
+  MediaAsset,
+  NavKey,
+  PlatformId,
+  StudioAgent,
+} from "./types";
 
 type Theme = "light" | "dark";
 
@@ -45,25 +61,31 @@ interface FailedCreationContext {
 }
 
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
+const AGENTS_STORAGE_KEY = "open-publisher-studio-agents";
+const TEMPLATES_STORAGE_KEY = "open-publisher-studio-templates";
+const MEDIA_STORAGE_KEY = "open-publisher-studio-media";
 
-const agentLabels: Array<{
-  id: DisabledOptionalNodeId | null;
-  label: string;
-}> = [
-  { id: "research", label: "资料整理 Agent" },
-  { id: "outline", label: "大纲规划 Agent" },
-  { id: null, label: "写作 Agent" },
-  { id: "natural-style", label: "自然表达 Agent" },
-  { id: "review", label: "内容审阅 Agent" },
-  { id: null, label: "风险审核 Agent" },
-  { id: "visual", label: "配图规划 Agent" },
-];
-
-function creationAgentLabels(disabledNodeIds: DisabledOptionalNodeId[]) {
+function creationAgentLabels(
+  agents: StudioAgent[],
+  disabledNodeIds: DisabledOptionalNodeId[],
+) {
   const disabled = new Set(disabledNodeIds);
-  return agentLabels
-    .filter((agent) => agent.id === null || !disabled.has(agent.id))
-    .map((agent) => agent.label);
+  return agents
+    .filter(
+      (agent) =>
+        agent.enabled &&
+        (!agent.runtimeNodeId || !disabled.has(agent.runtimeNodeId as DisabledOptionalNodeId)),
+    )
+    .map((agent) => agent.name);
+}
+
+function loadStudioValue<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function sanitizeActivityMessage(message: string) {
@@ -179,6 +201,23 @@ function buildCreationSeed(request: CreationRequest) {
   const references = request.references
     ? `\n\n## 参考资料\n\n${request.references}`
     : "";
+  const template = request.template
+    ? `\n\n## 选用 Markdown 模板\n\n${request.template.markdown.replaceAll("{{title}}", title)}`
+    : "";
+  const images = request.imageAssets.length
+    ? `\n\n## 已选图片素材\n\n${request.imageAssets
+        .map((asset) => `![${asset.alt}](${asset.src})`)
+        .join("\n\n")}`
+    : "";
+  const agentInstructions = request.agents.filter((agent) => agent.enabled).length
+    ? `\n\n## 本次智能体工作规则\n\n${request.agents
+        .filter((agent) => agent.enabled)
+        .map(
+          (agent) =>
+            `### ${agent.name}（${agent.role}）\n${agent.prompt}\n已加载 Skill：${agent.skillIds.join("、") || "无"}`,
+        )
+        .join("\n\n")}`
+    : "";
   return `# ${title}
 
 ## 创作要求
@@ -187,7 +226,7 @@ function buildCreationSeed(request: CreationRequest) {
 - 类型：${request.contentType}
 - 风格：${request.tone}
 - 篇幅：${request.length}
-${references}`.trim();
+${references}${template}${images}${agentInstructions}`.trim();
 }
 
 export default function App() {
@@ -227,6 +266,19 @@ export default function App() {
   const [failedCreationContext, setFailedCreationContext] =
     useState<FailedCreationContext | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [studioAgents, setStudioAgents] = useState<StudioAgent[]>(() =>
+    loadStudioValue(AGENTS_STORAGE_KEY, defaultAgents),
+  );
+  const [templates, setTemplates] = useState<MarkdownTemplate[]>(() =>
+    loadStudioValue(TEMPLATES_STORAGE_KEY, defaultTemplates),
+  );
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
+    () => defaultTemplates[0]?.id ?? null,
+  );
+  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>(() =>
+    loadStudioValue(MEDIA_STORAGE_KEY, defaultMediaAssets),
+  );
+  const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
 
   const selectedArticle =
     articleItems.find((article) => article.id === selectedArticleId) ?? null;
@@ -234,6 +286,9 @@ export default function App() {
     ? drafts[selectedArticle.id] ?? selectedArticle.markdown
     : "";
   const dirty = selectedArticle ? dirtyIds.has(selectedArticle.id) : false;
+  const selectedTemplate =
+    templates.find((template) => template.id === selectedTemplateId) ?? null;
+  const selectedMedia = mediaAssets.filter((asset) => selectedMediaIds.includes(asset.id));
   const currentPublishSession =
     selectedArticle && publishSession?.articleId === selectedArticle.id
       ? publishSession
@@ -328,6 +383,22 @@ export default function App() {
   }, [creationActivity]);
 
   useEffect(() => {
+    window.localStorage.setItem(AGENTS_STORAGE_KEY, JSON.stringify(studioAgents));
+  }, [studioAgents]);
+
+  useEffect(() => {
+    window.localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
+      setSelectedTemplateId(templates[0]?.id ?? null);
+    }
+  }, [selectedTemplateId, templates]);
+
+  useEffect(() => {
+    window.localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(mediaAssets));
+    setSelectedMediaIds((current) => current.filter((id) => mediaAssets.some((asset) => asset.id === id)));
+  }, [mediaAssets]);
+
+  useEffect(() => {
     if (creationActivity?.status !== "running") return;
     const interval = window.setInterval(() => {
       setCreationActivity((current) => {
@@ -400,6 +471,19 @@ export default function App() {
       ),
     );
     setDirtyIds((current) => new Set(current).add(selectedArticle.id));
+  };
+
+  const insertSelectedMediaInArticle = () => {
+    if (!selectedArticle || selectedMedia.length === 0) {
+      setToast("请先选择一篇文章和至少一张图片");
+      return;
+    }
+    const additions = selectedMedia
+      .map((asset) => `![${asset.alt}](${asset.src})`)
+      .join("\n\n");
+    updateArticleMarkdown(`${currentMarkdown.trim()}\n\n${additions}\n`);
+    setActiveNav("articles");
+    setToast(`已插入 ${selectedMedia.length} 张图片，请在编辑器中调整位置和说明`);
   };
 
   const persistRevision = async (
@@ -529,7 +613,7 @@ export default function App() {
       phase: "正在保存创作要求",
       startedAt,
       elapsedSeconds: 0,
-      agentLabels: creationAgentLabels(request.disabledNodeIds),
+      agentLabels: creationAgentLabels(studioAgents, request.disabledNodeIds),
       logs: [
         ...previousLogs,
         activityLog(
@@ -637,23 +721,30 @@ export default function App() {
 
   const createFromBrief = (request: CreationRequest) => {
     if (creatingArticle || workflowRunning) return;
+    const agentDisabledNodes = studioAgents
+      .filter((agent) => !agent.enabled && agent.runtimeNodeId)
+      .map((agent) => agent.runtimeNodeId as DisabledOptionalNodeId);
+    const normalizedRequest = {
+      ...request,
+      disabledNodeIds: [...new Set([...request.disabledNodeIds, ...agentDisabledNodes])],
+    };
     const id = `article-${Date.now()}`;
-    const markdown = buildCreationSeed(request);
+    const markdown = buildCreationSeed(normalizedRequest);
     const article: Article = {
       id,
-      title: request.title || request.topic,
-      deck: request.topic,
+      title: normalizedRequest.title || normalizedRequest.topic,
+      deck: normalizedRequest.topic,
       markdown,
       status: "draft",
       updatedAt: "刚刚",
       wordCount: markdown.replace(/\s/g, "").length,
-      channels: request.platforms,
-      collection: request.contentType,
+      channels: normalizedRequest.platforms,
+      collection: normalizedRequest.contentType,
     };
     setArticleItems((current) => [article, ...current]);
     setDrafts((current) => ({ ...current, [id]: markdown }));
     setSelectedArticleId(id);
-    void executeCreation(article, markdown, request);
+    void executeCreation(article, markdown, normalizedRequest);
   };
 
   const retryCreation = () => {
@@ -707,7 +798,14 @@ export default function App() {
       const summary = await runWorkflowForArticle(
         selectedArticle,
         currentMarkdown,
-        [...disabledNodes],
+        [
+          ...new Set([
+            ...disabledNodes,
+            ...studioAgents
+              .filter((agent) => !agent.enabled && agent.runtimeNodeId)
+              .map((agent) => agent.runtimeNodeId as DisabledOptionalNodeId),
+          ]),
+        ],
       );
       setToast(`AI 处理完成 · 已生成修订 ${summary.outputRevisionNumber}`);
     } catch (error) {
@@ -915,9 +1013,14 @@ export default function App() {
             generating={creatingArticle}
             modelLabel={modelConfiguration?.textModel ?? "配置模型"}
             onCreate={(request) => void createFromBrief(request)}
+            onOpenMedia={() => navigate("media")}
             onOpenSettings={() => navigate("settings")}
+            onOpenTemplates={() => navigate("templates")}
             onRetry={retryCreation}
             platforms={platforms}
+            agents={studioAgents}
+            selectedMedia={selectedMedia}
+            selectedTemplate={selectedTemplate}
           />
         );
       case "articles":
@@ -969,6 +1072,36 @@ export default function App() {
             stale={publishSessionStale}
           />
         );
+      case "agents":
+        return (
+          <AgentsPage
+            agents={studioAgents}
+            onChange={setStudioAgents}
+            skills={availableSkills}
+          />
+        );
+      case "templates":
+        return (
+          <TemplatesPage
+            onChange={setTemplates}
+            onSelect={setSelectedTemplateId}
+            onStartCreating={() => navigate("create")}
+            selectedTemplateId={selectedTemplateId}
+            templates={templates}
+          />
+        );
+      case "media":
+        return (
+          <MediaPage
+            assets={mediaAssets}
+            hasSelectedArticle={Boolean(selectedArticle)}
+            onAdd={(asset) => setMediaAssets((current) => [asset, ...current])}
+            onInsertInArticle={insertSelectedMediaInArticle}
+            onSelectionChange={setSelectedMediaIds}
+            onStartCreating={() => navigate("create")}
+            selectedAssetIds={selectedMediaIds}
+          />
+        );
       case "settings":
         return (
           <SettingsPage
@@ -1018,9 +1151,15 @@ export default function App() {
               ? "创作"
               : activeNav === "articles"
                 ? "文章"
-                : activeNav === "publish"
-                  ? "发布"
-                  : "设置"}
+                : activeNav === "agents"
+                  ? "智能体"
+                  : activeNav === "templates"
+                    ? "模板"
+                    : activeNav === "media"
+                      ? "素材库"
+                      : activeNav === "publish"
+                        ? "发布"
+                        : "设置"}
           </strong>
           <span className="workspace-topbar__spacer" />
           {activeNav !== "create" && (
@@ -1035,7 +1174,7 @@ export default function App() {
           )}
         </header>
 
-        {activeNav !== "settings" && (
+        {(activeNav === "create" || activeNav === "articles") && (
           <LifecycleRail
             active={lifecycleStep}
             busy={creatingArticle || workflowRunning || publishAction !== null}

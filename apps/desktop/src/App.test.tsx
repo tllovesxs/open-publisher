@@ -12,16 +12,19 @@ describe("desktop product flow", () => {
     vi.restoreAllMocks();
   });
 
-  it("exposes only the four user-facing product areas", async () => {
+  it("exposes the focused content-production areas", async () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "从一个主题开始" })).toBeVisible();
     const navigation = screen.getByRole("navigation", { name: "主导航" });
-    expect(within(navigation).getAllByRole("button")).toHaveLength(4);
+    expect(within(navigation).getAllByRole("button")).toHaveLength(6);
     expect(within(navigation).getByRole("button", { name: "创作" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "文章" })).toBeVisible();
-    expect(within(navigation).getByRole("button", { name: "发布" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "智能体" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "模板" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "素材库" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "设置" })).toBeVisible();
+    expect(within(navigation).queryByRole("button", { name: "发布" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "工作流" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "Skill" })).toBeNull();
 
@@ -136,26 +139,19 @@ describe("desktop product flow", () => {
     expect(screen.getByRole("button", { name: "已保存" })).toBeDisabled();
   });
 
-  it("keeps the durable approval flow inside the publishing page", async () => {
+  it("keeps agent, template, and image configuration in dedicated pages", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "发布" }));
-    await screen.findByRole("button", { name: "生成平台稿" });
+    fireEvent.click(screen.getByRole("button", { name: "智能体" }));
+    expect(await screen.findByRole("heading", { name: "智能体" })).toBeVisible();
+    expect(screen.getByLabelText("系统提示词")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "生成平台稿" }));
-    const confirmation = await screen.findByRole("checkbox", {
-      name: "我已检查文章、目标平台和标题",
-    });
-    expect(screen.getAllByText("已生成")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "模板" }));
+    expect(await screen.findByRole("heading", { name: "模板" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "用此模板创作" })).toBeVisible();
 
-    fireEvent.click(confirmation);
-    fireEvent.click(screen.getByRole("button", { name: "确认平台稿" }));
-    const enqueue = await screen.findByRole("button", { name: "加入发布队列" });
-    fireEvent.click(enqueue);
-
-    const process = await screen.findByRole("button", { name: "执行发布演练" });
-    fireEvent.click(process);
-    expect(await screen.findByText("演练完成")).toBeVisible();
-    expect(screen.getByText("3 个平台回执")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "素材库" }));
+    expect(await screen.findByRole("heading", { name: "素材库" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "上传图片" })).toBeVisible();
   });
 
   it("configures and tests the model from settings without rendering the secret", async () => {

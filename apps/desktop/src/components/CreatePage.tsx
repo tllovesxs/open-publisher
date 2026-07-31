@@ -12,7 +12,13 @@ import {
 } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import type { DisabledOptionalNodeId } from "../lib/desktopBridge";
-import type { PlatformDefinition, PlatformId } from "../types";
+import type {
+  MarkdownTemplate,
+  MediaAsset,
+  PlatformDefinition,
+  PlatformId,
+  StudioAgent,
+} from "../types";
 
 export interface CreationRequest {
   topic: string;
@@ -24,6 +30,9 @@ export interface CreationRequest {
   platforms: PlatformId[];
   preset: "fast" | "standard" | "deep";
   disabledNodeIds: DisabledOptionalNodeId[];
+  template: MarkdownTemplate | null;
+  imageAssets: MediaAsset[];
+  agents: StudioAgent[];
 }
 
 export interface CreationLogEntry {
@@ -52,6 +61,11 @@ interface CreatePageProps {
   platforms: PlatformDefinition[];
   onCreate: (request: CreationRequest) => void;
   onOpenSettings: () => void;
+  onOpenTemplates: () => void;
+  onOpenMedia: () => void;
+  selectedTemplate: MarkdownTemplate | null;
+  selectedMedia: MediaAsset[];
+  agents: StudioAgent[];
 }
 
 const presetNodes: Record<CreationRequest["preset"], DisabledOptionalNodeId[]> = {
@@ -85,6 +99,11 @@ export function CreatePage({
   platforms,
   onCreate,
   onOpenSettings,
+  onOpenTemplates,
+  onOpenMedia,
+  selectedTemplate,
+  selectedMedia,
+  agents,
 }: CreatePageProps) {
   const [topic, setTopic] = useState("");
   const [title, setTitle] = useState("");
@@ -155,6 +174,9 @@ export function CreatePage({
       platforms: [...targets],
       preset,
       disabledNodeIds: [...disabledNodes],
+      template: selectedTemplate,
+      imageAssets: selectedMedia,
+      agents,
     });
   };
 
@@ -263,6 +285,34 @@ export function CreatePage({
         </div>
 
         <aside className="create-options" aria-label="创作选项">
+          <section className="option-section">
+            <div className="option-section__head">
+              <strong>Markdown 模板</strong>
+              <button className="text-button" onClick={onOpenTemplates} type="button">选择</button>
+            </div>
+            <button className="creation-reference-card" onClick={onOpenTemplates} type="button">
+              <span>
+                <strong>{selectedTemplate?.name ?? "不使用固定模板"}</strong>
+                <small>{selectedTemplate?.description ?? "由工作流根据主题自由组织结构"}</small>
+              </span>
+              <ChevronDown aria-hidden="true" size={15} />
+            </button>
+          </section>
+
+          <section className="option-section">
+            <div className="option-section__head">
+              <strong>图片参考</strong>
+              <button className="text-button" onClick={onOpenMedia} type="button">管理</button>
+            </div>
+            <button className="creation-reference-card" onClick={onOpenMedia} type="button">
+              <span>
+                <strong>{selectedMedia.length ? `已选择 ${selectedMedia.length} 张图片` : "尚未选择图片"}</strong>
+                <small>{selectedMedia.length ? "AI 会根据文章结构建议插入位置" : "可在素材库上传、选择或后续生成"}</small>
+              </span>
+              <ChevronDown aria-hidden="true" size={15} />
+            </button>
+          </section>
+
           <section className="option-section">
             <div className="option-section__head">
               <strong>生成方式</strong>
