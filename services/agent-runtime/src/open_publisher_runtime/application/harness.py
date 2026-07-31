@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from time import monotonic
 
 from open_publisher_runtime.application.articles import ArticleService
@@ -57,6 +58,9 @@ class EventRecorder:
         )
 
 
+NodeEventRecorder = Callable[[str, str, str], None]
+
+
 class WorkflowService:
     PRESET_NAME = "mock-article"
     PRESET_VERSION = "1.1.0"
@@ -94,12 +98,27 @@ class RunController:
         artifact_service: ArtifactService,
         article_service: ArticleService,
         workflow_runner: PresetArticleWorkflow,
+        node_event_recorder: NodeEventRecorder | None = None,
     ) -> None:
         self.repository = repository
         self.artifact_service = artifact_service
         self.article_service = article_service
         self.workflow_runner = workflow_runner
         self.events = EventRecorder(repository)
+        self.node_event_recorder = node_event_recorder
+
+    def _record_node_event(self, run_id: str, node_id: str, phase: str) -> None:
+        if self.node_event_recorder is not None:
+            self.node_event_recorder(run_id, node_id, phase)
+            return
+        self.events.record(
+            run_id=run_id,
+            aggregate_type="workflow_run",
+            aggregate_id=run_id,
+            event_type=f"run.node_{phase}",
+            payload={"node_id": node_id},
+        )
+        self.repository.commit()
 
     def recover_interrupted_runs(self) -> list[WorkflowRun]:
         recovered: list[WorkflowRun] = []
@@ -247,9 +266,15 @@ class RunController:
                     topic=(topic or article.title).strip(),
                     source_markdown=revision.markdown,
                     agent_instructions=policy.agent_instructions,
+                    visual_composition=policy.visual_composition,
                 ),
                 disabled_optional_node_ids=disabled_optional_node_ids,
                 max_parallel=policy.max_parallel,
+                on_node_event=lambda node_id, phase: self._record_node_event(
+                    run.id,
+                    node_id,
+                    phase,
+                ),
             )
             elapsed_seconds = monotonic() - workflow_started
             budget_state["model_calls_used"] = required_model_calls
@@ -334,13 +359,14 @@ class RunController:
             )
             state_json["risk_artifact_id"] = risk_artifact.id
             if "visual" in enabled_node_ids:
-                visual_plan_artifact = self.artifact_service.put_text(
+                visual_plan = output.visual_plan.model_dump(mode="json")
+                visual_plan_artifact = self.artifact_service.put_json(
                     kind="workflow.visual-plan",
-                    text=output.visual_plan,
-                    media_type="text/markdown; charset=utf-8",
+                    value=visual_plan,
                     metadata=artifact_metadata,
                 )
                 state_json["visual_plan_artifact_id"] = visual_plan_artifact.id
+                state_json["visual_composition_plan"] = visual_plan
             state_json["pending_draft_artifact_id"] = pending_draft_artifact_id
             run.state_json = state_json
 

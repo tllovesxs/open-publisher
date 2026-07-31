@@ -61,6 +61,11 @@
       "disabled_optional_node_ids": [
         "research"
       ],
+      "visual_composition": {
+        "mode": "none",
+        "target_count": 0,
+        "assets": []
+      },
       "agent_instructions": [
         {
           "id": "writer",
@@ -89,6 +94,26 @@
       "canonical_draft_artifact_id": "artifact-draft-1"
     },
     "error": null
+  },
+  "ActiveRunResponse": {
+    "run": {
+      "id": "run-1",
+      "input_revision_id": "revision-2",
+      "output_revision_id": null,
+      "status": "running",
+      "state_json": {},
+      "error": null
+    },
+    "events": [
+      {
+        "id": "event-1",
+        "event_type": "run.node_started",
+        "payload_json": {
+          "node_id": "draft"
+        },
+        "created_at": "2026-07-31T00:00:00Z"
+      }
+    ]
   },
   "CompleteDemoRequest": {
     "title": "Protocol demo",

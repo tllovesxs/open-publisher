@@ -23,6 +23,16 @@ describe("Markdown media support", () => {
     const { rerender } = render(<MarkdownPreview markdown="![封面](https://cdn.example.com/cover.png)" />);
     expect(screen.getByRole("img", { name: "封面" })).toHaveAttribute("src", "https://cdn.example.com/cover.png");
 
+    const localSource =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==";
+    rerender(
+      <MarkdownPreview
+        markdown="![本机素材](asset://media-local)"
+        mediaAssets={[{ id: "media-local", src: localSource }]}
+      />,
+    );
+    expect(screen.getByRole("img", { name: "本机素材" })).toHaveAttribute("src", localSource);
+
     rerender(<MarkdownPreview markdown="![不安全](javascript:alert(1))" />);
     expect(screen.queryByRole("img", { name: "不安全" })).toBeNull();
   });

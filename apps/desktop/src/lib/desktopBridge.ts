@@ -36,6 +36,7 @@ export interface RunWorkflowRequest {
   topic: string;
   disabledOptionalNodeIds: DisabledOptionalNodeId[];
   agentInstructions: WorkflowAgentInstruction[];
+  visualComposition?: VisualCompositionRequest;
 }
 
 export type DisabledOptionalNodeId =
@@ -80,7 +81,49 @@ export interface RunWorkflowSummary {
   outputMarkdown: string;
   outputContentHash: string;
   artifacts: WorkflowArtifactSummary[];
+  visualPlan: VisualCompositionPlanSummary | null;
   persistence: "memory" | "local_database";
+}
+
+export type VisualImageMode = "none" | "auto" | "fixed";
+
+/** Text-only metadata lets a text model place a local image without seeing its bytes. */
+export interface VisualAssetInstruction {
+  id: string;
+  alt: string;
+  description: string;
+}
+
+export interface VisualCompositionRequest {
+  mode: VisualImageMode;
+  targetCount: number;
+  assets: VisualAssetInstruction[];
+}
+
+export interface VisualPlacementSummary {
+  afterHeading: string | null;
+  assetId: string | null;
+  alt: string;
+  generationPrompt: string | null;
+}
+
+export interface VisualCompositionPlanSummary {
+  targetCount: number;
+  placements: VisualPlacementSummary[];
+}
+
+/** Safe, backend-originated lifecycle data for a currently running workflow. */
+export interface WorkflowActivityEvent {
+  id: string;
+  eventType: string;
+  nodeId: WorkflowNodeId | null;
+  createdAt: string;
+}
+
+export interface WorkflowActivitySummary {
+  runId: string;
+  status: "queued" | "running";
+  events: WorkflowActivityEvent[];
 }
 
 export type PublishPlatform = "wechat" | "csdn" | "toutiao";
@@ -258,6 +301,7 @@ export interface DesktopBridge {
   listArticles(): Promise<StoredArticleSummary[]>;
   saveDraft(request: SaveDraftRequest): Promise<SaveDraftReceipt>;
   runWorkflow(request: RunWorkflowRequest): Promise<RunWorkflowSummary>;
+  getWorkflowActivity(articleId: string): Promise<WorkflowActivitySummary | null>;
   createPublishPlan(request: CreatePublishPlanRequest): Promise<PublishPlanSummary>;
   getPublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   approvePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
@@ -350,6 +394,34 @@ const mockTemplateMarkdown = (sourceMarkdown: string) => {
     "",
     "{{closing}}",
   ].join("\n").trim();
+};
+
+const mockVisualPlanFor = (
+  request: RunWorkflowRequest,
+): VisualCompositionPlanSummary | null => {
+  const composition = request.visualComposition;
+  if (!composition || composition.mode === "none") return null;
+  const targetCount = composition.mode === "fixed" ? composition.targetCount : 1;
+  return {
+    targetCount,
+    placements: Array.from({ length: targetCount }, (_, index) => {
+      const asset = composition.assets[index];
+      if (asset) {
+        return {
+          afterHeading: null,
+          assetId: asset.id,
+          alt: asset.alt,
+          generationPrompt: null,
+        };
+      }
+      return {
+        afterHeading: null,
+        assetId: null,
+        alt: `模拟文章配图 ${index + 1}`,
+        generationPrompt: `为文章生成第 ${index + 1} 张克制的模拟配图。`,
+      };
+    }),
+  };
 };
 
 /**
@@ -470,8 +542,12 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
           id: `${outputRevisionId}-${suffix}`,
           kind,
         })),
+      visualPlan: mockVisualPlanFor(request),
       persistence: "memory",
     };
+  },
+  async getWorkflowActivity() {
+    return null;
   },
   async createPublishPlan(request) {
     await pause(100);
@@ -662,6 +738,8 @@ const tauriBridge: DesktopBridge = {
   listArticles: () => invoke<StoredArticleSummary[]>("list_articles"),
   saveDraft: (request) => invoke<SaveDraftReceipt>("save_draft", { request }),
   runWorkflow: (request) => invoke<RunWorkflowSummary>("run_workflow", { request }),
+  getWorkflowActivity: (articleId) =>
+    invoke<WorkflowActivitySummary | null>("workflow_activity", { articleId }),
   createPublishPlan: (request) =>
     invoke<PublishPlanSummary>("create_publish_plan", { request }),
   getPublishPlan: (request) =>
@@ -707,6 +785,7 @@ const browserPreviewBridge: DesktopBridge = {
   listArticles: async () => [],
   saveDraft: desktopHostRequired,
   runWorkflow: desktopHostRequired,
+  getWorkflowActivity: desktopHostRequired,
   createPublishPlan: desktopHostRequired,
   getPublishPlan: desktopHostRequired,
   approvePublishPlan: desktopHostRequired,
@@ -742,6 +821,7 @@ export const desktopBridge: DesktopBridge = {
   listArticles: () => activeBridge().listArticles(),
   saveDraft: (request) => activeBridge().saveDraft(request),
   runWorkflow: (request) => activeBridge().runWorkflow(request),
+  getWorkflowActivity: (articleId) => activeBridge().getWorkflowActivity(articleId),
   createPublishPlan: (request) => activeBridge().createPublishPlan(request),
   getPublishPlan: (request) => activeBridge().getPublishPlan(request),
   approvePublishPlan: (request) => activeBridge().approvePublishPlan(request),

@@ -62,7 +62,7 @@ pub struct StoredArticleSummary {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunWorkflowRequest {
     pub article_id: String,
@@ -72,6 +72,42 @@ pub struct RunWorkflowRequest {
     pub disabled_optional_node_ids: Vec<String>,
     #[serde(default)]
     pub agent_instructions: Vec<WorkflowAgentInstruction>,
+    #[serde(default)]
+    pub visual_composition: VisualCompositionRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualCompositionRequest {
+    #[serde(default = "default_visual_mode")]
+    pub mode: String,
+    #[serde(default, alias = "targetCount")]
+    pub target_count: u8,
+    #[serde(default)]
+    pub assets: Vec<VisualAssetInstruction>,
+}
+
+impl Default for VisualCompositionRequest {
+    fn default() -> Self {
+        Self {
+            mode: default_visual_mode(),
+            target_count: 0,
+            assets: Vec::new(),
+        }
+    }
+}
+
+fn default_visual_mode() -> String {
+    "none".to_owned()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VisualAssetInstruction {
+    pub id: String,
+    pub alt: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +151,44 @@ pub struct RunWorkflowSummary {
     pub output_markdown: String,
     pub output_content_hash: String,
     pub artifacts: Vec<WorkflowArtifactSummary>,
+    pub visual_plan: Option<VisualCompositionPlanSummary>,
     pub persistence: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualCompositionPlanSummary {
+    pub target_count: u8,
+    pub placements: Vec<VisualPlacementSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualPlacementSummary {
+    pub after_heading: Option<String>,
+    pub asset_id: Option<String>,
+    pub alt: String,
+    pub generation_prompt: Option<String>,
+}
+
+/// A deliberately narrow projection of a live Python workflow run. It exposes
+/// only lifecycle state and node identifiers; model output and error payloads
+/// remain behind the Sidecar boundary.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowActivitySummary {
+    pub run_id: String,
+    pub status: String,
+    pub events: Vec<WorkflowActivityEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowActivityEvent {
+    pub id: String,
+    pub event_type: String,
+    pub node_id: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +390,10 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
     fn list_articles(&self) -> Result<Vec<StoredArticleSummary>, String>;
     fn save_draft(&self, request: SaveDraftRequest) -> Result<SaveDraftReceipt, String>;
     fn run_workflow(&self, request: RunWorkflowRequest) -> Result<RunWorkflowSummary, String>;
+    fn workflow_activity(
+        &self,
+        article_id: String,
+    ) -> Result<Option<WorkflowActivitySummary>, String>;
     fn create_publish_plan(
         &self,
         request: CreatePublishPlanRequest,
@@ -418,6 +495,7 @@ enum ApiRoute<'a> {
     CreateRevision(&'a str),
     Workflows,
     Runs,
+    ActiveRun(&'a str),
     PublishPlans,
     PublishPlan(&'a str),
     ApprovePublishPlan(&'a str),
@@ -441,6 +519,9 @@ impl ApiRoute<'_> {
             }
             Self::Workflows => "/api/v1/workflows".to_owned(),
             Self::Runs => "/api/v1/runs".to_owned(),
+            Self::ActiveRun(article_id) => {
+                format!("/api/v1/runs/active?article_id={article_id}")
+            }
             Self::PublishPlans => "/api/v1/publish/plans".to_owned(),
             Self::PublishPlan(plan_id) => format!("/api/v1/publish/plans/{plan_id}"),
             Self::ApprovePublishPlan(plan_id) => {
@@ -485,6 +566,7 @@ struct StartRunPolicyWire<'a> {
     allow_remote_publish: bool,
     disabled_optional_node_ids: &'a [String],
     agent_instructions: &'a [WorkflowAgentInstruction],
+    visual_composition: &'a VisualCompositionRequest,
 }
 
 #[derive(Debug, Serialize)]
@@ -557,6 +639,22 @@ struct WorkflowRunWire {
     #[serde(default)]
     state_json: HashMap<String, Value>,
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeEventWire {
+    id: String,
+    event_type: String,
+    #[serde(default)]
+    payload_json: HashMap<String, Value>,
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunDetailWire {
+    run: WorkflowRunWire,
+    #[serde(default)]
+    events: Vec<RuntimeEventWire>,
 }
 
 #[derive(Debug, Serialize)]
@@ -737,10 +835,20 @@ pub struct PythonSidecarSupervisor {
     client: Client,
     data_dir: PathBuf,
     repository_root: PathBuf,
+    local_demo: bool,
 }
 
 impl PythonSidecarSupervisor {
     pub fn new(data_dir: PathBuf) -> Result<Self, String> {
+        Self::new_with_local_demo(data_dir, false)
+    }
+
+    #[cfg(test)]
+    fn new_for_explicit_local_demo(data_dir: PathBuf) -> Result<Self, String> {
+        Self::new_with_local_demo(data_dir, true)
+    }
+
+    fn new_with_local_demo(data_dir: PathBuf, local_demo: bool) -> Result<Self, String> {
         let repository_root = repository_root();
         let client = Client::builder()
             .connect_timeout(Duration::from_millis(350))
@@ -763,6 +871,7 @@ impl PythonSidecarSupervisor {
             client,
             data_dir,
             repository_root,
+            local_demo,
         })
     }
 
@@ -871,6 +980,22 @@ impl PythonSidecarSupervisor {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
 
+        // The desktop process owns the session-only model configuration. Do not
+        // let an inherited shell environment silently configure the sidecar.
+        for variable in [
+            "OPEN_PUBLISHER_MODEL_API_KEY",
+            "OPEN_PUBLISHER_SILICONFLOW_API_KEY",
+            "OPEN_PUBLISHER_TEXT_BASE_URL",
+            "OPEN_PUBLISHER_TEXT_MODEL",
+            "OPEN_PUBLISHER_IMAGE_BASE_URL",
+            "OPEN_PUBLISHER_IMAGE_MODEL",
+            "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS",
+            "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS",
+            "OPEN_PUBLISHER_LOCAL_DEMO",
+        ] {
+            command.env_remove(variable);
+        }
+
         if let Some(model) = model_configuration {
             command
                 .env("OPEN_PUBLISHER_MODEL_API_KEY", &model.api_key)
@@ -893,6 +1018,8 @@ impl PythonSidecarSupervisor {
                     model.image_trusted_hosts.join(","),
                 );
             }
+        } else if self.local_demo {
+            command.env("OPEN_PUBLISHER_LOCAL_DEMO", "true");
         }
 
         #[cfg(windows)]
@@ -1268,16 +1395,19 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
 
     fn run_workflow(&self, request: RunWorkflowRequest) -> Result<RunWorkflowSummary, String> {
         validate_workflow_request(&request)?;
-        let mut state = self.lock_state()?;
-        self.ensure_started_locked(&mut state)?;
-        let connection = state
-            .connection
-            .clone()
-            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
-        let mapping = self.article_mapping(&mut state, &connection, &request.article_id)?;
-        if mapping.revision_id != request.revision_id {
-            return Err("当前修订与本地数据库不一致，请先重新保存稿件。".to_owned());
-        }
+        let (connection, mapping) = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            let connection = state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+            let mapping = self.article_mapping(&mut state, &connection, &request.article_id)?;
+            if mapping.revision_id != request.revision_id {
+                return Err("当前修订与本地数据库不一致，请先重新保存稿件。".to_owned());
+            }
+            (connection, mapping)
+        };
 
         let workflows: Vec<WorkflowWire> = self.get_json(&connection, ApiRoute::Workflows)?;
         let workflow = workflows
@@ -1297,6 +1427,7 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &request.disabled_optional_node_ids,
                 agent_instructions: &request.agent_instructions,
+                visual_composition: &request.visual_composition,
             },
         };
         let run: WorkflowRunWire = self.post_json(&connection, ApiRoute::Runs, &payload)?;
@@ -1323,8 +1454,13 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             return Err("工作流输出修订不是文章的最新修订。".to_owned());
         }
         validate_revision_wire(&article.latest_revision)?;
+        let mut state = self.lock_state()?;
         if let Some(current) = state.article_mappings.get_mut(&request.article_id) {
-            current.revision_id.clone_from(&output_revision_id);
+            if current.article_id == mapping.article_id
+                && current.revision_id == mapping.revision_id
+            {
+                current.revision_id.clone_from(&output_revision_id);
+            }
         }
         Ok(RunWorkflowSummary {
             run_id: validate_backend_id(run.id, "workflow run")?,
@@ -1337,8 +1473,31 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             output_markdown: article.latest_revision.markdown,
             output_content_hash: article.latest_revision.content_hash,
             artifacts: workflow_artifact_summaries(&run.state_json)?,
+            visual_plan: workflow_visual_plan(&run.state_json)?,
             persistence: "local_database",
         })
+    }
+
+    fn workflow_activity(
+        &self,
+        article_id: String,
+    ) -> Result<Option<WorkflowActivitySummary>, String> {
+        if article_id.trim().is_empty() || article_id.len() > 256 {
+            return Err("articleId must contain between 1 and 256 bytes".to_owned());
+        }
+        let (connection, mapping) = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            let connection = state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+            let mapping = self.article_mapping(&mut state, &connection, &article_id)?;
+            (connection, mapping)
+        };
+        let detail: Option<RunDetailWire> =
+            self.get_json(&connection, ApiRoute::ActiveRun(&mapping.article_id))?;
+        detail.map(summarize_workflow_activity).transpose()
     }
 
     fn create_publish_plan(
@@ -1781,6 +1940,39 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
     if total_instruction_characters > 48_000 {
         return Err("workflow Agent instruction snapshot exceeds 48000 characters".to_owned());
     }
+    validate_visual_composition(&request.visual_composition)?;
+    Ok(())
+}
+
+fn validate_visual_composition(request: &VisualCompositionRequest) -> Result<(), String> {
+    if request.assets.len() > 6 {
+        return Err("workflow can include at most six selected images".to_owned());
+    }
+    match request.mode.as_str() {
+        "none" | "auto" if request.target_count == 0 => {}
+        "fixed" if (1..=6).contains(&request.target_count) => {}
+        "none" | "auto" | "fixed" => {
+            return Err("visual image count does not match the selected mode".to_owned())
+        }
+        _ => return Err("visual image mode is invalid".to_owned()),
+    }
+
+    let mut asset_ids = HashSet::new();
+    for asset in &request.assets {
+        validate_instruction_identifier(&asset.id, "visual asset")?;
+        if !asset_ids.insert(asset.id.as_str()) {
+            return Err("visual asset ids must be unique".to_owned());
+        }
+        validate_instruction_text(&asset.alt, "visual asset alt text", 160)?;
+        if asset.description.chars().count() > 600
+            || asset
+                .description
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+        {
+            return Err("visual asset description is invalid".to_owned());
+        }
+    }
     Ok(())
 }
 
@@ -2130,6 +2322,81 @@ fn validate_backend_id(value: String, entity: &str) -> Result<String, String> {
     Ok(value)
 }
 
+fn summarize_workflow_activity(detail: RunDetailWire) -> Result<WorkflowActivitySummary, String> {
+    let run_id = validate_backend_id(detail.run.id, "workflow run")?;
+    let status = detail.run.status.trim().to_owned();
+    if !matches!(status.as_str(), "queued" | "running") {
+        return Err("local Python runtime returned a non-active workflow status".to_owned());
+    }
+    if detail.events.len() > 64 {
+        return Err("local Python runtime returned too many workflow activity events".to_owned());
+    }
+    let events = detail
+        .events
+        .into_iter()
+        .map(summarize_workflow_activity_event)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(WorkflowActivitySummary {
+        run_id,
+        status,
+        events,
+    })
+}
+
+fn summarize_workflow_activity_event(
+    event: RuntimeEventWire,
+) -> Result<WorkflowActivityEvent, String> {
+    let id = validate_backend_id(event.id, "workflow event")?;
+    let event_type = event.event_type.trim().to_owned();
+    if !matches!(
+        event_type.as_str(),
+        "run.queued"
+            | "run.started"
+            | "run.budget_reserved"
+            | "run.node_started"
+            | "run.node_completed"
+            | "run.node_failed"
+            | "run.node_skipped"
+            | "run.interrupted"
+            | "run.failed"
+            | "run.completed"
+    ) {
+        return Err("local Python runtime returned an unknown workflow activity event".to_owned());
+    }
+    let is_node_event = event_type.starts_with("run.node_");
+    let node_id = match event.payload_json.get("node_id") {
+        Some(Value::String(value)) => {
+            let node_id = validate_backend_id(value.clone(), "workflow node")?;
+            if !matches!(
+                node_id.as_str(),
+                "research" | "outline" | "draft" | "natural-style" | "review" | "risk" | "visual"
+            ) {
+                return Err("local Python runtime returned an unknown workflow node".to_owned());
+            }
+            Some(node_id)
+        }
+        Some(_) => {
+            return Err(
+                "local Python runtime returned an invalid workflow node identifier".to_owned(),
+            )
+        }
+        None if is_node_event => {
+            return Err("local Python runtime omitted a workflow node identifier".to_owned())
+        }
+        None => None,
+    };
+    let created_at = event.created_at.trim().to_owned();
+    if created_at.is_empty() || created_at.len() > 64 || created_at.chars().any(char::is_control) {
+        return Err("local Python runtime returned an invalid workflow event time".to_owned());
+    }
+    Ok(WorkflowActivityEvent {
+        id,
+        event_type,
+        node_id,
+        created_at,
+    })
+}
+
 fn epoch_millis() -> Result<u64, String> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2181,6 +2448,92 @@ fn workflow_artifact_summaries(
             })
         })
         .collect()
+}
+
+fn workflow_visual_plan(
+    state: &HashMap<String, Value>,
+) -> Result<Option<VisualCompositionPlanSummary>, String> {
+    let Some(Value::Object(plan)) = state.get("visual_composition_plan") else {
+        return Ok(None);
+    };
+    let target_count = plan
+        .get("target_count")
+        .and_then(Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|value| *value <= 6)
+        .ok_or_else(|| "local Python runtime returned an invalid visual plan count".to_owned())?;
+    let placements = plan
+        .get("placements")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "local Python runtime returned an invalid visual plan".to_owned())?;
+    if placements.len() != usize::from(target_count) || placements.len() > 6 {
+        return Err("local Python runtime returned an invalid visual placement count".to_owned());
+    }
+    let placements = placements
+        .iter()
+        .map(summarize_visual_placement)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(VisualCompositionPlanSummary {
+        target_count,
+        placements,
+    }))
+}
+
+fn summarize_visual_placement(value: &Value) -> Result<VisualPlacementSummary, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "local Python runtime returned an invalid visual placement".to_owned())?;
+    let after_heading = optional_visual_plan_text(object.get("after_heading"), "heading", 180)?;
+    let asset_id = optional_visual_plan_text(object.get("asset_id"), "asset id", 100)?;
+    if let Some(asset_id) = &asset_id {
+        validate_instruction_identifier(asset_id, "visual asset")?;
+    }
+    let alt = required_visual_plan_text(object.get("alt"), "alt text", 180)?;
+    let generation_prompt =
+        optional_visual_plan_text(object.get("generation_prompt"), "generation prompt", 2_000)?;
+    if asset_id.is_some() == generation_prompt.is_some() {
+        return Err("local Python runtime returned an ambiguous visual placement".to_owned());
+    }
+    Ok(VisualPlacementSummary {
+        after_heading,
+        asset_id,
+        alt,
+        generation_prompt,
+    })
+}
+
+fn optional_visual_plan_text(
+    value: Option<&Value>,
+    field: &str,
+    maximum: usize,
+) -> Result<Option<String>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let normalized = value.trim().to_owned();
+            if normalized.is_empty()
+                || normalized.chars().count() > maximum
+                || normalized.chars().any(char::is_control)
+            {
+                return Err(format!(
+                    "local Python runtime returned an invalid visual {field}"
+                ));
+            }
+            Ok(Some(normalized))
+        }
+        Some(_) => Err(format!(
+            "local Python runtime returned an invalid visual {field}"
+        )),
+    }
+}
+
+fn required_visual_plan_text(
+    value: Option<&Value>,
+    field: &str,
+    maximum: usize,
+) -> Result<String, String> {
+    optional_visual_plan_text(value, field, maximum)?
+        .ok_or_else(|| format!("local Python runtime omitted required visual {field}"))
 }
 
 fn public_publish_plan(detail: PublishPlanDetailWire) -> Result<PublishPlanSummary, String> {
@@ -2526,9 +2879,9 @@ mod tests {
         ExtractTemplateResponseWire, GenerateImageRequest, GenerateImageResponseWire,
         GenerateImagesRequestWire, HealthResponseWire, IdWire, ProcessPublishJobRequest,
         ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
-        PythonSidecarSupervisor, RunWorkflowRequest, SaveDraftRequest, SidecarSupervisor,
-        StartRunPolicyWire, StartRunRequestWire, WorkflowAgentInstruction, WorkflowRunWire,
-        WorkflowSkillInstruction, WorkflowWire,
+        PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, SaveDraftRequest,
+        SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire, VisualCompositionRequest,
+        WorkflowAgentInstruction, WorkflowRunWire, WorkflowSkillInstruction, WorkflowWire,
     };
 
     #[test]
@@ -2572,6 +2925,7 @@ mod tests {
                 instructions: "删除空泛套话，保留事实边界。".to_owned(),
             }],
         }];
+        let visual_composition = VisualCompositionRequest::default();
         let run = StartRunRequestWire {
             workflow_id: "workflow-1",
             article_id: "article-1",
@@ -2583,6 +2937,7 @@ mod tests {
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &disabled_optional_node_ids,
                 agent_instructions: &agent_instructions,
+                visual_composition: &visual_composition,
             },
         };
         assert_eq!(
@@ -2665,6 +3020,8 @@ mod tests {
             .expect("workflow list response wire");
         serde_json::from_value::<WorkflowRunWire>(fixtures["WorkflowRunResponse"].clone())
             .expect("workflow run response wire");
+        serde_json::from_value::<Option<RunDetailWire>>(fixtures["ActiveRunResponse"].clone())
+            .expect("active workflow response wire");
         serde_json::from_value::<PublishPlanDetailWire>(
             fixtures["PublishPlanDetailResponse"].clone(),
         )
@@ -2718,6 +3075,7 @@ mod tests {
             topic: "Local first".to_owned(),
             disabled_optional_node_ids: vec!["research".to_owned()],
             agent_instructions: Vec::new(),
+            visual_composition: VisualCompositionRequest::default(),
         })
         .is_ok());
         assert!(validate_workflow_request(&RunWorkflowRequest {
@@ -2726,6 +3084,7 @@ mod tests {
             topic: "Local first".to_owned(),
             disabled_optional_node_ids: vec!["risk".to_owned()],
             agent_instructions: Vec::new(),
+            visual_composition: VisualCompositionRequest::default(),
         })
         .is_err());
         assert!(validate_workflow_request(&RunWorkflowRequest {
@@ -2745,6 +3104,7 @@ mod tests {
                     instructions: "Use short paragraphs.\nKeep claims verifiable.".to_owned(),
                 }],
             }],
+            visual_composition: VisualCompositionRequest::default(),
         })
         .is_ok());
         assert!(
@@ -2994,7 +3354,8 @@ mod tests {
     fn development_sidecar_round_trip() {
         let data_dir = tempfile::tempdir().expect("temporary runtime directory");
         let supervisor =
-            PythonSidecarSupervisor::new(data_dir.path().to_path_buf()).expect("supervisor");
+            PythonSidecarSupervisor::new_for_explicit_local_demo(data_dir.path().to_path_buf())
+                .expect("supervisor");
         let snapshot = supervisor.ensure_started().expect("sidecar starts");
         assert!(matches!(snapshot.state, super::RuntimeState::Ready));
 
@@ -3050,6 +3411,7 @@ mod tests {
                 topic: "Private sidecar bridge".to_owned(),
                 disabled_optional_node_ids: Vec::new(),
                 agent_instructions: Vec::new(),
+                visual_composition: VisualCompositionRequest::default(),
             })
             .expect("workflow completes");
         assert_eq!(workflow.status, "completed");
@@ -3063,6 +3425,7 @@ mod tests {
                 topic: "Optional node selection".to_owned(),
                 disabled_optional_node_ids: vec!["research".to_owned(), "natural-style".to_owned()],
                 agent_instructions: Vec::new(),
+                visual_composition: VisualCompositionRequest::default(),
             })
             .expect("customized workflow completes");
         assert_eq!(customized.artifacts.len(), 5);

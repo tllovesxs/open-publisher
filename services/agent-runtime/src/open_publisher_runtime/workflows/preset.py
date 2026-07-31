@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import difflib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from itertools import pairwise
 from typing import Any, TypedDict
 
@@ -13,8 +13,15 @@ from open_publisher_runtime.application.model_access import (
 )
 from open_publisher_runtime.domain.policies import (
     OptionalWorkflowNodeId,
+    VisualCompositionRequest,
     WorkflowAgentInstruction,
     WorkflowNodeId,
+)
+from open_publisher_runtime.workflows.visual_plan import (
+    VisualCompositionPlan,
+    fallback_visual_plan,
+    plan_visual_composition,
+    target_image_count,
 )
 
 try:
@@ -39,6 +46,7 @@ OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
     "visual",
 )
 REQUIRED_NODE_IDS = ("draft", "risk")
+NodeEventCallback = Callable[[str, str], None]
 
 
 class PresetWorkflowInput(BaseModel):
@@ -48,6 +56,9 @@ class PresetWorkflowInput(BaseModel):
     topic: str
     source_markdown: str
     agent_instructions: list[WorkflowAgentInstruction] = Field(default_factory=list)
+    visual_composition: VisualCompositionRequest = Field(
+        default_factory=VisualCompositionRequest,
+    )
 
 
 class PresetWorkflowOutput(BaseModel):
@@ -60,7 +71,7 @@ class PresetWorkflowOutput(BaseModel):
     natural_style_patch: str
     review_report: str
     risk_report: str
-    visual_plan: str
+    visual_plan: VisualCompositionPlan
     engine: str
 
 
@@ -75,7 +86,8 @@ class WorkflowState(TypedDict):
     canonical_markdown: str
     review_report: str
     risk_report: str
-    visual_plan: str
+    visual_composition: VisualCompositionRequest
+    visual_plan: VisualCompositionPlan | None
 
 
 class PresetArticleWorkflow:
@@ -83,6 +95,25 @@ class PresetArticleWorkflow:
 
     def __init__(self, model_access: ModelAccessLayer) -> None:
         self.model_access = model_access
+
+    @staticmethod
+    def _run_node(
+        node_id: WorkflowNodeId,
+        action: Callable[[WorkflowState], dict[str, object]],
+        state: WorkflowState,
+        on_node_event: NodeEventCallback | None,
+    ) -> dict[str, object]:
+        if on_node_event is not None:
+            on_node_event(node_id, "started")
+        try:
+            result = action(state)
+        except Exception:
+            if on_node_event is not None:
+                on_node_event(node_id, "failed")
+            raise
+        if on_node_event is not None:
+            on_node_event(node_id, "completed")
+        return result
 
     @staticmethod
     def _agent_guidance(state: WorkflowState, node_id: WorkflowNodeId) -> str:
@@ -252,21 +283,49 @@ class PresetArticleWorkflow:
         )
         return {"risk_report": response.text}
 
-    def _visual(self, state: WorkflowState) -> dict[str, str]:
+    def _visual(self, state: WorkflowState) -> dict[str, object]:
+        composition = state["visual_composition"]
+        target_count = target_image_count(state["canonical_markdown"], composition)
+        available_assets = "\n".join(
+            (
+                f"- id: {asset.id}; alt: {asset.alt}; "
+                f"description: {asset.description or '未填写额外说明'}"
+            )
+            for asset in composition.assets
+        ) or "- 没有作者提供的本地图片素材"
         response = self.model_access.generate_text(
             TextGenerationRequest(
                 purpose="visual",
                 prompt=(
-                    f"只读规划以下文章的封面与正文配图：\n\n{state['canonical_markdown']}"
+                    "只读规划以下 Markdown 文章的正文配图。必须只输出一个 JSON 对象，不要 "
+                    "Markdown 代码块或解释。JSON 形状为："
+                    '{"target_count": N, "placements": ['
+                    '{"after_heading": "文章中存在的小节标题或 null", '
+                    '"asset_id": "作者素材 id 或 null", "alt": "图片说明", '
+                    '"generation_prompt": "仅在 asset_id 为 null 时填写的生图提示词或 null"}]}. '
+                    f"本次必须规划 {target_count} 张图片；优先且恰好使用 "
+                    f"{min(target_count, len(composition.assets))} 张作者提供素材，"
+                    "其余位置必须给出生成提示词。所有 after_heading 必须完全匹配文章中的标题。"
+                    "不要生成品牌标识、人物肖像、可读文字、水印或未经证实的数据。"
+                    f"\n\n作者素材仅有文字说明（不能假定看到了图片内容）：\n{available_assets}"
+                    f"\n\n文章：\n{state['canonical_markdown']}"
                     f"{self._agent_guidance(state, 'visual')}"
                 ),
                 context={
                     "title": state["title"],
                     "source_markdown": state["canonical_markdown"],
+                    "visual_composition": composition.model_dump(mode="json"),
                 },
+                max_output_tokens=1_600,
             )
         )
-        return {"visual_plan": response.text}
+        return {
+            "visual_plan": plan_visual_composition(
+                response.text,
+                state["canonical_markdown"],
+                composition,
+            )
+        }
 
     def _run_sequential(self, initial: WorkflowState) -> WorkflowState:
         return self._run_sequential_customized(initial, ())
@@ -275,22 +334,25 @@ class PresetArticleWorkflow:
         self,
         initial: WorkflowState,
         disabled_optional_node_ids: Sequence[OptionalWorkflowNodeId],
+        on_node_event: NodeEventCallback | None,
     ) -> WorkflowState:
         disabled = set(self._normalize_disabled_node_ids(disabled_optional_node_ids))
         if "research" not in disabled:
-            initial.update(self._research(initial))
+            initial.update(self._run_node("research", self._research, initial, on_node_event))
         if "outline" not in disabled:
-            initial.update(self._outline(initial))
-        initial.update(self._draft(initial))
+            initial.update(self._run_node("outline", self._outline, initial, on_node_event))
+        initial.update(self._run_node("draft", self._draft, initial, on_node_event))
         if "natural-style" in disabled:
             initial["canonical_markdown"] = initial["raw_draft"]
         else:
-            initial.update(self._naturalize(initial))
+            initial.update(
+                self._run_node("natural-style", self._naturalize, initial, on_node_event)
+            )
         if "review" not in disabled:
-            initial.update(self._review(initial))
-        initial.update(self._risk(initial))
+            initial.update(self._run_node("review", self._review, initial, on_node_event))
+        initial.update(self._run_node("risk", self._risk, initial, on_node_event))
         if "visual" not in disabled:
-            initial.update(self._visual(initial))
+            initial.update(self._run_node("visual", self._visual, initial, on_node_event))
         return initial
 
     def _run_langgraph(
@@ -299,23 +361,27 @@ class PresetArticleWorkflow:
         disabled_optional_node_ids: Sequence[OptionalWorkflowNodeId],
         *,
         max_parallel: int,
+        on_node_event: NodeEventCallback | None,
     ) -> WorkflowState:
         assert StateGraph is not None and START is not None and END is not None
         disabled = set(self._normalize_disabled_node_ids(disabled_optional_node_ids))
         builder = StateGraph(WorkflowState)
-        builder.add_node("draft", self._draft)
-        builder.add_node("risk", self._risk)
+        def node(node_id: WorkflowNodeId, action: Callable[[WorkflowState], dict[str, object]]):
+            return lambda state: self._run_node(node_id, action, state, on_node_event)
+
+        builder.add_node("draft", node("draft", self._draft))
+        builder.add_node("risk", node("risk", self._risk))
 
         sequential_nodes: list[str] = []
         if "research" not in disabled:
-            builder.add_node("research", self._research)
+            builder.add_node("research", node("research", self._research))
             sequential_nodes.append("research")
         if "outline" not in disabled:
-            builder.add_node("outline", self._outline)
+            builder.add_node("outline", node("outline", self._outline))
             sequential_nodes.append("outline")
         sequential_nodes.append("draft")
         if "natural-style" not in disabled:
-            builder.add_node("natural-style", self._naturalize)
+            builder.add_node("natural-style", node("natural-style", self._naturalize))
             sequential_nodes.append("natural-style")
         else:
             builder.add_node(
@@ -331,10 +397,10 @@ class PresetArticleWorkflow:
         fanout_source = sequential_nodes[-1]
         fanout_nodes = ["risk"]
         if "review" not in disabled:
-            builder.add_node("review", self._review)
+            builder.add_node("review", node("review", self._review))
             fanout_nodes.append("review")
         if "visual" not in disabled:
-            builder.add_node("visual", self._visual)
+            builder.add_node("visual", node("visual", self._visual))
             fanout_nodes.append("visual")
         for node_id in fanout_nodes:
             builder.add_edge(fanout_source, node_id)
@@ -349,6 +415,7 @@ class PresetArticleWorkflow:
         *,
         disabled_optional_node_ids: Sequence[OptionalWorkflowNodeId] = (),
         max_parallel: int = 4,
+        on_node_event: NodeEventCallback | None = None,
     ) -> PresetWorkflowOutput:
         disabled = self._normalize_disabled_node_ids(disabled_optional_node_ids)
         if not 1 <= max_parallel <= 8:
@@ -358,22 +425,24 @@ class PresetArticleWorkflow:
             "topic": workflow_input.topic,
             "source_markdown": workflow_input.source_markdown,
             "agent_instructions": workflow_input.agent_instructions,
+            "visual_composition": workflow_input.visual_composition,
             "research_report": "",
             "outline": "",
             "raw_draft": "",
             "canonical_markdown": "",
             "review_report": "",
             "risk_report": "",
-            "visual_plan": "",
+            "visual_plan": None,
         }
         if StateGraph is None:
-            state = self._run_sequential_customized(initial, disabled)
+            state = self._run_sequential_customized(initial, disabled, on_node_event)
             engine = "sequential-customized" if disabled else "sequential-fallback"
         else:
             state = self._run_langgraph(
                 initial,
                 disabled,
                 max_parallel=max_parallel,
+                on_node_event=on_node_event,
             )
             engine = "langgraph-customized" if disabled else "langgraph"
         natural_style_patch = "\n".join(
@@ -393,7 +462,11 @@ class PresetArticleWorkflow:
             natural_style_patch=natural_style_patch,
             review_report=state["review_report"],
             risk_report=state["risk_report"],
-            visual_plan=state["visual_plan"],
+            visual_plan=state["visual_plan"]
+            or fallback_visual_plan(
+                state["canonical_markdown"],
+                workflow_input.visual_composition,
+            ),
             engine=engine,
         )
 

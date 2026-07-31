@@ -8,7 +8,8 @@ import open_publisher_runtime.application.harness as harness_module
 import open_publisher_runtime.workflows.preset as preset_module
 from open_publisher_runtime.application.artifacts import ArtifactService
 from open_publisher_runtime.application.harness import WORKFLOW_ARTIFACT_STATE_KEYS
-from open_publisher_runtime.domain.entities import Workflow
+from open_publisher_runtime.domain.entities import RuntimeEvent, Workflow, WorkflowRun
+from open_publisher_runtime.domain.enums import RunStatus
 from open_publisher_runtime.infrastructure.orm import ArtifactORM, WorkflowRunORM
 from open_publisher_runtime.infrastructure.providers import MockTextProvider
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
@@ -46,6 +47,15 @@ class ConcurrencyTextProvider(MockTextProvider):
         finally:
             with self.lock:
                 self.active -= 1
+
+
+class RecordingTextProvider(MockTextProvider):
+    def __init__(self) -> None:
+        self.requests = []
+
+    def generate(self, request):
+        self.requests.append(request)
+        return super().generate(request)
 
 
 def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -> None:
@@ -97,13 +107,40 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
 
     detail = client.get(f"/api/v1/runs/{run['id']}")
     assert detail.status_code == 200
-    event_types = [event["event_type"] for event in detail.json()["events"]]
-    assert event_types == [
+    events = detail.json()["events"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types[:3] == [
         "run.queued",
         "run.started",
         "run.budget_reserved",
-        "run.completed",
     ]
+    assert event_types[-1] == "run.completed"
+    node_events = [
+        (event["event_type"], event["payload_json"].get("node_id"))
+        for event in events
+        if event["event_type"].startswith("run.node_")
+    ]
+    started_nodes = {
+        node_id
+        for event_type, node_id in node_events
+        if event_type == "run.node_started"
+    }
+    completed_nodes = {
+        node_id
+        for event_type, node_id in node_events
+        if event_type == "run.node_completed"
+    }
+    assert started_nodes == {
+        "research",
+        "outline",
+        "draft",
+        "natural-style",
+        "review",
+        "risk",
+        "visual",
+    }
+    assert completed_nodes == started_nodes
+    assert all(event_type != "run.node_failed" for event_type, _ in node_events)
     assert run["state_json"]["budget"] == {
         "model_calls_limit": 8,
         "model_calls_reserved": 7,
@@ -111,6 +148,98 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         "max_parallel": 4,
         "max_wall_clock_seconds": 300,
     }
+
+
+def test_active_run_endpoint_exposes_durable_node_activity(client, article_payload) -> None:
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+    with client.app.state.container.database.session() as session:
+        repository = SqlAlchemyRuntimeRepository(session)
+        run = repository.add_run(
+            WorkflowRun(
+                workflow_id=workflow["id"],
+                article_id=article["article"]["id"],
+                input_revision_id=article["revision"]["id"],
+                status=RunStatus.RUNNING,
+                workflow_snapshot_json={"version": "1.1.0"},
+            )
+        )
+        repository.add_event(
+            RuntimeEvent(
+                run_id=run.id,
+                aggregate_type="workflow_run",
+                aggregate_id=run.id,
+                event_type="run.node_started",
+                payload_json={"node_id": "draft"},
+            )
+        )
+
+    response = client.get(
+        "/api/v1/runs/active",
+        params={"article_id": article["article"]["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["run"]["id"] == run.id
+    assert payload["run"]["status"] == "running"
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["event_type"] == "run.node_started"
+    assert payload["events"][0]["payload_json"] == {"node_id": "draft"}
+
+
+def test_visual_agent_receives_selected_asset_text_metadata_only(
+    client, article_payload
+) -> None:
+    provider = RecordingTextProvider()
+    client.app.state.container.model_access.text_provider = provider
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "policy": {
+                "visual_composition": {
+                    "mode": "fixed",
+                    "target_count": 1,
+                    "assets": [
+                        {
+                            "id": "media-architecture",
+                            "alt": "三层产品架构图",
+                            "description": "展示采集、编排、发布三层之间的单向数据流。",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    run = response.json()
+    visual_request = next(
+        request for request in provider.requests if request.purpose == "visual"
+    )
+    assert "三层产品架构图" in visual_request.prompt
+    assert "展示采集、编排、发布三层之间的单向数据流。" in visual_request.prompt
+    assert "data:image" not in visual_request.prompt
+    assert visual_request.context["visual_composition"] == {
+        "mode": "fixed",
+        "target_count": 1,
+        "assets": [
+            {
+                "id": "media-architecture",
+                "alt": "三层产品架构图",
+                "description": "展示采集、编排、发布三层之间的单向数据流。",
+            }
+        ],
+    }
+    assert run["state_json"]["visual_composition_plan"]["placements"][0][
+        "asset_id"
+    ] == "media-architecture"
 
 
 def test_run_can_pause_and_resume_for_approval(client, article_payload) -> None:

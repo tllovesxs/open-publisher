@@ -78,6 +78,7 @@ from open_publisher_runtime.domain.entities import (
     Workflow,
     WorkflowRun,
 )
+from open_publisher_runtime.domain.enums import RunStatus
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -100,11 +101,32 @@ def _services(
     repository = SqlAlchemyRuntimeRepository(session)
     artifacts = ArtifactService(repository, container.blob_store)
     articles = ArticleService(repository, artifacts)
+
+    def record_live_node_event(run_id: str, node_id: str, phase: str) -> None:
+        """Persist progress from LangGraph worker threads using an isolated session."""
+
+        try:
+            with container.database.session() as progress_session:
+                progress_repository = SqlAlchemyRuntimeRepository(progress_session)
+                progress_repository.add_event(
+                    RuntimeEvent(
+                        run_id=run_id,
+                        aggregate_type="workflow_run",
+                        aggregate_id=run_id,
+                        event_type=f"run.node_{phase}",
+                        payload_json={"node_id": node_id},
+                    )
+                )
+        except Exception:
+            # Progress reporting must not turn a completed model call into a failed run.
+            return
+
     controller = RunController(
         repository=repository,
         artifact_service=artifacts,
         article_service=articles,
         workflow_runner=container.workflow_runner,
+        node_event_recorder=record_live_node_event,
     )
     publishing = PublishOutboxService(
         repository=repository,
@@ -338,6 +360,15 @@ def start_run(
         )
     except Exception as error:
         raise _translate_error(error) from error
+
+
+@router.get("/runs/active", response_model=RunDetail | None)
+def get_active_run(article_id: str, session: SessionDep) -> RunDetail | None:
+    repository = SqlAlchemyRuntimeRepository(session)
+    run = repository.find_active_run(article_id)
+    if run is None or run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+        return None
+    return RunDetail(run=run, events=list(repository.list_events(run.id)))
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)

@@ -9,7 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { Article, PlatformDefinition, PlatformId } from "../types";
+import type { Article, MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
 
 interface ArticlesPageProps {
@@ -24,6 +24,7 @@ interface ArticlesPageProps {
   editorMode: EditorMode;
   selectedPlatform: PlatformId;
   platforms: PlatformDefinition[];
+  mediaAssets: MediaAsset[];
   onCreate: () => void;
   onSelect: (articleId: string) => void;
   onMarkdownChange: (markdown: string) => void;
@@ -54,6 +55,7 @@ export function ArticlesPage({
   editorMode,
   selectedPlatform,
   platforms,
+  mediaAssets,
   onCreate,
   onSelect,
   onMarkdownChange,
@@ -206,6 +208,7 @@ export function ArticlesPage({
           onMarkdownChange={onMarkdownChange}
           onImageFileDrop={onImageFileDrop}
           onPlatformChange={onPlatformChange}
+          mediaAssets={mediaAssets}
           platforms={platforms}
           selectedPlatform={selectedPlatform}
         />

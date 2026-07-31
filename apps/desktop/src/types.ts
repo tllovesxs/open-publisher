@@ -69,6 +69,8 @@ export interface MediaAsset {
   id: string;
   name: string;
   alt: string;
+  /** Optional author-written context for text-only visual planning. */
+  description: string;
   src: string;
   source: "uploaded" | "generated";
   createdAt: string;

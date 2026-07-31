@@ -21,6 +21,8 @@ WorkflowNodeId = Literal[
     "visual",
 ]
 
+VisualImageMode = Literal["none", "auto", "fixed"]
+
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,99}$")
 
 
@@ -93,6 +95,68 @@ class WorkflowAgentInstruction(BaseModel):
         return value
 
 
+class VisualAssetInstruction(BaseModel):
+    """Text-only metadata for a locally held image selected by the author."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=100)
+    alt: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=600)
+
+    @field_validator("id")
+    @classmethod
+    def identifier_is_valid(cls, value: str) -> str:
+        normalized = value.strip()
+        if not _IDENTIFIER.fullmatch(normalized):
+            raise ValueError("visual asset id must be a lowercase identifier")
+        return normalized
+
+    @field_validator("alt")
+    @classmethod
+    def alt_is_visible_text(cls, value: str) -> str:
+        return _normalize_visible_text(value, field_name="alt")
+
+    @field_validator("description")
+    @classmethod
+    def description_is_bounded(cls, value: str) -> str:
+        normalized = value.strip()
+        if any(
+            character not in {"\n", "\t"} and not character.isprintable()
+            for character in normalized
+        ):
+            raise ValueError("description must contain visible text only")
+        return normalized
+
+
+class VisualCompositionRequest(BaseModel):
+    """Immutable image-placement brief captured with one workflow run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: VisualImageMode = "none"
+    target_count: int = Field(default=0, ge=0, le=6)
+    assets: list[VisualAssetInstruction] = Field(default_factory=list, max_length=6)
+
+    @field_validator("assets")
+    @classmethod
+    def asset_ids_are_unique(
+        cls,
+        value: list[VisualAssetInstruction],
+    ) -> list[VisualAssetInstruction]:
+        if len({asset.id for asset in value}) != len(value):
+            raise ValueError("visual asset ids must be unique")
+        return value
+
+    def model_post_init(self, __context: object) -> None:
+        if self.mode == "none" and self.target_count != 0:
+            raise ValueError("visual target_count must be zero when mode is none")
+        if self.mode == "auto" and self.target_count != 0:
+            raise ValueError("visual target_count must be zero when mode is auto")
+        if self.mode == "fixed" and not 1 <= self.target_count <= 6:
+            raise ValueError("visual target_count must be between 1 and 6 when mode is fixed")
+
+
 class RunPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +173,9 @@ class RunPolicy(BaseModel):
     agent_instructions: list[WorkflowAgentInstruction] = Field(
         default_factory=list,
         max_length=12,
+    )
+    visual_composition: VisualCompositionRequest = Field(
+        default_factory=VisualCompositionRequest,
     )
 
     @field_validator("disabled_optional_node_ids")

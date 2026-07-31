@@ -11,7 +11,7 @@ import {
   Quote,
 } from "lucide-react";
 import { useRef, useState } from "react";
-import type { PlatformDefinition, PlatformId } from "../types";
+import type { MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { MarkdownPreview } from "./MarkdownPreview";
 
 export type EditorMode = "edit" | "split" | "preview";
@@ -30,6 +30,7 @@ interface MarkdownWorkbenchProps {
   selectedPlatform: PlatformId;
   onPlatformChange: (platform: PlatformId) => void;
   platforms: PlatformDefinition[];
+  mediaAssets?: MediaAsset[];
   onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
 }
 
@@ -52,6 +53,7 @@ export function MarkdownWorkbench({
   selectedPlatform,
   onPlatformChange,
   platforms,
+  mediaAssets = [],
   onImageFileDrop,
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -267,7 +269,7 @@ export function MarkdownWorkbench({
                 {platforms.find((item) => item.id === selectedPlatform)?.name}
               </strong>
             </div>
-            <MarkdownPreview markdown={markdown} />
+            <MarkdownPreview markdown={markdown} mediaAssets={mediaAssets} />
           </div>
         )}
       </div>

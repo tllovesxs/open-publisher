@@ -26,8 +26,8 @@ const nativeTestBridge: DesktopBridge = {
     name: "Test model",
     baseUrl: "https://example.test/v1",
     textModel: "test-text-model",
-    imageBaseUrl: null,
-    imageModel: null,
+    imageBaseUrl: "https://images.example.test/v1",
+    imageModel: "test-image-model",
     imageTrustedHosts: [],
     timeoutSeconds: 30,
     secretConfigured: true,
@@ -105,6 +105,31 @@ describe("desktop product flow", () => {
     );
   });
 
+  it("passes an approximate custom length into the writing brief", async () => {
+    const saveDraft = vi.spyOn(desktopBridge, "saveDraft");
+    render(<App />);
+    await waitForNativeRuntime();
+
+    expect(screen.getByRole("option", { name: "短篇（约 1,500–2,000 字）" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "中篇（约 3,000–4,000 字）" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "长篇（约 5,500–7,000 字）" })).toBeVisible();
+    fireEvent.change(screen.getByLabelText("文章篇幅"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("自定义约多少字"), {
+      target: { value: "6200" },
+    });
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "按目标篇幅生成的文章" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    await screen.findByLabelText("Markdown 正文");
+    expect(saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        markdown: expect.stringContaining("- 篇幅：自定义（约 6,200 字）"),
+      }),
+    );
+  });
+
   it("shows the creation stage, execution plan, and timestamped logs", async () => {
     let finishWorkflow: (() => void) | undefined;
     const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
@@ -126,7 +151,7 @@ describe("desktop product flow", () => {
     expect(screen.getByText("写作 Agent")).toBeVisible();
     expect(screen.getByText(/执行日志/)).toBeVisible();
     await screen.findByText("多 Agent 工作流正在执行");
-    expect(screen.getByText("多 Agent 工作流已启动")).toBeInTheDocument();
+    expect(screen.getByText("已向本地 Agent 运行时提交工作流")).toBeInTheDocument();
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         agentInstructions: expect.arrayContaining([
@@ -164,7 +189,9 @@ describe("desktop product flow", () => {
     expect(runWorkflow.mock.calls[1]?.[0].articleId).toBe(
       runWorkflow.mock.calls[0]?.[0].articleId,
     );
-    expect(saveDraft).toHaveBeenCalledTimes(1);
+    // The successful retry saves the initial brief, then persists the Markdown
+    // after the visual plan has inserted any required images.
+    expect(saveDraft).toHaveBeenCalledTimes(2);
     await waitFor(() => {
       const stored = JSON.parse(
         window.localStorage.getItem("open-publisher-creation-activity") ?? "{}",
@@ -176,6 +203,149 @@ describe("desktop product flow", () => {
         ]),
       );
     });
+  });
+
+  it("uses the visual plan to generate a missing image and persist the composed Markdown", async () => {
+    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
+    const runWorkflow = vi
+      .spyOn(desktopBridge, "runWorkflow")
+      .mockImplementation(async (request) => {
+        const result = await originalRunWorkflow(request);
+        return {
+          ...result,
+          visualPlan: {
+            targetCount: 1,
+            placements: [
+              {
+                afterHeading: null,
+                assetId: null,
+                alt: "自动生成的架构说明图",
+                generationPrompt: "展示可靠写作流程的简洁架构图，不含文字。",
+              },
+            ],
+          },
+        };
+      });
+    const generateImage = vi.spyOn(desktopBridge, "generateImage");
+    const saveDraft = vi.spyOn(desktopBridge, "saveDraft");
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "自动配图与文章结构" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    const editor = await screen.findByLabelText("Markdown 正文");
+    expect(runWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        disabledOptionalNodeIds: expect.not.arrayContaining(["visual"]),
+        visualComposition: {
+          mode: "auto",
+          targetCount: 0,
+          assets: [],
+        },
+      }),
+    );
+    expect(generateImage).toHaveBeenCalledWith({
+      prompt: "展示可靠写作流程的简洁架构图，不含文字。",
+      size: "1536x1024",
+      model: "test-image-model",
+    });
+    expect((editor as HTMLTextAreaElement).value).toContain(
+      "![自动生成的架构说明图](asset://generated-",
+    );
+    expect((editor as HTMLTextAreaElement).value).not.toContain("data:image/");
+    expect(saveDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        baseRevision: expect.stringContaining("workflow"),
+        markdown: expect.stringContaining("![自动生成的架构说明图]"),
+      }),
+    );
+  });
+
+  it("uses selected local media with its description before asking the image model", async () => {
+    const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==";
+    window.localStorage.setItem(
+      "open-publisher-studio-media",
+      JSON.stringify([
+        {
+          id: "media-architecture",
+          name: "产品架构图",
+          alt: "三层产品架构图",
+          description: "展示采集、编排、发布三层之间的单向数据流，适合放在架构小节。",
+          src: image,
+          source: "uploaded",
+          createdAt: "刚刚导入",
+        },
+      ]),
+    );
+    const runWorkflow = vi.spyOn(desktopBridge, "runWorkflow");
+    const generateImage = vi.spyOn(desktopBridge, "generateImage");
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      modelConfiguration: async () => ({
+        ...((await nativeTestBridge.modelConfiguration())!),
+        imageBaseUrl: null,
+        imageModel: null,
+      }),
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.click(screen.getByRole("button", { name: "素材库" }));
+    fireEvent.click(await screen.findByRole("button", { name: "选择产品架构图" }));
+    fireEvent.click(screen.getByRole("button", { name: "带入创作" }));
+    await screen.findByRole("heading", { name: "从一个主题开始" });
+    fireEvent.change(screen.getByLabelText("配图数量"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "已有素材的自动插入" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    const editor = await screen.findByLabelText("Markdown 正文");
+    expect(runWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visualComposition: {
+          mode: "fixed",
+          targetCount: 1,
+          assets: [
+            {
+              id: "media-architecture",
+              alt: "三层产品架构图",
+              description: "展示采集、编排、发布三层之间的单向数据流，适合放在架构小节。",
+            },
+          ],
+        },
+      }),
+    );
+    expect(generateImage).not.toHaveBeenCalled();
+    expect((editor as HTMLTextAreaElement).value).toContain(
+      "![三层产品架构图](asset://media-architecture)",
+    );
+  });
+
+  it("moves legacy inline images into the local media library while preserving preview", async () => {
+    const image =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==";
+    render(<App />);
+    await waitForNativeRuntime();
+    fireEvent.change(screen.getByLabelText("配图数量"), { target: { value: "none" } });
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "内嵌图片迁移" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    const editor = (await screen.findByLabelText("Markdown 正文")) as HTMLTextAreaElement;
+    fireEvent.change(editor, {
+      target: { value: `# 内嵌图片迁移\n\n![旧图片](${image})` },
+    });
+
+    await waitFor(() => {
+      expect(editor.value).toMatch(/!\[旧图片\]\(asset:\/\/media-/);
+    });
+    expect(editor.value).not.toContain("data:image/");
+    expect(await screen.findByRole("img", { name: "旧图片" })).toHaveAttribute("src", image);
   });
 
   it("edits and saves a local article revision", async () => {

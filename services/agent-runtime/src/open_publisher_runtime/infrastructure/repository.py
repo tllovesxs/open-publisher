@@ -158,6 +158,17 @@ class SqlAlchemyRuntimeRepository:
         obj = self.session.get(WorkflowRunORM, run_id)
         return _domain(WorkflowRun, obj) if obj else None
 
+    def find_active_run(self, article_id: str) -> WorkflowRun | None:
+        obj = self.session.scalar(
+            select(WorkflowRunORM)
+            .where(
+                WorkflowRunORM.article_id == article_id,
+                WorkflowRunORM.status.in_([RunStatus.QUEUED.value, RunStatus.RUNNING.value]),
+            )
+            .order_by(WorkflowRunORM.created_at.desc(), WorkflowRunORM.id.desc())
+        )
+        return _domain(WorkflowRun, obj) if obj else None
+
     def list_runs_by_statuses(self, statuses: Sequence[RunStatus]) -> Sequence[WorkflowRun]:
         if not statuses:
             return []

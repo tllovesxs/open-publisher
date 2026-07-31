@@ -35,9 +35,15 @@ export interface CreationRequest {
   disabledNodeIds: DisabledOptionalNodeId[];
   template: MarkdownTemplate | null;
   imageAssets: MediaAsset[];
+  imagePlan: ImagePlanPreference;
   agents: StudioAgent[];
   /** Immutable text-only Agent/Skill snapshot assembled when the request starts. */
   agentInstructions?: WorkflowAgentInstruction[];
+}
+
+export interface ImagePlanPreference {
+  mode: "none" | "auto" | "fixed";
+  targetCount: number;
 }
 
 export interface CreationLogEntry {
@@ -96,6 +102,15 @@ const presetCopy: Record<CreationRequest["preset"], { label: string; meta: strin
   deep: { label: "深度", meta: "资料与审阅" },
 };
 
+const lengthOptions = [
+  { id: "short", label: "短篇（约 1,500–2,000 字）", instruction: "短篇（约 1,500–2,000 字）" },
+  { id: "medium", label: "中篇（约 3,000–4,000 字）", instruction: "中篇（约 3,000–4,000 字）" },
+  { id: "long", label: "长篇（约 5,500–7,000 字）", instruction: "长篇（约 5,500–7,000 字）" },
+  { id: "custom", label: "自定义字数", instruction: "" },
+] as const;
+
+type LengthPreset = (typeof lengthOptions)[number]["id"];
+
 export function CreatePage({
   activity,
   generating,
@@ -115,7 +130,8 @@ export function CreatePage({
   const [references, setReferences] = useState("");
   const [contentType, setContentType] = useState("技术文章");
   const [tone, setTone] = useState("专业清晰");
-  const [length, setLength] = useState("中篇");
+  const [lengthPreset, setLengthPreset] = useState<LengthPreset>("medium");
+  const [customLength, setCustomLength] = useState("3000");
   const [preset, setPreset] = useState<CreationRequest["preset"]>("standard");
   const [targets, setTargets] = useState<Set<PlatformId>>(
     () => new Set(["wechat", "csdn"]),
@@ -123,9 +139,12 @@ export function CreatePage({
   const [disabledNodes, setDisabledNodes] = useState<Set<DisabledOptionalNodeId>>(
     () => new Set(presetNodes.standard),
   );
+  const [imagePlanMode, setImagePlanMode] = useState<ImagePlanPreference["mode"]>("auto");
+  const [imageCount, setImageCount] = useState(2);
   const [validation, setValidation] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topicId = useId();
+  const customLengthId = useId();
 
   const choosePreset = (nextPreset: CreationRequest["preset"]) => {
     setPreset(nextPreset);
@@ -142,10 +161,29 @@ export function CreatePage({
   };
 
   const toggleNode = (nodeId: DisabledOptionalNodeId) => {
+    if (nodeId === "visual" && imagePlanMode !== "none") return;
     setDisabledNodes((current) => {
       const next = new Set(current);
       if (next.has(nodeId)) next.delete(nodeId);
       else next.add(nodeId);
+      return next;
+    });
+  };
+
+  const changeImagePlan = (value: string) => {
+    if (value === "none" || value === "auto") {
+      setImagePlanMode(value);
+    } else {
+      setImagePlanMode("fixed");
+      setImageCount(Number(value));
+    }
+    setDisabledNodes((current) => {
+      const next = new Set(current);
+      if (value === "none") {
+        next.add("visual");
+      } else {
+        next.delete("visual");
+      }
       return next;
     });
   };
@@ -168,6 +206,17 @@ export function CreatePage({
       setValidation("至少选择一个目标平台。");
       return;
     }
+    const selectedLength = lengthOptions.find((option) => option.id === lengthPreset);
+    let length: string = selectedLength?.instruction ?? "";
+    if (lengthPreset === "custom") {
+      const target = Number(customLength);
+      if (!Number.isInteger(target) || target < 500 || target > 20_000) {
+        setValidation("自定义字数请填写 500 到 20,000 之间的整数。");
+        document.getElementById(customLengthId)?.focus();
+        return;
+      }
+      length = `自定义（约 ${target.toLocaleString("zh-CN")} 字）`;
+    }
     setValidation(null);
     onCreate({
       topic: normalizedTopic,
@@ -181,6 +230,10 @@ export function CreatePage({
       disabledNodeIds: [...disabledNodes],
       template: selectedTemplate,
       imageAssets: selectedMedia,
+      imagePlan:
+        imagePlanMode === "fixed"
+          ? { mode: "fixed", targetCount: imageCount }
+          : { mode: imagePlanMode, targetCount: 0 },
       agents,
     });
   };
@@ -280,13 +333,36 @@ export function CreatePage({
             </label>
             <label className="field">
               <span>文章篇幅</span>
-              <select onChange={(event) => setLength(event.target.value)} value={length}>
-                <option>短篇</option>
-                <option>中篇</option>
-                <option>长篇</option>
+              <select
+                onChange={(event) => setLengthPreset(event.target.value as LengthPreset)}
+                value={lengthPreset}
+              >
+                {lengthOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
+
+          {lengthPreset === "custom" && (
+            <div className="field field--custom-length">
+              <label htmlFor={customLengthId}>自定义约多少字</label>
+              <input
+                aria-describedby={`${customLengthId}-hint`}
+                id={customLengthId}
+                inputMode="numeric"
+                max={20_000}
+                min={500}
+                onChange={(event) => setCustomLength(event.target.value)}
+                step={100}
+                type="number"
+                value={customLength}
+              />
+              <small id={`${customLengthId}-hint`}>支持 500–20,000 字，模型会按接近该长度的正文生成。</small>
+            </div>
+          )}
         </div>
 
         <aside className="create-options" aria-label="创作选项">
@@ -302,6 +378,28 @@ export function CreatePage({
               </span>
               <ChevronDown aria-hidden="true" size={15} />
             </button>
+          </section>
+
+          <section className="option-section">
+            <div className="option-section__head">
+              <strong>正文配图</strong>
+              <small>{imagePlanMode === "auto" ? "按成稿字数" : imagePlanMode === "none" ? "不插入" : `${imageCount} 张`}</small>
+            </div>
+            <label className="field field--compact">
+              <span className="visually-hidden">配图数量</span>
+              <select
+                aria-label="配图数量"
+                onChange={(event) => changeImagePlan(event.target.value)}
+                value={imagePlanMode === "fixed" ? String(imageCount) : imagePlanMode}
+              >
+                <option value="auto">自动（按文章长度）</option>
+                {[1, 2, 3, 4, 5, 6].map((count) => (
+                  <option key={count} value={count}>{count} 张</option>
+                ))}
+                <option value="none">不添加配图</option>
+              </select>
+            </label>
+            <small className="option-section__hint">优先使用已选素材；不足部分会由已配置的生图模型补齐。启用配图时会自动运行视觉 Agent，并按计划插入正文。</small>
           </section>
 
           <section className="option-section">
@@ -378,10 +476,14 @@ export function CreatePage({
                 <label key={node.id}>
                   <input
                     checked={!disabledNodes.has(node.id)}
+                    disabled={node.id === "visual" && imagePlanMode !== "none"}
                     onChange={() => toggleNode(node.id)}
                     type="checkbox"
                   />
-                  <span>{node.label}</span>
+                  <span>
+                    {node.label}
+                    {node.id === "visual" && imagePlanMode !== "none" ? "（配图已启用）" : ""}
+                  </span>
                 </label>
               ))}
             </div>

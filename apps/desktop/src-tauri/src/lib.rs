@@ -8,7 +8,7 @@ use supervisor::{
     ModelConfigurationSummary, ModelConnectionTestSummary, ProcessPublishJobRequest,
     ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor,
     RunWorkflowRequest, RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest,
-    SidecarSupervisor, StoredArticleSummary, TemplateExtractionSummary,
+    SidecarSupervisor, StoredArticleSummary, TemplateExtractionSummary, WorkflowActivitySummary,
 };
 use tauri::Manager;
 
@@ -71,6 +71,17 @@ async fn run_workflow(
     tauri::async_runtime::spawn_blocking(move || supervisor.run_workflow(request))
         .await
         .map_err(|_| "workflow task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn workflow_activity(
+    article_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<WorkflowActivitySummary>, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.workflow_activity(article_id))
+        .await
+        .map_err(|_| "workflow activity task was cancelled".to_owned())?
 }
 
 #[tauri::command]
@@ -221,6 +232,7 @@ pub fn run() {
             list_articles,
             save_draft,
             run_workflow,
+            workflow_activity,
             create_publish_plan,
             get_publish_plan,
             approve_publish_plan,

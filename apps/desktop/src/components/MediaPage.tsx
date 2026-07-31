@@ -1,5 +1,6 @@
 import { Check, ImagePlus, Sparkles, Upload, WandSparkles } from "lucide-react";
 import { useRef, useState } from "react";
+import { mediaMarkdownReference } from "../lib/mediaReferences";
 import type { MediaAsset } from "../types";
 
 interface MediaPageProps {
@@ -7,6 +8,7 @@ interface MediaPageProps {
   selectedAssetIds: string[];
   hasSelectedArticle: boolean;
   onAdd: (asset: MediaAsset) => void;
+  onUpdate: (asset: MediaAsset) => void;
   onUpload?: (file: File) => Promise<MediaAsset>;
   onInsertInArticle: () => void;
   onSelectionChange: (assetIds: string[]) => void;
@@ -18,6 +20,7 @@ export function MediaPage({
   selectedAssetIds,
   hasSelectedArticle,
   onAdd,
+  onUpdate,
   onUpload,
   onInsertInArticle,
   onSelectionChange,
@@ -58,7 +61,7 @@ export function MediaPage({
   };
 
   const startDrag = (event: React.DragEvent<HTMLElement>, asset: MediaAsset) => {
-    const markdown = `![${asset.alt || asset.name}](${asset.src})`;
+    const markdown = `![${asset.alt || asset.name}](${mediaMarkdownReference(asset)})`;
     event.dataTransfer.effectAllowed = "copy";
     event.dataTransfer.setData("application/x-open-publisher-markdown-image", markdown);
     event.dataTransfer.setData("text/plain", markdown);
@@ -70,7 +73,7 @@ export function MediaPage({
         <div>
           <span className="page-kicker">文章图片资产</span>
           <h1>素材库</h1>
-          <p>选中图片后，可以直接插入正在编辑的文章；也可以带回创作页，在下一次工作流运行时交给 AI 判断正文中的合适位置。</p>
+          <p>选中图片后，可以直接插入正在编辑的文章；也可以带回创作页。图片介绍会帮助不具备视觉能力的模型判断合适位置。</p>
         </div>
         <div className="page-heading__actions">
           <button className="button button--quiet" disabled={uploading} onClick={() => inputRef.current?.click()} type="button"><Upload aria-hidden="true" size={16} />{uploading ? "导入中" : "上传图片"}</button>
@@ -81,7 +84,7 @@ export function MediaPage({
       <section className="media-action-bar" aria-label="图片使用方式">
         <div>
           <strong>已选 {selected.size} 张图片</strong>
-          <span>图片只保存在本地，生成时会作为视觉参考传入工作流。</span>
+          <span>图片字节只保存在本机；工作流只会读取图片说明与插入计划。</span>
         </div>
         <div>
           <button className="button button--quiet" disabled={selected.size === 0 || !hasSelectedArticle} onClick={onInsertInArticle} type="button"><ImagePlus aria-hidden="true" size={16} />插入当前文章</button>
@@ -100,6 +103,18 @@ export function MediaPage({
             <div className="media-card__meta">
               <strong>{asset.name}</strong>
               <span>{asset.source === "generated" ? "AI 生成" : "本地上传"} · {asset.createdAt}</span>
+              <label className="media-card__description">
+                <span>给 AI 的图片介绍</span>
+                <textarea
+                  aria-label={`${asset.name}的图片介绍`}
+                  maxLength={600}
+                  onChange={(event) => onUpdate({ ...asset, description: event.target.value })}
+                  onDragStart={(event) => event.stopPropagation()}
+                  placeholder="例如：展示三个模块间的数据流向，适合放在实践章节。"
+                  rows={2}
+                  value={asset.description}
+                />
+              </label>
               <small>拖入文章即可插入</small>
             </div>
           </article>

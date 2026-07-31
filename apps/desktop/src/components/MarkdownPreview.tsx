@@ -1,26 +1,20 @@
 import { Fragment, type ReactNode } from "react";
+import { resolveMarkdownImageSource } from "../lib/mediaReferences";
+import type { MediaAsset } from "../types";
 
 interface MarkdownPreviewProps {
   markdown: string;
   compact?: boolean;
+  mediaAssets?: readonly Pick<MediaAsset, "id" | "src">[];
 }
 
-function safeImageSource(value: string): string | null {
-  if (/^data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) {
-    return value;
-  }
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" ? url.href : null;
-  } catch {
-    return null;
-  }
-}
-
-function markdownImage(line: string): { alt: string; src: string } | null {
+function markdownImage(
+  line: string,
+  mediaAssets: readonly Pick<MediaAsset, "id" | "src">[],
+): { alt: string; src: string } | null {
   const match = line.match(/^\s*!\[([^\]]*)\]\(([^\s)]+)(?:\s+[^)]*)?\)\s*$/);
   if (!match) return null;
-  const src = safeImageSource(match[2]);
+  const src = resolveMarkdownImageSource(match[2], mediaAssets);
   return src ? { alt: match[1], src } : null;
 }
 
@@ -37,7 +31,11 @@ function inlineMarkup(text: string): ReactNode[] {
   });
 }
 
-export function MarkdownPreview({ markdown, compact = false }: MarkdownPreviewProps) {
+export function MarkdownPreview({
+  markdown,
+  compact = false,
+  mediaAssets = [],
+}: MarkdownPreviewProps) {
   const lines = markdown.split("\n");
   const output: ReactNode[] = [];
   let unordered: string[] = [];
@@ -105,7 +103,7 @@ export function MarkdownPreview({ markdown, compact = false }: MarkdownPreviewPr
     flushLists();
     if (!line.trim()) return;
 
-    const image = markdownImage(line);
+    const image = markdownImage(line, mediaAssets);
     if (image) {
       output.push(<img alt={image.alt} key={lineIndex} loading="lazy" src={image.src} />);
       return;

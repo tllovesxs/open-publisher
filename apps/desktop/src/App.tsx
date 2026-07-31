@@ -33,11 +33,16 @@ import {
   type PublishPlanSummary,
   type PublishReceiptSummary,
   type RuntimeSnapshot,
+  type VisualCompositionPlanSummary,
+  type VisualCompositionRequest,
+  type VisualPlacementSummary,
+  type WorkflowActivityEvent,
   type WorkflowAgentInstruction,
   type WorkflowNodeId,
   type RunWorkflowSummary,
   type StoredArticleSummary,
 } from "./lib/desktopBridge";
+import { mediaMarkdownReference } from "./lib/mediaReferences";
 import type {
   Article,
   MarkdownTemplate,
@@ -68,6 +73,9 @@ const SKILLS_STORAGE_KEY = "open-publisher-studio-skills";
 const TEMPLATES_STORAGE_KEY = "open-publisher-studio-templates";
 const MEDIA_STORAGE_KEY = "open-publisher-studio-media";
 const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
+const INLINE_DATA_IMAGE_PATTERN =
+  /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
 const SUPPORTED_LOCAL_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -165,6 +173,7 @@ function isStoredMediaAsset(value: unknown): value is MediaAsset {
     typeof asset.id === "string" &&
     typeof asset.name === "string" &&
     typeof asset.alt === "string" &&
+    (asset.description === undefined || typeof asset.description === "string") &&
     typeof asset.src === "string" &&
     (asset.source === "uploaded" || asset.source === "generated") &&
     typeof asset.createdAt === "string"
@@ -173,7 +182,12 @@ function isStoredMediaAsset(value: unknown): value is MediaAsset {
 
 function loadMediaAssets() {
   const stored = loadStudioValue<unknown>(MEDIA_STORAGE_KEY, []);
-  return Array.isArray(stored) ? stored.filter(isStoredMediaAsset) : [];
+  return Array.isArray(stored)
+    ? stored.filter(isStoredMediaAsset).map((asset) => ({
+        ...asset,
+        description: asset.description ?? "",
+      }))
+    : [];
 }
 
 function newLocalId(prefix: string) {
@@ -211,17 +225,111 @@ function readLocalImage(file: File): Promise<string> {
   });
 }
 
-function assetReference(asset: MediaAsset) {
-  return `asset://${asset.id}`;
+function compactInlineDataImages(markdown: string, knownAssets: MediaAsset[]) {
+  const assetsBySource = new Map(knownAssets.map((asset) => [asset.src, asset]));
+  const createdAssets: MediaAsset[] = [];
+  const compactMarkdown = markdown.replace(
+    INLINE_DATA_IMAGE_PATTERN,
+    (fullMatch: string, alt: string, src: string) => {
+      let asset = assetsBySource.get(src);
+      if (!asset) {
+        const assetAlt = escapeImageAlt(alt);
+        asset = {
+          id: newLocalId("media"),
+          name: assetAlt,
+          alt: assetAlt,
+          description: "从历史 Markdown 的内嵌图片迁入本机素材库。",
+          src,
+          source: "uploaded",
+          createdAt: "刚刚迁入",
+        };
+        assetsBySource.set(src, asset);
+        createdAssets.push(asset);
+      }
+      return `![${alt}](${mediaMarkdownReference(asset)})`;
+    },
+  );
+  return { markdown: compactMarkdown, createdAssets };
 }
 
-function resolveAssetReferences(markdown: string, assets: MediaAsset[]) {
-  const sourceByReference = new Map(
-    assets.map((asset) => [assetReference(asset), asset.src]),
-  );
-  return markdown.replace(/asset:\/\/[a-z0-9_-]+/gi, (reference) =>
-    sourceByReference.get(reference) ?? reference,
-  );
+function visualCompositionFromCreation(
+  request: CreationRequest,
+): VisualCompositionRequest {
+  return {
+    mode: request.imagePlan.mode,
+    targetCount: request.imagePlan.targetCount,
+    assets: request.imageAssets.slice(0, 6).map((asset) => ({
+      id: asset.id,
+      alt: asset.alt.trim().slice(0, 160) || asset.name.slice(0, 160),
+      description: asset.description.trim().slice(0, 600),
+    })),
+  };
+}
+
+function compositionCanRequireGeneratedImages(request: CreationRequest) {
+  if (request.imagePlan.mode === "none") return false;
+  if (request.imagePlan.mode === "auto") {
+    return request.imageAssets.length < MAX_AUTO_IN_ARTICLE_IMAGES;
+  }
+  return request.imagePlan.targetCount > request.imageAssets.length;
+}
+
+function visualNodeDisabledIds(
+  disabledNodeIds: DisabledOptionalNodeId[],
+  imagePlan: CreationRequest["imagePlan"],
+) {
+  if (imagePlan.mode === "none") return disabledNodeIds;
+  // A visual plan is the contract that makes images land in the correct section.
+  // Do not silently accept an image request while skipping the planning Agent.
+  return disabledNodeIds.filter((nodeId) => nodeId !== "visual");
+}
+
+function escapeImageAlt(value: string) {
+  return value
+    .replace(/[\[\]\r\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180) || "文章配图";
+}
+
+function insertionLineForHeading(lines: string[], heading: string | null) {
+  if (heading) {
+    const headingIndex = lines.findIndex(
+      (line) => line.replace(/^#{1,6}\s+/, "").trim() === heading,
+    );
+    if (headingIndex >= 0) {
+      const nextHeading = lines.findIndex(
+        (line, index) => index > headingIndex && /^#{1,6}\s+/.test(line),
+      );
+      const boundary = nextHeading >= 0 ? nextHeading : lines.length;
+      const firstContent = lines.findIndex(
+        (line, index) => index > headingIndex && index < boundary && Boolean(line.trim()),
+      );
+      if (firstContent < 0) return headingIndex + 1;
+      let insertion = firstContent + 1;
+      while (insertion < boundary && Boolean(lines[insertion]?.trim())) insertion += 1;
+      return insertion;
+    }
+  }
+  return lines.length;
+}
+
+function insertVisualMarkdown(
+  markdown: string,
+  placements: Array<{ placement: VisualPlacementSummary; asset: MediaAsset }>,
+) {
+  const lines = markdown.trimEnd().split("\n");
+  const insertions = placements
+    .map(({ placement, asset }, originalIndex) => ({
+      line: insertionLineForHeading(lines, placement.afterHeading),
+      originalIndex,
+      markup: `![${escapeImageAlt(placement.alt || asset.alt)}](${mediaMarkdownReference(asset)})`,
+    }))
+    .sort((left, right) => right.line - left.line || right.originalIndex - left.originalIndex);
+  for (const insertion of insertions) {
+    lines.splice(insertion.line, 0, "", insertion.markup, "");
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
 function buildWorkflowAgentInstructions(
@@ -279,13 +387,87 @@ function activityLog(
   id: string,
   message: string,
   tone: CreationLogEntry["tone"] = "info",
+  timestamp = Date.now(),
 ): CreationLogEntry {
   return {
     id,
-    timestamp: Date.now(),
+    timestamp,
     message: sanitizeActivityMessage(message),
     tone,
   };
+}
+
+const workflowNodeLabel: Record<WorkflowNodeId, string> = {
+  research: "资料整理",
+  outline: "大纲规划",
+  draft: "正文撰写",
+  "natural-style": "自然表达",
+  review: "内容审阅",
+  risk: "风险检查",
+  visual: "配图规划",
+};
+
+function workflowAgentLabel(
+  nodeId: WorkflowNodeId,
+  agents: WorkflowAgentInstruction[],
+) {
+  return (
+    agents.find((agent) => agent.nodeId === nodeId)?.name ?? workflowNodeLabel[nodeId]
+  );
+}
+
+function describeWorkflowActivity(
+  event: WorkflowActivityEvent,
+  agents: WorkflowAgentInstruction[],
+): { message: string; phase: string; tone: CreationLogEntry["tone"] } {
+  const nodeId = event.nodeId;
+  const agent = nodeId ? workflowAgentLabel(nodeId, agents) : null;
+  const node = nodeId ? workflowNodeLabel[nodeId] : null;
+  switch (event.eventType) {
+    case "run.queued":
+      return { message: "工作流已进入本地运行队列", phase: "等待 Agent 工作流启动", tone: "info" };
+    case "run.started":
+      return { message: "本地 Agent 工作流已开始执行", phase: "多 Agent 工作流正在执行", tone: "info" };
+    case "run.budget_reserved":
+      return { message: "本次模型调用预算已确认", phase: "多 Agent 工作流正在执行", tone: "info" };
+    case "run.node_started":
+      return {
+        message: `${agent} 正在执行${node}`,
+        phase: `${agent} 正在执行${node}`,
+        tone: "info",
+      };
+    case "run.node_completed":
+      return {
+        message: `${agent} 已完成${node}`,
+        phase: `${agent} 已完成${node}`,
+        tone: "success",
+      };
+    case "run.node_failed":
+      return {
+        message: `${agent} 在${node}阶段失败`,
+        phase: `${agent} 执行失败`,
+        tone: "error",
+      };
+    case "run.node_skipped":
+      return {
+        message: `${agent} 已按当前设置跳过${node}`,
+        phase: "多 Agent 工作流正在执行",
+        tone: "info",
+      };
+    case "run.interrupted":
+      return { message: "工作流正在等待人工审核", phase: "等待人工审核", tone: "info" };
+    case "run.failed":
+      return { message: "工作流已记录失败状态", phase: "文章生成失败", tone: "error" };
+    case "run.completed":
+      return { message: "工作流已完成", phase: "文章生成完成", tone: "success" };
+    default:
+      return { message: "工作流状态已更新", phase: "多 Agent 工作流正在执行", tone: "info" };
+  }
+}
+
+function activityTimestamp(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 function loadCreationActivity(): CreationActivity | null {
@@ -388,11 +570,6 @@ function buildCreationSeed(request: CreationRequest) {
   const template = request.template
     ? `\n\n## 写作结构\n\n请按「${request.template.name}」的章节组织正文。不要输出花括号占位符、模板说明或创作要求。\n\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}`
     : "";
-  const images = request.imageAssets.length
-    ? `\n\n## 已选图片素材\n\n以下图片保存在作者本机。仅在能帮助读者理解时，保留对应的 Markdown 图片标记并放到合适的小节；不要编造图片地址或添加未提供的图片。\n\n${request.imageAssets
-        .map((asset) => `![${asset.alt}](${assetReference(asset)})`)
-        .join("\n\n")}`
-    : "";
   return `# ${title}
 
 ## 创作要求
@@ -401,7 +578,7 @@ function buildCreationSeed(request: CreationRequest) {
 - 类型：${request.contentType}
 - 风格：${request.tone}
 - 篇幅：${request.length}
-${references}${template}${images}`.trim();
+${references}${template}`.trim();
 }
 
 export default function App() {
@@ -478,6 +655,40 @@ export default function App() {
     currentPublishSession &&
       (dirty || revisionIds[currentPublishSession.articleId] !== currentPublishSession.revisionId),
   );
+
+  const requireTextModel = () => {
+    if (!runtime) {
+      setToast("正在检查本地运行时和模型连接，请稍候再开始创作。");
+      return false;
+    }
+    if (runtime?.bridgeMode !== "python_sidecar") {
+      const message = "当前是浏览器预览，无法调用本地 Agent。请在 Open Publisher 桌面应用中执行。";
+      setModelError(message);
+      setActiveNav("settings");
+      setToast(message);
+      return false;
+    }
+    if (!modelConfiguration?.secretConfigured) {
+      const message = "请先在设置中保存并测试文本模型连接，再开始创作。";
+      setModelError(message);
+      setActiveNav("settings");
+      setToast(message);
+      return false;
+    }
+    return true;
+  };
+
+  const requireImageModel = () => {
+    if (!requireTextModel()) return false;
+    if (!modelConfiguration?.imageBaseUrl || !modelConfiguration.imageModel) {
+      const message = "请先在设置的“生图模型”中完成图片 API 与模型配置。";
+      setModelError(message);
+      setActiveNav("settings");
+      setToast(message);
+      return false;
+    }
+    return true;
+  };
 
   const lifecycleStep = useMemo(() => {
     if (activeNav === "create") return creatingArticle ? "draft" : "brief";
@@ -583,6 +794,36 @@ export default function App() {
   }, [mediaAssets]);
 
   useEffect(() => {
+    if (!selectedArticle) return;
+    const compacted = compactInlineDataImages(currentMarkdown, mediaAssets);
+    if (compacted.markdown === currentMarkdown) return;
+    if (compacted.createdAssets.length > 0) {
+      setMediaAssets((current) => [
+        ...compacted.createdAssets,
+        ...current.filter(
+          (asset) => !compacted.createdAssets.some((created) => created.id === asset.id),
+        ),
+      ]);
+    }
+    const articleId = selectedArticle.id;
+    setDrafts((current) => ({ ...current, [articleId]: compacted.markdown }));
+    setArticleItems((current) =>
+      current.map((article) =>
+        article.id === articleId
+          ? {
+              ...article,
+              title: titleFromMarkdown(compacted.markdown, article.title),
+              deck: deckFromMarkdown(compacted.markdown),
+              wordCount: compacted.markdown.replace(/\s/g, "").length,
+            }
+          : article,
+      ),
+    );
+    setDirtyIds((current) => new Set(current).add(articleId));
+    setToast("已将文章中的内嵌图片迁入素材库，请保存文章。");
+  }, [currentMarkdown, mediaAssets, selectedArticle]);
+
+  useEffect(() => {
     if (creationActivity?.status !== "running") return;
     const interval = window.setInterval(() => {
       setCreationActivity((current) => {
@@ -591,36 +832,62 @@ export default function App() {
           current.elapsedSeconds,
           Math.round((Date.now() - current.startedAt) / 1000),
         );
-        const logs = [...current.logs];
-        if (
-          elapsedSeconds >= 15 &&
-          !logs.some(
-            (entry) => entry.id === `model-still-working-${current.startedAt}`,
-          )
-        ) {
-          logs.push(
-            activityLog(
-              `model-still-working-${current.startedAt}`,
-              "模型仍在处理，复杂工作流可能需要较长时间",
-            ),
-          );
-        }
-        if (
-          elapsedSeconds >= 60 &&
-          !logs.some((entry) => entry.id === `not-frozen-${current.startedAt}`)
-        ) {
-          logs.push(
-            activityLog(
-              `not-frozen-${current.startedAt}`,
-              "应用没有卡死，正在等待多 Agent 工作流返回结果",
-            ),
-          );
-        }
-        return { ...current, elapsedSeconds, logs };
+        return { ...current, elapsedSeconds };
       });
     }, 1000);
     return () => window.clearInterval(interval);
   }, [creationActivity?.status, creationActivity?.startedAt]);
+
+  const startWorkflowActivityPolling = (
+    articleId: string,
+    agents: WorkflowAgentInstruction[],
+  ) => {
+    let stopped = false;
+    let polling = false;
+    const collect = async () => {
+      if (stopped || polling) return;
+      polling = true;
+      try {
+        const activity = await desktopBridge.getWorkflowActivity(articleId);
+        if (!activity || stopped) return;
+        setCreationActivity((current) => {
+          if (!current || current.status !== "running") return current;
+          const knownIds = new Set(current.logs.map((entry) => entry.id));
+          const unseen = activity.events.filter((event) => !knownIds.has(event.id));
+          if (unseen.length === 0) return current;
+          const latest = unseen[unseen.length - 1];
+          const latestDescription = describeWorkflowActivity(latest, agents);
+          return {
+            ...current,
+            phase: latestDescription.phase,
+            logs: [
+              ...current.logs,
+              ...unseen.map((event) => {
+                const description = describeWorkflowActivity(event, agents);
+                return activityLog(
+                  event.id,
+                  description.message,
+                  description.tone,
+                  activityTimestamp(event.createdAt),
+                );
+              }),
+            ],
+          };
+        });
+      } catch {
+        // The workflow request remains authoritative; a transient progress read
+        // must not be reported as an Agent failure.
+      } finally {
+        polling = false;
+      }
+    };
+    void collect();
+    const interval = window.setInterval(() => void collect(), 1000);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  };
 
   useEffect(() => {
     if (!selectedArticle) return;
@@ -640,16 +907,26 @@ export default function App() {
 
   const updateArticleMarkdown = (markdown: string) => {
     if (!selectedArticle) return;
-    const nextTitle = titleFromMarkdown(markdown, selectedArticle.title);
-    setDrafts((current) => ({ ...current, [selectedArticle.id]: markdown }));
+    const compacted = compactInlineDataImages(markdown, mediaAssets);
+    const nextMarkdown = compacted.markdown;
+    if (compacted.createdAssets.length > 0) {
+      setMediaAssets((current) => [
+        ...compacted.createdAssets,
+        ...current.filter(
+          (asset) => !compacted.createdAssets.some((created) => created.id === asset.id),
+        ),
+      ]);
+    }
+    const nextTitle = titleFromMarkdown(nextMarkdown, selectedArticle.title);
+    setDrafts((current) => ({ ...current, [selectedArticle.id]: nextMarkdown }));
     setArticleItems((current) =>
       current.map((article) =>
         article.id === selectedArticle.id
           ? {
               ...article,
               title: nextTitle,
-              deck: deckFromMarkdown(markdown),
-              wordCount: markdown.replace(/\s/g, "").length,
+              deck: deckFromMarkdown(nextMarkdown),
+              wordCount: nextMarkdown.replace(/\s/g, "").length,
             }
           : article,
       ),
@@ -663,7 +940,7 @@ export default function App() {
       return;
     }
     const additions = selectedMedia
-      .map((asset) => `![${asset.alt}](${asset.src})`)
+      .map((asset) => `![${asset.alt}](${mediaMarkdownReference(asset)})`)
       .join("\n\n");
     updateArticleMarkdown(`${currentMarkdown.trim()}\n\n${additions}\n`);
     setActiveNav("articles");
@@ -677,6 +954,7 @@ export default function App() {
       id: newLocalId("media"),
       name,
       alt: name,
+      description: "",
       src,
       source: "uploaded",
       createdAt: "刚刚导入",
@@ -690,10 +968,16 @@ export default function App() {
     ]);
   };
 
+  const updateMediaAsset = (asset: MediaAsset) => {
+    setMediaAssets((current) =>
+      current.map((existing) => (existing.id === asset.id ? asset : existing)),
+    );
+  };
+
   const importImageIntoArticle = async (file: File) => {
     const asset = await createLocalMediaAsset(file);
     addMediaAsset(asset);
-    return { alt: asset.alt, src: asset.src };
+    return { alt: asset.alt, src: mediaMarkdownReference(asset) };
   };
 
   const persistRevision = async (
@@ -754,7 +1038,7 @@ export default function App() {
     summary: RunWorkflowSummary,
     channels?: PlatformId[],
   ) => {
-    const outputMarkdown = resolveAssetReferences(summary.outputMarkdown, mediaAssets);
+    const outputMarkdown = summary.outputMarkdown;
     const nextTitle = titleFromMarkdown(outputMarkdown);
     setRevisionIds((current) => ({
       ...current,
@@ -787,6 +1071,184 @@ export default function App() {
       next.delete(articleId);
       return next;
     });
+  };
+
+  const appendCreationActivity = (
+    phase: string,
+    id: string,
+    message: string,
+    tone: CreationLogEntry["tone"] = "info",
+  ) => {
+    setCreationActivity((current) =>
+      current && current.status === "running"
+        ? {
+            ...current,
+            phase,
+            logs: [...current.logs, activityLog(id, message, tone)],
+          }
+        : current,
+    );
+  };
+
+  const composeVisualPlan = async (
+    article: Article,
+    summary: RunWorkflowSummary,
+    request: CreationRequest,
+    startedAt: number,
+  ) => {
+    if (request.imagePlan.mode === "none") {
+      return {
+        revisionId: summary.outputRevisionId,
+        revisionNumber: summary.outputRevisionNumber,
+        markdown: summary.outputMarkdown,
+        generatedCount: 0,
+      };
+    }
+
+    const plan = summary.visualPlan;
+    if (!plan) {
+      throw new Error("视觉 Agent 没有返回配图计划，文章未插入图片。请重试本次生成。");
+    }
+    if (plan.placements.length !== plan.targetCount) {
+      throw new Error("视觉 Agent 返回的配图数量无效，文章未插入图片。请重试本次生成。");
+    }
+
+    appendCreationActivity(
+      "正在按文章结构编排配图",
+      `visual-plan-received-${startedAt}`,
+      plan.targetCount > 0
+        ? `视觉 Agent 已规划 ${plan.targetCount} 张正文配图`
+        : "视觉 Agent 判断本文不需要正文配图",
+      "success",
+    );
+
+    const selectedAssets = new Map(
+      request.imageAssets.map((asset) => [asset.id, asset]),
+    );
+    const placements: Array<{
+      placement: VisualPlacementSummary;
+      asset: MediaAsset;
+    }> = [];
+    const generatedAssets: MediaAsset[] = [];
+
+    for (const [index, placement] of plan.placements.entries()) {
+      if (placement.assetId) {
+        const asset = selectedAssets.get(placement.assetId);
+        if (!asset) {
+          throw new Error("视觉 Agent 选择了当前创作请求中不存在的素材图片。");
+        }
+        placements.push({ placement, asset });
+        continue;
+      }
+
+      if (!placement.generationPrompt) {
+        throw new Error("视觉 Agent 未为缺失素材提供可执行的生图提示词。");
+      }
+
+      appendCreationActivity(
+        `正在生成配图 ${index + 1}/${plan.targetCount}`,
+        `visual-generation-started-${startedAt}-${index}`,
+        `正在生成第 ${index + 1} 张配图`,
+      );
+      const result = await desktopBridge.generateImage({
+        prompt: placement.generationPrompt,
+        size: "1536x1024",
+        model: modelConfiguration?.imageModel ?? null,
+      });
+      const image = result.images[0];
+      if (!image) {
+        throw new Error(`第 ${index + 1} 张配图未返回可保存的图片数据。`);
+      }
+      const asset: MediaAsset = {
+        id: `generated-${image.id}`,
+        name: `${article.title} 正文配图 ${index + 1}`.slice(0, 120),
+        alt: escapeImageAlt(placement.alt),
+        description: `由 AI 根据文章小节“${placement.afterHeading ?? "文章核心观点"}”生成。`,
+        src: image.dataUrl,
+        source: "generated",
+        createdAt: "刚刚生成",
+      };
+      generatedAssets.push(asset);
+      placements.push({ placement, asset });
+      appendCreationActivity(
+        `正在生成配图 ${index + 1}/${plan.targetCount}`,
+        `visual-generation-completed-${startedAt}-${index}`,
+        `第 ${index + 1} 张配图已生成并加入本机素材库`,
+        "success",
+      );
+    }
+
+    const outputMarkdown = summary.outputMarkdown;
+    const markdown = insertVisualMarkdown(outputMarkdown, placements);
+    appendCreationActivity(
+      "正在保存含配图的文章",
+      `visual-insertion-started-${startedAt}`,
+      plan.targetCount > 0
+        ? "已按视觉 Agent 的计划插入正文配图"
+        : "文章无需插入正文配图",
+    );
+
+    // The workflow output is durable before image composition. Use that exact
+    // revision as the parent instead of waiting for React state to flush.
+    const receipt = await desktopBridge.saveDraft({
+      articleId: article.id,
+      baseRevision: summary.outputRevisionId,
+      markdown,
+    });
+
+    if (generatedAssets.length > 0) {
+      setMediaAssets((current) => [
+        ...generatedAssets,
+        ...current.filter(
+          (asset) => !generatedAssets.some((created) => created.id === asset.id),
+        ),
+      ]);
+      setSelectedMediaIds((current) => [
+        ...new Set([...current, ...generatedAssets.map((asset) => asset.id)]),
+      ]);
+      setGeneratedImages((current) => ({
+        ...current,
+        [article.id]: (current[article.id] ?? 0) + generatedAssets.length,
+      }));
+    }
+    setRevisionIds((current) => ({ ...current, [article.id]: receipt.revisionId }));
+    setDrafts((current) => ({ ...current, [article.id]: markdown }));
+    setArticleItems((current) =>
+      current.map((currentArticle) =>
+        currentArticle.id === article.id
+          ? {
+              ...currentArticle,
+              title: titleFromMarkdown(markdown, currentArticle.title),
+              deck: deckFromMarkdown(markdown),
+              markdown,
+              status: "review",
+              updatedAt: "刚刚",
+              wordCount: markdown.replace(/\s/g, "").length,
+              revisionId: receipt.revisionId,
+              revisionNumber: summary.outputRevisionNumber + 1,
+            }
+          : currentArticle,
+      ),
+    );
+    setDirtyIds((current) => {
+      const next = new Set(current);
+      next.delete(article.id);
+      return next;
+    });
+    appendCreationActivity(
+      "配图已插入正文",
+      `visual-insertion-completed-${startedAt}`,
+      plan.targetCount > 0
+        ? `${plan.targetCount} 张配图已按文章结构保存到新修订`
+        : "文章已保存，未插入正文配图",
+      "success",
+    );
+    return {
+      revisionId: receipt.revisionId,
+      revisionNumber: summary.outputRevisionNumber + 1,
+      markdown,
+      generatedCount: generatedAssets.length,
+    };
   };
 
   const runWorkflowForArticle = async (
@@ -857,27 +1319,39 @@ export default function App() {
                 ),
                 activityLog(
                   `workflow-started-${startedAt}`,
-                  "多 Agent 工作流已启动",
+                  "已向本地 Agent 运行时提交工作流",
                 ),
               ],
             }
           : current,
       );
-      const summary = await desktopBridge.runWorkflow({
+      const workflowPromise = desktopBridge.runWorkflow({
         articleId: article.id,
         revisionId,
         topic: article.deck || article.title,
-        disabledOptionalNodeIds: request.disabledNodeIds,
+        disabledOptionalNodeIds: visualNodeDisabledIds(
+          request.disabledNodeIds,
+          request.imagePlan,
+        ),
         agentInstructions,
+        visualComposition: visualCompositionFromCreation(request),
       });
+      const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
+      let summary: RunWorkflowSummary;
+      try {
+        summary = await workflowPromise;
+      } finally {
+        stopActivityPolling();
+      }
       applyWorkflowResult(article.id, summary, request.platforms);
+      const composed = await composeVisualPlan(article, summary, request, startedAt);
       setRuntime(await desktopBridge.runtimeSnapshot());
       setCreationActivity((current) =>
         current
           ? {
               ...current,
               status: "succeeded",
-              phase: "文章生成完成",
+              phase: composed.generatedCount > 0 ? "文章与配图生成完成" : "文章生成完成",
               elapsedSeconds: Math.max(
                 current.elapsedSeconds,
                 Math.round((Date.now() - startedAt) / 1000),
@@ -886,7 +1360,7 @@ export default function App() {
                 ...current.logs,
                 activityLog(
                   `workflow-completed-${startedAt}`,
-                  `工作流已完成并生成修订 ${summary.outputRevisionNumber}`,
+                  `工作流已完成并生成修订 ${composed.revisionNumber}`,
                   "success",
                 ),
               ],
@@ -895,7 +1369,7 @@ export default function App() {
       );
       setActiveNav("articles");
       setToast(
-        `文章已生成 · 修订 ${summary.outputRevisionNumber} · ${summary.artifacts.length} 项产物`,
+        `文章已生成 · 修订 ${composed.revisionNumber} · ${summary.artifacts.length} 项产物`,
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -937,10 +1411,15 @@ export default function App() {
 
   const createFromBrief = (request: CreationRequest) => {
     if (creatingArticle || workflowRunning) return;
+    if (!requireTextModel()) return;
+    if (compositionCanRequireGeneratedImages(request) && !requireImageModel()) return;
     const agentDisabledNodes = disabledOptionalNodesFor(studioAgents);
     const normalizedRequest: CreationRequest = {
       ...request,
-      disabledNodeIds: [...new Set([...request.disabledNodeIds, ...agentDisabledNodes])],
+      disabledNodeIds: visualNodeDisabledIds(
+        [...new Set([...request.disabledNodeIds, ...agentDisabledNodes])],
+        request.imagePlan,
+      ),
       agentInstructions: buildWorkflowAgentInstructions(studioAgents, studioSkills),
     };
     const id = `article-${Date.now()}`;
@@ -964,6 +1443,13 @@ export default function App() {
 
   const retryCreation = () => {
     if (!failedCreationContext || creatingArticle || workflowRunning) return;
+    if (!requireTextModel()) return;
+    if (
+      compositionCanRequireGeneratedImages(failedCreationContext.request) &&
+      !requireImageModel()
+    ) {
+      return;
+    }
     const article = articleItems.find(
       (candidate) => candidate.id === failedCreationContext.articleId,
     );
@@ -1008,6 +1494,7 @@ export default function App() {
 
   const improveCurrentArticle = async () => {
     if (!selectedArticle || workflowRunning) return;
+    if (!requireTextModel()) return;
     setWorkflowRunning(true);
     try {
       const summary = await runWorkflowForArticle(
@@ -1031,6 +1518,7 @@ export default function App() {
 
   const generateImage = async () => {
     if (!selectedArticle || generatingImage) return;
+    if (!requireImageModel()) return;
     setGeneratingImage(true);
     try {
       const result = await desktopBridge.generateImage({
@@ -1045,6 +1533,7 @@ export default function App() {
         id: `generated-${image.id}`,
         name: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 120),
         alt: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 160),
+        description: "AI 生成的文章配图。",
         src: image.dataUrl,
         source: "generated" as const,
         createdAt: "刚刚生成",
@@ -1077,6 +1566,9 @@ export default function App() {
   };
 
   const extractTemplateFromArticle = async (sourceMarkdown: string) => {
+    if (!requireTextModel()) {
+      throw new Error("请先在设置中保存并测试文本模型连接。");
+    }
     try {
       const result = await desktopBridge.extractTemplate({ sourceMarkdown });
       setToast(
@@ -1289,6 +1781,7 @@ export default function App() {
             }
             generatingImage={generatingImage}
             markdown={currentMarkdown}
+            mediaAssets={mediaAssets}
             onCreate={createBlankArticle}
             onEditorModeChange={setEditorMode}
             onGenerateImage={() => void generateImage()}
@@ -1358,6 +1851,7 @@ export default function App() {
             onSelectionChange={setSelectedMediaIds}
             onStartCreating={() => navigate("create")}
             onUpload={createLocalMediaAsset}
+            onUpdate={updateMediaAsset}
             selectedAssetIds={selectedMediaIds}
           />
         );
@@ -1421,6 +1915,11 @@ export default function App() {
                         : "设置"}
           </strong>
           <span className="workspace-topbar__spacer" />
+          {runtime?.bridgeMode === "interface_only" && (
+            <span className="workspace-host-warning" role="alert">
+              浏览器预览不能执行 Agent
+            </span>
+          )}
           {activeNav !== "create" && (
             <button
               className="button button--quiet workspace-new"

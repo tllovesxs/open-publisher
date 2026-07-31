@@ -360,13 +360,121 @@
         }
       }
     },
+    "VisualAssetInstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "alt",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,99}$"
+        },
+        "alt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": ".*\\S.*"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 600
+        }
+      }
+    },
+    "VisualCompositionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "target_count",
+        "assets"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "auto",
+            "fixed"
+          ]
+        },
+        "target_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "assets": {
+          "type": "array",
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/VisualAssetInstruction"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "none"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "target_count": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "auto"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "target_count": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "fixed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "target_count": {
+                "minimum": 1,
+                "maximum": 6
+              }
+            }
+          }
+        }
+      ]
+    },
     "StartRunPolicyRequest": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "require_content_approval",
         "allow_remote_publish",
-        "disabled_optional_node_ids"
+        "disabled_optional_node_ids",
+        "visual_composition"
       ],
       "properties": {
         "require_content_approval": {
@@ -410,6 +518,9 @@
           "items": {
             "$ref": "#/$defs/WorkflowAgentInstruction"
           }
+        },
+        "visual_composition": {
+          "$ref": "#/$defs/VisualCompositionRequest"
         }
       }
     },
@@ -492,6 +603,58 @@
         }
       },
       "additionalProperties": true
+    },
+    "RuntimeEventProjection": {
+      "type": "object",
+      "required": [
+        "id",
+        "event_type",
+        "payload_json",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "payload_json": {
+          "$ref": "#/$defs/JsonObject"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ActiveRunResponse": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "run",
+            "events"
+          ],
+          "properties": {
+            "run": {
+              "$ref": "#/$defs/WorkflowRunResponse"
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RuntimeEventProjection"
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
     },
     "CompleteDemoRequest": {
       "type": "object",
