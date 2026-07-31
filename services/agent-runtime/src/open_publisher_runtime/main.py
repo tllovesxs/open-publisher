@@ -29,6 +29,8 @@ from open_publisher_runtime.infrastructure.providers import (
     MockTextProvider,
     OpenAICompatibleImageProvider,
     OpenAICompatibleTextProvider,
+    UnconfiguredImageProvider,
+    UnconfiguredTextProvider,
 )
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
 from open_publisher_runtime.workflows.preset import PresetArticleWorkflow
@@ -41,6 +43,7 @@ IMAGE_BASE_URL_ENV = "OPEN_PUBLISHER_IMAGE_BASE_URL"
 IMAGE_MODEL_ENV = "OPEN_PUBLISHER_IMAGE_MODEL"
 IMAGE_TRUSTED_HOSTS_ENV = "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS"
 MODEL_TIMEOUT_SECONDS_ENV = "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS"
+LOCAL_DEMO_ENV = "OPEN_PUBLISHER_LOCAL_DEMO"
 MODEL_ENV_VARIABLES = (
     MODEL_API_KEY_ENV,
     LEGACY_SILICONFLOW_API_KEY_ENV,
@@ -50,6 +53,7 @@ MODEL_ENV_VARIABLES = (
     IMAGE_MODEL_ENV,
     IMAGE_TRUSTED_HOSTS_ENV,
     MODEL_TIMEOUT_SECONDS_ENV,
+    LOCAL_DEMO_ENV,
 )
 
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
@@ -81,6 +85,17 @@ def _is_siliconflow_url(base_url: str) -> bool:
     return urlparse(base_url).hostname == "api.siliconflow.cn"
 
 
+def _local_demo_enabled(environment: Mapping[str, str]) -> bool:
+    value = _environment_value(environment, LOCAL_DEMO_ENV)
+    if value is None:
+        return False
+    if value.casefold() in {"1", "true", "yes"}:
+        return True
+    if value.casefold() in {"0", "false", "no"}:
+        return False
+    raise ValueError(f"{LOCAL_DEMO_ENV} must be true or false")
+
+
 def model_access_from_env(
     environment: Mapping[str, str] | None = None,
 ) -> ModelAccessLayer:
@@ -88,7 +103,8 @@ def model_access_from_env(
     generic_api_key = _environment_value(values, MODEL_API_KEY_ENV)
     legacy_api_key = _environment_value(values, LEGACY_SILICONFLOW_API_KEY_ENV)
     api_key = generic_api_key or legacy_api_key
-    if api_key is None:
+    local_demo = _local_demo_enabled(values)
+    if api_key is None and local_demo:
         return ModelAccessLayer(
             text_provider=MockTextProvider(),
             image_provider=MockImageProvider(),
@@ -106,17 +122,15 @@ def model_access_from_env(
         image_base_url = image_base_url or SILICONFLOW_BASE_URL
         image_model = image_model or SILICONFLOW_IMAGE_MODEL
 
-    text_provider = (
-        OpenAICompatibleTextProvider(
+    text_provider = UnconfiguredTextProvider()
+    if api_key and text_base_url and text_model:
+        text_provider = OpenAICompatibleTextProvider(
             base_url=text_base_url,
             api_key=api_key,
             default_model=text_model,
             timeout_seconds=timeout_seconds,
             max_output_tokens=1400,
         )
-        if text_base_url and text_model
-        else MockTextProvider()
-    )
 
     trusted_hosts_value = _environment_value(values, IMAGE_TRUSTED_HOSTS_ENV)
     trusted_hosts = frozenset(
@@ -124,8 +138,8 @@ def model_access_from_env(
         for host in (trusted_hosts_value or "").split(",")
         if host.strip()
     )
-    image_provider = MockImageProvider()
-    if image_base_url and image_model:
+    image_provider = UnconfiguredImageProvider()
+    if api_key and image_base_url and image_model:
         siliconflow_image = _is_siliconflow_url(image_base_url)
         if siliconflow_image and not trusted_hosts:
             trusted_hosts = SILICONFLOW_IMAGE_HOSTS

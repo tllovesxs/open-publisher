@@ -4,18 +4,23 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from open_publisher_runtime.application.model_access import TextGenerationRequest
 from open_publisher_runtime.config import Settings
 from open_publisher_runtime.infrastructure.providers import (
     MockImageProvider,
     MockTextProvider,
+    ModelProviderNotConfiguredError,
     OpenAICompatibleImageProvider,
     OpenAICompatibleTextProvider,
+    UnconfiguredImageProvider,
+    UnconfiguredTextProvider,
 )
 from open_publisher_runtime.main import (
     IMAGE_BASE_URL_ENV,
     IMAGE_MODEL_ENV,
     IMAGE_TRUSTED_HOSTS_ENV,
     LEGACY_SILICONFLOW_API_KEY_ENV,
+    LOCAL_DEMO_ENV,
     MODEL_API_KEY_ENV,
     MODEL_TIMEOUT_SECONDS_ENV,
     SILICONFLOW_BASE_URL,
@@ -48,10 +53,18 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def test_model_environment_defaults_to_mock_and_degrades_each_provider_independently() -> None:
+def test_model_environment_requires_configuration_unless_local_demo_is_explicit() -> None:
     empty_access = model_access_from_env({})
-    assert isinstance(empty_access.text_provider, MockTextProvider)
-    assert isinstance(empty_access.image_provider, MockImageProvider)
+    assert isinstance(empty_access.text_provider, UnconfiguredTextProvider)
+    assert isinstance(empty_access.image_provider, UnconfiguredImageProvider)
+
+    demo_access = model_access_from_env({LOCAL_DEMO_ENV: "true"})
+    assert isinstance(demo_access.text_provider, MockTextProvider)
+    assert isinstance(demo_access.image_provider, MockImageProvider)
+    with pytest.raises(ModelProviderNotConfiguredError, match="text model is not configured"):
+        empty_access.text_provider.generate(
+            TextGenerationRequest(purpose="draft", prompt="write")
+        )
 
     text_only_access = model_access_from_env(
         {
@@ -61,7 +74,7 @@ def test_model_environment_defaults_to_mock_and_degrades_each_provider_independe
         }
     )
     assert isinstance(text_only_access.text_provider, OpenAICompatibleTextProvider)
-    assert isinstance(text_only_access.image_provider, MockImageProvider)
+    assert isinstance(text_only_access.image_provider, UnconfiguredImageProvider)
 
 
 def test_generic_model_environment_configures_text_image_timeout_and_hosts() -> None:

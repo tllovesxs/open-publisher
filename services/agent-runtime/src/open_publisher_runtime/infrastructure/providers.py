@@ -39,6 +39,34 @@ class EnvironmentSecretResolver:
         return value
 
 
+class ModelProviderNotConfiguredError(RuntimeError):
+    """Raised when a caller requests AI output without an enabled provider."""
+
+
+class UnconfiguredTextProvider:
+    @property
+    def name(self) -> str:
+        return "unconfigured"
+
+    def generate(self, _request: TextGenerationRequest) -> TextGenerationResponse:
+        raise ModelProviderNotConfiguredError(
+            "text model is not configured; configure an OpenAI-compatible model or enable "
+            "explicit local demo mode"
+        )
+
+
+class UnconfiguredImageProvider:
+    @property
+    def name(self) -> str:
+        return "unconfigured"
+
+    def generate(self, _request: ImageGenerationRequest) -> ImageGenerationResponse:
+        raise ModelProviderNotConfiguredError(
+            "image model is not configured; configure an OpenAI-compatible image model or "
+            "enable explicit local demo mode"
+        )
+
+
 class MockTextProvider:
     @property
     def name(self) -> str:

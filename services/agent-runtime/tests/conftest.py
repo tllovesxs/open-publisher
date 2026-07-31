@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from open_publisher_runtime.config import Settings
-from open_publisher_runtime.main import MODEL_ENV_VARIABLES, create_app
+from open_publisher_runtime.main import LOCAL_DEMO_ENV, MODEL_ENV_VARIABLES, create_app
 
 TEST_API_TOKEN = "test-open-publisher-sidecar-token-0001"
 
@@ -16,7 +16,10 @@ def isolate_model_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def client(tmp_path) -> Iterator[TestClient]:
+def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # Runtime behavior tests intentionally opt into local simulation. Production
+    # defaults to an explicit unconfigured-model failure instead of fabricated output.
+    monkeypatch.setenv(LOCAL_DEMO_ENV, "true")
     settings = Settings(
         data_dir=tmp_path / "runtime-data",
         api_token=TEST_API_TOKEN,
