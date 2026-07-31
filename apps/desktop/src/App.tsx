@@ -201,8 +201,17 @@ function buildCreationSeed(request: CreationRequest) {
   const references = request.references
     ? `\n\n## 参考资料\n\n${request.references}`
     : "";
+  const templateHeadings = request.template
+    ? request.template.markdown
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^#{1,3}\s+/.test(line))
+        .map((line) => line.replace(/\{\{[^}]+\}\}/g, "").replace(/^#\s+/, "").trim())
+        .filter(Boolean)
+        .filter((heading) => heading !== title)
+    : [];
   const template = request.template
-    ? `\n\n## 选用 Markdown 模板\n\n${request.template.markdown.replaceAll("{{title}}", title)}`
+    ? `\n\n## 写作结构\n\n请按「${request.template.name}」的章节组织正文。不要输出花括号占位符、模板说明或创作要求。\n\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}`
     : "";
   const images = request.imageAssets.length
     ? `\n\n## 已选图片素材\n\n${request.imageAssets

@@ -59,6 +59,9 @@ describe("desktop product flow", () => {
     expect((screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value).toContain(
       "只使用用户提供的事实",
     );
+    expect((screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value).not.toContain(
+      "{{",
+    );
   });
 
   it("shows the creation stage, execution plan, and timestamped logs", async () => {
