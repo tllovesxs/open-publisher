@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -259,6 +260,68 @@ class OpenAICompatibleTextProvider:
                 "input_tokens": int(usage.get("prompt_tokens", 0)),
                 "output_tokens": int(usage.get("completion_tokens", 0)),
             },
+        )
+
+    def generate_stream(
+        self,
+        request: TextGenerationRequest,
+        on_delta: Callable[[str], None],
+    ) -> TextGenerationResponse:
+        """Read the OpenAI-compatible SSE response without exposing it to the UI."""
+
+        request_payload = {
+            "model": request.model or self.default_model,
+            "messages": [{"role": "user", "content": request.prompt}],
+            "temperature": request.temperature,
+            "stream": True,
+            **self.extra_request_fields,
+        }
+        output_limit = request.max_output_tokens or self.max_output_tokens
+        if output_limit is not None:
+            request_payload["max_tokens"] = output_limit
+
+        text_parts: list[str] = []
+        response_model = request.model or self.default_model
+        usage: dict[str, int] = {}
+        with httpx.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=request_payload,
+            timeout=self.timeout_seconds,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload_text = line[5:].strip()
+                if payload_text == "[DONE]":
+                    break
+                try:
+                    payload = json.loads(payload_text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload.get("model"), str):
+                    response_model = payload["model"]
+                usage_payload = payload.get("usage")
+                if isinstance(usage_payload, dict):
+                    usage = {
+                        "input_tokens": int(usage_payload.get("prompt_tokens", 0)),
+                        "output_tokens": int(usage_payload.get("completion_tokens", 0)),
+                    }
+                choices = payload.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                content = delta.get("content") if isinstance(delta, dict) else None
+                if isinstance(content, str) and content:
+                    text_parts.append(content)
+                    on_delta(content)
+        return TextGenerationResponse(
+            text="".join(text_parts),
+            provider=self.name,
+            model=response_model,
+            usage=usage,
         )
 
 

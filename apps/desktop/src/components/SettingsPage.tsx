@@ -41,6 +41,45 @@ const tabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "data", label: "数据与高级" },
 ];
 
+const MODEL_DRAFT_STORAGE_KEY = "open-publisher-model-draft-v1";
+
+interface ModelDraft {
+  name: string;
+  baseUrl: string;
+  textModel: string;
+  imageBaseUrl: string;
+  imageModel: string;
+  trustedHosts: string;
+  timeoutSeconds: number;
+}
+
+const defaultModelDraft: ModelDraft = {
+  name: "硅基流动",
+  baseUrl: "https://api.siliconflow.cn/v1",
+  textModel: "deepseek-ai/DeepSeek-V3.2",
+  imageBaseUrl: "https://api.siliconflow.cn/v1",
+  imageModel: "Qwen/Qwen-Image",
+  trustedHosts: "",
+  timeoutSeconds: 120,
+};
+
+function loadModelDraft(): ModelDraft {
+  try {
+    const value = window.localStorage.getItem(MODEL_DRAFT_STORAGE_KEY);
+    if (!value) return defaultModelDraft;
+    const parsed = JSON.parse(value) as Partial<ModelDraft>;
+    return {
+      ...defaultModelDraft,
+      ...parsed,
+      timeoutSeconds: typeof parsed.timeoutSeconds === "number" && Number.isInteger(parsed.timeoutSeconds)
+        ? parsed.timeoutSeconds
+        : defaultModelDraft.timeoutSeconds,
+    };
+  } catch {
+    return defaultModelDraft;
+  }
+}
+
 const workflowOptions: Array<{
   id: DisabledOptionalNodeId;
   title: string;
@@ -72,16 +111,15 @@ export function SettingsPage({
   onToggleNode,
 }: SettingsPageProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("models");
-  const [name, setName] = useState("硅基流动");
-  const [baseUrl, setBaseUrl] = useState("https://api.siliconflow.cn/v1");
+  const [initialModelDraft] = useState(loadModelDraft);
+  const [name, setName] = useState(initialModelDraft.name);
+  const [baseUrl, setBaseUrl] = useState(initialModelDraft.baseUrl);
   const [apiKey, setApiKey] = useState("");
-  const [textModel, setTextModel] = useState("deepseek-ai/DeepSeek-V3.2");
-  const [imageBaseUrl, setImageBaseUrl] = useState(
-    "https://api.siliconflow.cn/v1",
-  );
-  const [imageModel, setImageModel] = useState("Qwen/Qwen-Image");
-  const [trustedHosts, setTrustedHosts] = useState("");
-  const [timeoutSeconds, setTimeoutSeconds] = useState(120);
+  const [textModel, setTextModel] = useState(initialModelDraft.textModel);
+  const [imageBaseUrl, setImageBaseUrl] = useState(initialModelDraft.imageBaseUrl);
+  const [imageModel, setImageModel] = useState(initialModelDraft.imageModel);
+  const [trustedHosts, setTrustedHosts] = useState(initialModelDraft.trustedHosts);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(initialModelDraft.timeoutSeconds);
   const [showKey, setShowKey] = useState(false);
   const [validation, setValidation] = useState<string | null>(null);
 
@@ -95,6 +133,19 @@ export function SettingsPage({
     setTrustedHosts(modelConfiguration.imageTrustedHosts.join(", "));
     setTimeoutSeconds(modelConfiguration.timeoutSeconds);
   }, [modelConfiguration]);
+
+  useEffect(() => {
+    const draft: ModelDraft = {
+      name,
+      baseUrl,
+      textModel,
+      imageBaseUrl,
+      imageModel,
+      trustedHosts,
+      timeoutSeconds,
+    };
+    window.localStorage.setItem(MODEL_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+  }, [baseUrl, imageBaseUrl, imageModel, name, textModel, timeoutSeconds, trustedHosts]);
 
   const submitModel = () => {
     if (!name.trim() || !baseUrl.trim() || !textModel.trim()) {

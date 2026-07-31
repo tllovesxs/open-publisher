@@ -46,7 +46,7 @@ OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
     "visual",
 )
 REQUIRED_NODE_IDS = ("draft", "risk")
-NodeEventCallback = Callable[[str, str], None]
+NodeEventCallback = Callable[[str, str, dict[str, str] | None], None]
 
 
 class PresetWorkflowInput(BaseModel):
@@ -104,15 +104,15 @@ class PresetArticleWorkflow:
         on_node_event: NodeEventCallback | None,
     ) -> dict[str, object]:
         if on_node_event is not None:
-            on_node_event(node_id, "started")
+            on_node_event(node_id, "started", None)
         try:
             result = action(state)
         except Exception:
             if on_node_event is not None:
-                on_node_event(node_id, "failed")
+                on_node_event(node_id, "failed", None)
             raise
         if on_node_event is not None:
-            on_node_event(node_id, "completed")
+            on_node_event(node_id, "completed", None)
         return result
 
     @staticmethod
@@ -212,8 +212,39 @@ class PresetArticleWorkflow:
         )
         return {"outline": response.text}
 
-    def _draft(self, state: WorkflowState) -> dict[str, str]:
-        response = self.model_access.generate_text(
+    def _draft(
+        self,
+        state: WorkflowState,
+        on_node_event: NodeEventCallback | None,
+    ) -> dict[str, str]:
+        buffered = ""
+
+        def emit_buffer(*, force: bool) -> None:
+            nonlocal buffered
+            while buffered and (force or len(buffered) >= 160):
+                if force:
+                    end = len(buffered)
+                else:
+                    candidates = [
+                        buffered.rfind(marker, 48, 220)
+                        for marker in ("\n", "。", "！", "？", ".", "!", "?")
+                    ]
+                    end = max(candidates)
+                    if end < 48:
+                        end = min(len(buffered), 200)
+                    else:
+                        end += 1
+                delta = buffered[:end]
+                buffered = buffered[end:]
+                if delta and on_node_event is not None:
+                    on_node_event("draft", "output_delta", {"delta": delta})
+
+        def on_delta(delta: str) -> None:
+            nonlocal buffered
+            buffered += delta
+            emit_buffer(force=False)
+
+        response = self.model_access.generate_text_stream(
             TextGenerationRequest(
                 purpose="draft",
                 prompt=(
@@ -228,8 +259,10 @@ class PresetArticleWorkflow:
                     "research_report": state["research_report"],
                     "outline": state["outline"],
                 },
-            )
+            ),
+            on_delta,
         )
+        emit_buffer(force=True)
         return {"raw_draft": response.text}
 
     def _naturalize(self, state: WorkflowState) -> dict[str, str]:
@@ -341,7 +374,14 @@ class PresetArticleWorkflow:
             initial.update(self._run_node("research", self._research, initial, on_node_event))
         if "outline" not in disabled:
             initial.update(self._run_node("outline", self._outline, initial, on_node_event))
-        initial.update(self._run_node("draft", self._draft, initial, on_node_event))
+        initial.update(
+            self._run_node(
+                "draft",
+                lambda state: self._draft(state, on_node_event),
+                initial,
+                on_node_event,
+            )
+        )
         if "natural-style" in disabled:
             initial["canonical_markdown"] = initial["raw_draft"]
         else:
@@ -369,7 +409,10 @@ class PresetArticleWorkflow:
         def node(node_id: WorkflowNodeId, action: Callable[[WorkflowState], dict[str, object]]):
             return lambda state: self._run_node(node_id, action, state, on_node_event)
 
-        builder.add_node("draft", node("draft", self._draft))
+        builder.add_node(
+            "draft",
+            node("draft", lambda state: self._draft(state, on_node_event)),
+        )
         builder.add_node("risk", node("risk", self._risk))
 
         sequential_nodes: list[str] = []

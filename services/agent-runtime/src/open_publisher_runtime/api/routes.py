@@ -102,7 +102,12 @@ def _services(
     artifacts = ArtifactService(repository, container.blob_store)
     articles = ArticleService(repository, artifacts)
 
-    def record_live_node_event(run_id: str, node_id: str, phase: str) -> None:
+    def record_live_node_event(
+        run_id: str,
+        node_id: str,
+        phase: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
         """Persist progress from LangGraph worker threads using an isolated session."""
 
         try:
@@ -114,7 +119,7 @@ def _services(
                         aggregate_type="workflow_run",
                         aggregate_id=run_id,
                         event_type=f"run.node_{phase}",
-                        payload_json={"node_id": node_id},
+                        payload_json={"node_id": node_id, **(payload or {})},
                     )
                 )
         except Exception:

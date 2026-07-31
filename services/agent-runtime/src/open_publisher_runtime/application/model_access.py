@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,6 +52,14 @@ class TextProvider(Protocol):
     def generate(self, request: TextGenerationRequest) -> TextGenerationResponse: ...
 
 
+class StreamingTextProvider(Protocol):
+    def generate_stream(
+        self,
+        request: TextGenerationRequest,
+        on_delta: Callable[[str], None],
+    ) -> TextGenerationResponse: ...
+
+
 class ImageProvider(Protocol):
     @property
     def name(self) -> str: ...
@@ -76,6 +85,21 @@ class ModelAccessLayer:
 
     def generate_text(self, request: TextGenerationRequest) -> TextGenerationResponse:
         return self.text_provider.generate(request)
+
+    def generate_text_stream(
+        self,
+        request: TextGenerationRequest,
+        on_delta: Callable[[str], None],
+    ) -> TextGenerationResponse:
+        """Use provider SSE when available; preserve a deterministic fallback."""
+
+        stream = getattr(self.text_provider, "generate_stream", None)
+        if callable(stream):
+            return stream(request, on_delta)
+        response = self.generate_text(request)
+        if response.text:
+            on_delta(response.text)
+        return response
 
     def generate_image(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
         return self.image_provider.generate(request)

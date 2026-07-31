@@ -171,8 +171,8 @@ pub struct VisualPlacementSummary {
     pub generation_prompt: Option<String>,
 }
 
-/// A deliberately narrow projection of a live Python workflow run. It exposes
-/// only lifecycle state and node identifiers; model output and error payloads
+/// A deliberately narrow projection of a live Python workflow run. Writer
+/// deltas are bounded, draft-only text blocks; credentials and model errors
 /// remain behind the Sidecar boundary.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -189,6 +189,7 @@ pub struct WorkflowActivityEvent {
     pub event_type: String,
     pub node_id: Option<String>,
     pub created_at: String,
+    pub draft_delta: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2328,7 +2329,7 @@ fn summarize_workflow_activity(detail: RunDetailWire) -> Result<WorkflowActivity
     if !matches!(status.as_str(), "queued" | "running") {
         return Err("local Python runtime returned a non-active workflow status".to_owned());
     }
-    if detail.events.len() > 64 {
+    if detail.events.len() > 256 {
         return Err("local Python runtime returned too many workflow activity events".to_owned());
     }
     let events = detail
@@ -2357,6 +2358,7 @@ fn summarize_workflow_activity_event(
             | "run.node_completed"
             | "run.node_failed"
             | "run.node_skipped"
+            | "run.node_output_delta"
             | "run.interrupted"
             | "run.failed"
             | "run.completed"
@@ -2389,11 +2391,33 @@ fn summarize_workflow_activity_event(
     if created_at.is_empty() || created_at.len() > 64 || created_at.chars().any(char::is_control) {
         return Err("local Python runtime returned an invalid workflow event time".to_owned());
     }
+    let draft_delta = if event_type == "run.node_output_delta" {
+        if node_id.as_deref() != Some("draft") {
+            return Err("local Python runtime returned output for a non-draft node".to_owned());
+        }
+        match event.payload_json.get("delta") {
+            Some(Value::String(value))
+                if !value.is_empty()
+                    && value.len() <= 1_024
+                    && !value.chars().any(|character| character == '\0') =>
+            {
+                Some(value.clone())
+            }
+            _ => {
+                return Err(
+                    "local Python runtime returned an invalid draft output block".to_owned(),
+                )
+            }
+        }
+    } else {
+        None
+    };
     Ok(WorkflowActivityEvent {
         id,
         event_type,
         node_id,
         created_at,
+        draft_delta,
     })
 }
 

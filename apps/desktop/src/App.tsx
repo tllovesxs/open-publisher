@@ -1,5 +1,5 @@
 import { Menu, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
 import { AgentsPage } from "./components/AgentsPage";
 import { ArticlesPage } from "./components/ArticlesPage";
@@ -43,6 +43,10 @@ import {
   type StoredArticleSummary,
 } from "./lib/desktopBridge";
 import { mediaMarkdownReference } from "./lib/mediaReferences";
+import {
+  loadMediaAssetsFromDatabase,
+  saveMediaAssetsToDatabase,
+} from "./lib/mediaStorage";
 import type {
   Article,
   MarkdownTemplate,
@@ -67,12 +71,24 @@ interface FailedCreationContext {
   request: CreationRequest;
 }
 
+interface ArticleProgress {
+  articleId: string;
+  title: string;
+  detail: string;
+  value: number | null;
+}
+
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
+const FAILED_CREATION_STORAGE_KEY = "open-publisher-failed-creation";
 const AGENTS_STORAGE_KEY = "open-publisher-studio-agents";
 const SKILLS_STORAGE_KEY = "open-publisher-studio-skills";
 const TEMPLATES_STORAGE_KEY = "open-publisher-studio-templates";
 const MEDIA_STORAGE_KEY = "open-publisher-studio-media";
-const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024;
+const SELECTED_TEMPLATE_STORAGE_KEY = "open-publisher-studio-selected-template";
+const SELECTED_MEDIA_STORAGE_KEY = "open-publisher-studio-selected-media";
+const EDITOR_MODE_STORAGE_KEY = "open-publisher-studio-editor-mode";
+const WORKFLOW_NODES_STORAGE_KEY = "open-publisher-studio-workflow-nodes";
+const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
 const INLINE_DATA_IMAGE_PATTERN =
   /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
@@ -209,7 +225,7 @@ function readLocalImage(file: File): Promise<string> {
     return Promise.reject(new Error("请选择 PNG、JPEG、WebP、GIF 或 AVIF 图片。"));
   }
   if (file.size === 0 || file.size > MAX_LOCAL_IMAGE_BYTES) {
-    return Promise.reject(new Error("单张图片需小于 2 MB，方便安全地保存在本机素材库。"));
+    return Promise.reject(new Error("单张图片需小于 15 MB，方便保存在本机素材库。"));
   }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -442,6 +458,12 @@ function describeWorkflowActivity(
         phase: `${agent} 已完成${node}`,
         tone: "success",
       };
+    case "run.node_output_delta":
+      return {
+        message: `${agent} 正在输出正文`,
+        phase: `${agent} 正在撰写正文`,
+        tone: "info",
+      };
     case "run.node_failed":
       return {
         message: `${agent} 在${node}阶段失败`,
@@ -497,6 +519,21 @@ function loadCreationActivity(): CreationActivity | null {
   } catch {
     return null;
   }
+}
+
+function loadFailedCreationContext(): FailedCreationContext | null {
+  const stored = loadStudioValue<unknown>(FAILED_CREATION_STORAGE_KEY, null);
+  if (!stored || typeof stored !== "object") return null;
+  const context = stored as Partial<FailedCreationContext>;
+  if (
+    typeof context.articleId !== "string" ||
+    !context.articleId ||
+    !context.request ||
+    typeof context.request !== "object"
+  ) {
+    return null;
+  }
+  return context as FailedCreationContext;
 }
 
 function preferredTheme(): Theme {
@@ -595,11 +632,15 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [workflowRunning, setWorkflowRunning] = useState(false);
   const [creatingArticle, setCreatingArticle] = useState(false);
-  const [editorMode, setEditorMode] = useState<EditorMode>("split");
+  const [editorMode, setEditorMode] = useState<EditorMode>(() => {
+    const stored = loadStudioValue<unknown>(EDITOR_MODE_STORAGE_KEY, "split");
+    return stored === "edit" || stored === "split" || stored === "preview" ? stored : "split";
+  });
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>("wechat");
-  const [disabledNodes, setDisabledNodes] = useState<Set<DisabledOptionalNodeId>>(
-    () => new Set(["visual"]),
-  );
+  const [disabledNodes, setDisabledNodes] = useState<Set<DisabledOptionalNodeId>>(() => {
+    const stored = loadStudioValue<unknown>(WORKFLOW_NODES_STORAGE_KEY, ["visual"]);
+    return new Set(Array.isArray(stored) ? stored.filter(isOptionalWorkflowNodeId) : ["visual"]);
+  });
   const [generatedImages, setGeneratedImages] = useState<Record<string, number>>({});
   const [generatingImage, setGeneratingImage] = useState(false);
   const [publishTargets, setPublishTargets] = useState<Set<PlatformId>>(
@@ -616,7 +657,7 @@ export default function App() {
   const [creationActivity, setCreationActivity] =
     useState<CreationActivity | null>(loadCreationActivity);
   const [failedCreationContext, setFailedCreationContext] =
-    useState<FailedCreationContext | null>(null);
+    useState<FailedCreationContext | null>(loadFailedCreationContext);
   const [toast, setToast] = useState<string | null>(null);
   const [studioAgents, setStudioAgents] = useState<StudioAgent[]>(() =>
     normalizeStudioAgents(loadStudioValue<unknown>(AGENTS_STORAGE_KEY, defaultAgents)),
@@ -625,13 +666,20 @@ export default function App() {
   const [templates, setTemplates] = useState<MarkdownTemplate[]>(() =>
     loadStudioValue(TEMPLATES_STORAGE_KEY, defaultTemplates),
   );
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
-    () => defaultTemplates[0]?.id ?? null,
-  );
-  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>(() =>
-    loadMediaAssets(),
-  );
-  const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(() => {
+    const stored = loadStudioValue<unknown>(SELECTED_TEMPLATE_STORAGE_KEY, null);
+    return typeof stored === "string" ? stored : defaultTemplates[0]?.id ?? null;
+  });
+  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>(loadMediaAssets);
+  const [mediaDatabaseReady, setMediaDatabaseReady] = useState(false);
+  const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>(() => {
+    const stored = loadStudioValue<unknown>(SELECTED_MEDIA_STORAGE_KEY, []);
+    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
+  });
+  const writerStreamRef = useRef<Record<string, string>>({});
+  const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
+  const [articleProgress, setArticleProgress] = useState<ArticleProgress | null>(null);
+  const [articleContentReplacing, setArticleContentReplacing] = useState(false);
 
   const studioSkills = useMemo(
     () => [...availableSkills, ...customSkills],
@@ -770,6 +818,17 @@ export default function App() {
   }, [creationActivity]);
 
   useEffect(() => {
+    if (!failedCreationContext) {
+      window.localStorage.removeItem(FAILED_CREATION_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      FAILED_CREATION_STORAGE_KEY,
+      JSON.stringify(failedCreationContext),
+    );
+  }, [failedCreationContext]);
+
+  useEffect(() => {
     window.localStorage.setItem(AGENTS_STORAGE_KEY, JSON.stringify(studioAgents));
   }, [studioAgents]);
 
@@ -785,13 +844,58 @@ export default function App() {
   }, [selectedTemplateId, templates]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(mediaAssets));
-    } catch {
-      setToast("素材库空间不足：本次图片仍可使用，但关闭应用后无法保留。请删除不需要的图片后重试。");
-    }
+    window.localStorage.setItem(SELECTED_TEMPLATE_STORAGE_KEY, JSON.stringify(selectedTemplateId));
+  }, [selectedTemplateId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SELECTED_MEDIA_STORAGE_KEY, JSON.stringify(selectedMediaIds));
+  }, [selectedMediaIds]);
+
+  useEffect(() => {
+    window.localStorage.setItem(EDITOR_MODE_STORAGE_KEY, JSON.stringify(editorMode));
+  }, [editorMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(WORKFLOW_NODES_STORAGE_KEY, JSON.stringify([...disabledNodes]));
+  }, [disabledNodes]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadMedia = async () => {
+      try {
+        const legacyAssets = loadMediaAssets();
+        const databaseAssets = await loadMediaAssetsFromDatabase();
+        const merged = new Map(databaseAssets.map((asset) => [asset.id, asset]));
+        for (const asset of legacyAssets) merged.set(asset.id, asset);
+        const assets = [...merged.values()];
+        if (legacyAssets.length > 0) {
+          await saveMediaAssetsToDatabase(legacyAssets);
+          window.localStorage.removeItem(MEDIA_STORAGE_KEY);
+        }
+        if (!cancelled) setMediaAssets(assets);
+      } catch (error) {
+        if (!cancelled) {
+          const detail = error instanceof Error ? error.message : String(error);
+          setToast(`本地素材数据库不可用：${detail.slice(0, 80)}`);
+        }
+      } finally {
+        if (!cancelled) setMediaDatabaseReady(true);
+      }
+    };
+    void loadMedia();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mediaDatabaseReady) return;
+    void saveMediaAssetsToDatabase(mediaAssets).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      setToast(`素材保存失败：${detail.slice(0, 80)}`);
+    });
     setSelectedMediaIds((current) => current.filter((id) => mediaAssets.some((asset) => asset.id === id)));
-  }, [mediaAssets]);
+  }, [mediaAssets, mediaDatabaseReady]);
 
   useEffect(() => {
     if (!selectedArticle) return;
@@ -838,31 +942,95 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [creationActivity?.status, creationActivity?.startedAt]);
 
+  const replaceArticleContent = (
+    articleId: string,
+    markdown: string,
+    animate = true,
+  ) => {
+    if (animate) setArticleContentReplacing(true);
+    setDrafts((current) => ({ ...current, [articleId]: markdown }));
+    setArticleItems((current) =>
+      current.map((article) =>
+        article.id === articleId
+          ? {
+              ...article,
+              title: titleFromMarkdown(markdown, article.title),
+              deck: deckFromMarkdown(markdown),
+              markdown,
+              wordCount: markdown.replace(/\s/g, "").length,
+            }
+          : article,
+      ),
+    );
+    if (animate) window.setTimeout(() => setArticleContentReplacing(false), 260);
+  };
+
+  const receiveWorkflowActivity = (
+    articleId: string,
+    event: WorkflowActivityEvent,
+    agents: WorkflowAgentInstruction[],
+  ) => {
+    const agent = event.nodeId ? workflowAgentLabel(event.nodeId, agents) : "本地 Agent";
+    if (
+      event.eventType === "run.node_output_delta" &&
+      event.nodeId === "draft" &&
+      event.draftDelta
+    ) {
+      const markdown = `${writerStreamRef.current[articleId] ?? ""}${event.draftDelta}`;
+      writerStreamRef.current[articleId] = markdown;
+      replaceArticleContent(articleId, markdown, false);
+      return;
+    }
+    if (event.eventType === "run.node_started" && event.nodeId === "draft") {
+      writerStreamRef.current[articleId] = "";
+      setWriterStreamingArticleId(articleId);
+      setArticleProgress(null);
+      replaceArticleContent(articleId, "", false);
+      return;
+    }
+    if (event.eventType === "run.node_completed" && event.nodeId === "draft") {
+      setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+      return;
+    }
+    if (event.eventType === "run.node_started" && event.nodeId) {
+      setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+      setArticleProgress({
+        articleId,
+        title: `${agent} 正在处理文章`,
+        detail: "完成后会用新的内容平滑替换当前正文。",
+        value: null,
+      });
+    }
+  };
+
   const startWorkflowActivityPolling = (
     articleId: string,
     agents: WorkflowAgentInstruction[],
   ) => {
     let stopped = false;
     let polling = false;
+    const seenEventIds = new Set(creationActivity?.logs.map((entry) => entry.id) ?? []);
     const collect = async () => {
       if (stopped || polling) return;
       polling = true;
       try {
         const activity = await desktopBridge.getWorkflowActivity(articleId);
         if (!activity || stopped) return;
+        const unseen = activity.events.filter((event) => !seenEventIds.has(event.id));
+        unseen.forEach((event) => seenEventIds.add(event.id));
+        unseen.forEach((event) => receiveWorkflowActivity(articleId, event, agents));
         setCreationActivity((current) => {
           if (!current || current.status !== "running") return current;
-          const knownIds = new Set(current.logs.map((entry) => entry.id));
-          const unseen = activity.events.filter((event) => !knownIds.has(event.id));
-          if (unseen.length === 0) return current;
-          const latest = unseen[unseen.length - 1];
+          const visible = unseen.filter((event) => event.eventType !== "run.node_output_delta");
+          if (visible.length === 0) return current;
+          const latest = visible[visible.length - 1];
           const latestDescription = describeWorkflowActivity(latest, agents);
           return {
             ...current,
             phase: latestDescription.phase,
             logs: [
               ...current.logs,
-              ...unseen.map((event) => {
+              ...visible.map((event) => {
                 const description = describeWorkflowActivity(event, agents);
                 return activityLog(
                   event.id,
@@ -1033,6 +1201,19 @@ export default function App() {
     return persistRevision(articleId, markdown, false);
   };
 
+  useEffect(() => {
+    if (!selectedArticle || !dirty || saving || workflowRunning) return;
+    const articleId = selectedArticle.id;
+    const markdown = currentMarkdown;
+    const timeout = window.setTimeout(() => {
+      void persistRevision(articleId, markdown, false).catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        setToast(`自动保存失败：${detail.slice(0, 100)}`);
+      });
+    }, 900);
+    return () => window.clearTimeout(timeout);
+  }, [currentMarkdown, dirty, saving, selectedArticle?.id, workflowRunning]);
+
   const applyWorkflowResult = (
     articleId: string,
     summary: RunWorkflowSummary,
@@ -1125,61 +1306,84 @@ export default function App() {
     const selectedAssets = new Map(
       request.imageAssets.map((asset) => [asset.id, asset]),
     );
-    const placements: Array<{
-      placement: VisualPlacementSummary;
-      asset: MediaAsset;
-    }> = [];
     const generatedAssets: MediaAsset[] = [];
-
-    for (const [index, placement] of plan.placements.entries()) {
-      if (placement.assetId) {
-        const asset = selectedAssets.get(placement.assetId);
-        if (!asset) {
-          throw new Error("视觉 Agent 选择了当前创作请求中不存在的素材图片。");
-        }
-        placements.push({ placement, asset });
-        continue;
-      }
-
-      if (!placement.generationPrompt) {
-        throw new Error("视觉 Agent 未为缺失素材提供可执行的生图提示词。");
-      }
-
-      appendCreationActivity(
-        `正在生成配图 ${index + 1}/${plan.targetCount}`,
-        `visual-generation-started-${startedAt}-${index}`,
-        `正在生成第 ${index + 1} 张配图`,
-      );
-      const result = await desktopBridge.generateImage({
-        prompt: placement.generationPrompt,
-        size: "1536x1024",
-        model: modelConfiguration?.imageModel ?? null,
+    const generatedCount = plan.placements.filter((placement) => !placement.assetId).length;
+    let completedCount = 0;
+    const updateVisualProgress = (detail: string) => {
+      completedCount += 1;
+      setArticleProgress({
+        articleId: article.id,
+        title: generatedCount > 0 ? "正在并发生成正文配图" : "正在插入素材库图片",
+        detail,
+        value: plan.targetCount ? Math.round((completedCount / plan.targetCount) * 86) : 86,
       });
-      const image = result.images[0];
-      if (!image) {
-        throw new Error(`第 ${index + 1} 张配图未返回可保存的图片数据。`);
-      }
-      const asset: MediaAsset = {
-        id: `generated-${image.id}`,
-        name: `${article.title} 正文配图 ${index + 1}`.slice(0, 120),
-        alt: escapeImageAlt(placement.alt),
-        description: `由 AI 根据文章小节“${placement.afterHeading ?? "文章核心观点"}”生成。`,
-        src: image.dataUrl,
-        source: "generated",
-        createdAt: "刚刚生成",
-      };
-      generatedAssets.push(asset);
-      placements.push({ placement, asset });
-      appendCreationActivity(
-        `正在生成配图 ${index + 1}/${plan.targetCount}`,
-        `visual-generation-completed-${startedAt}-${index}`,
-        `第 ${index + 1} 张配图已生成并加入本机素材库`,
-        "success",
-      );
+    };
+    if (plan.targetCount > 0) {
+      setArticleProgress({
+        articleId: article.id,
+        title: generatedCount > 0 ? "正在并发生成正文配图" : "正在插入素材库图片",
+        detail: generatedCount > 0
+          ? `已同时启动 ${generatedCount} 个生图任务。`
+          : `正在按文章结构安排 ${plan.targetCount} 张已选素材。`,
+        value: 8,
+      });
     }
+    const placements = await Promise.all(
+      plan.placements.map(async (placement, index) => {
+        if (placement.assetId) {
+          const asset = selectedAssets.get(placement.assetId);
+          if (!asset) {
+            throw new Error("视觉 Agent 选择了当前创作请求中不存在的素材图片。");
+          }
+          updateVisualProgress(`已安排素材 ${index + 1}/${plan.targetCount}`);
+          return { placement, asset };
+        }
+        if (!placement.generationPrompt) {
+          throw new Error("视觉 Agent 未为缺失素材提供可执行的生图提示词。");
+        }
+        appendCreationActivity(
+          `正在生成配图 ${index + 1}/${plan.targetCount}`,
+          `visual-generation-started-${startedAt}-${index}`,
+          `正在并发生成第 ${index + 1} 张配图`,
+        );
+        const result = await desktopBridge.generateImage({
+          prompt: placement.generationPrompt,
+          size: "1536x1024",
+          model: modelConfiguration?.imageModel ?? null,
+        });
+        const image = result.images[0];
+        if (!image) {
+          throw new Error(`第 ${index + 1} 张配图未返回可保存的图片数据。`);
+        }
+        const asset: MediaAsset = {
+          id: `generated-${image.id}`,
+          name: `${article.title} 正文配图 ${index + 1}`.slice(0, 120),
+          alt: escapeImageAlt(placement.alt),
+          description: `由 AI 根据文章小节“${placement.afterHeading ?? "文章核心观点"}”生成。`,
+          src: image.dataUrl,
+          source: "generated",
+          createdAt: "刚刚生成",
+        };
+        generatedAssets.push(asset);
+        updateVisualProgress(`已完成配图 ${completedCount}/${plan.targetCount}`);
+        appendCreationActivity(
+          `正在生成配图 ${index + 1}/${plan.targetCount}`,
+          `visual-generation-completed-${startedAt}-${index}`,
+          `第 ${index + 1} 张配图已生成并加入本机素材库`,
+          "success",
+        );
+        return { placement, asset };
+      }),
+    );
 
     const outputMarkdown = summary.outputMarkdown;
     const markdown = insertVisualMarkdown(outputMarkdown, placements);
+    setArticleProgress({
+      articleId: article.id,
+      title: "正在插入正文配图",
+      detail: "正在保存新的文章修订。",
+      value: 92,
+    });
     appendCreationActivity(
       "正在保存含配图的文章",
       `visual-insertion-started-${startedAt}`,
@@ -1211,6 +1415,7 @@ export default function App() {
         [article.id]: (current[article.id] ?? 0) + generatedAssets.length,
       }));
     }
+    setArticleContentReplacing(true);
     setRevisionIds((current) => ({ ...current, [article.id]: receipt.revisionId }));
     setDrafts((current) => ({ ...current, [article.id]: markdown }));
     setArticleItems((current) =>
@@ -1243,6 +1448,8 @@ export default function App() {
         : "文章已保存，未插入正文配图",
       "success",
     );
+    window.setTimeout(() => setArticleContentReplacing(false), 260);
+    setArticleProgress(null);
     return {
       revisionId: receipt.revisionId,
       revisionNumber: summary.outputRevisionNumber + 1,
@@ -1259,14 +1466,24 @@ export default function App() {
     agentInstructions = buildWorkflowAgentInstructions(studioAgents, studioSkills),
   ) => {
     const revisionId = await ensureRevision(article.id, markdown);
-    const summary = await desktopBridge.runWorkflow({
+    const workflowPromise = desktopBridge.runWorkflow({
       articleId: article.id,
       revisionId,
       topic: article.deck || article.title,
       disabledOptionalNodeIds: disabledNodeIds,
       agentInstructions,
     });
+    const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
+    let summary: RunWorkflowSummary;
+    try {
+      summary = await workflowPromise;
+    } finally {
+      stopActivityPolling();
+    }
+    setArticleContentReplacing(true);
     applyWorkflowResult(article.id, summary, channels);
+    window.setTimeout(() => setArticleContentReplacing(false), 260);
+    setArticleProgress(null);
     const snapshot = await desktopBridge.runtimeSnapshot();
     setRuntime(snapshot);
     return summary;
@@ -1284,6 +1501,12 @@ export default function App() {
       request.agentInstructions ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
     setCreatingArticle(true);
     setWorkflowRunning(true);
+    setArticleProgress({
+      articleId: article.id,
+      title: "正在准备创作",
+      detail: "创作要求已保存后，会自动开始撰写正文。",
+      value: null,
+    });
     setFailedCreationContext(null);
     setCreationActivity({
       status: "running",
@@ -1343,7 +1566,9 @@ export default function App() {
       } finally {
         stopActivityPolling();
       }
+      setArticleContentReplacing(true);
       applyWorkflowResult(article.id, summary, request.platforms);
+      window.setTimeout(() => setArticleContentReplacing(false), 260);
       const composed = await composeVisualPlan(article, summary, request, startedAt);
       setRuntime(await desktopBridge.runtimeSnapshot());
       setCreationActivity((current) =>
@@ -1401,8 +1626,9 @@ export default function App() {
             }
           : current,
       );
-      setActiveNav("create");
-      setToast("生成失败，创作要求已保留，可在日志下方重试");
+      setWriterStreamingArticleId((current) => (current === article.id ? null : current));
+      setArticleProgress(null);
+      setToast("生成失败，创作要求已保留，可返回创作页修改后重试");
     } finally {
       setCreatingArticle(false);
       setWorkflowRunning(false);
@@ -1438,6 +1664,7 @@ export default function App() {
     setArticleItems((current) => [article, ...current]);
     setDrafts((current) => ({ ...current, [id]: markdown }));
     setSelectedArticleId(id);
+    setActiveNav("articles");
     void executeCreation(article, markdown, normalizedRequest);
   };
 
@@ -1756,24 +1983,24 @@ export default function App() {
       case "create":
         return (
           <CreatePage
-            activity={creationActivity}
             generating={creatingArticle}
             modelLabel={modelConfiguration?.textModel ?? "配置模型"}
             onCreate={(request) => void createFromBrief(request)}
-            onOpenMedia={() => navigate("media")}
             onOpenSettings={() => navigate("settings")}
-            onOpenTemplates={() => navigate("templates")}
-            onRetry={retryCreation}
-            platforms={platforms}
             agents={studioAgents}
+            mediaAssets={mediaAssets}
+            onMediaChange={setSelectedMediaIds}
+            onTemplateChange={setSelectedTemplateId}
             selectedMedia={selectedMedia}
             selectedTemplate={selectedTemplate}
+            templates={templates}
           />
         );
       case "articles":
         return (
           <ArticlesPage
             articles={articleItems}
+            contentReplacing={articleContentReplacing}
             dirty={dirty}
             editorMode={editorMode}
             generatedImageCount={
@@ -1795,7 +2022,20 @@ export default function App() {
             saving={saving}
             selectedArticle={selectedArticle}
             selectedPlatform={selectedPlatform}
+            workflowProgress={articleProgress}
             workflowRunning={workflowRunning}
+            writerStreaming={writerStreamingArticleId === selectedArticle?.id}
+            workflowFailure={
+              creationActivity?.status === "failed" &&
+              failedCreationContext?.articleId === selectedArticle?.id
+                ? {
+                    detail: creationActivity.error ?? "工作流未返回具体失败原因。",
+                    logs: creationActivity.logs,
+                    retryable: creationActivity.retryable,
+                  }
+                : null
+            }
+            onRetryWorkflow={retryCreation}
           />
         );
       case "publish":

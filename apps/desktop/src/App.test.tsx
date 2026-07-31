@@ -4,6 +4,7 @@ import App from "./App";
 import {
   type DesktopBridge,
   desktopBridge,
+  type RunWorkflowSummary,
   setDesktopBridgeForTests,
   testOnlyMockDesktopBridge,
 } from "./lib/desktopBridge";
@@ -130,15 +131,49 @@ describe("desktop product flow", () => {
     );
   });
 
-  it("shows the creation stage, execution plan, and timestamped logs", async () => {
+  it("opens the article immediately and streams the writing Agent output", async () => {
     let finishWorkflow: (() => void) | undefined;
-    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
-    const runWorkflow = vi.spyOn(desktopBridge, "runWorkflow").mockImplementation(
+    let activityReadCount = 0;
+    const runWorkflow = vi.fn<DesktopBridge["runWorkflow"]>(
       (request) =>
-        new Promise((resolve) => {
-          finishWorkflow = () => void originalRunWorkflow(request).then(resolve);
+        new Promise<RunWorkflowSummary>((resolve) => {
+          finishWorkflow = () =>
+            void nativeTestBridge.runWorkflow(request).then(resolve);
         }),
     );
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      runWorkflow,
+      getWorkflowActivity: async () => {
+        activityReadCount += 1;
+        const events = [
+          {
+            id: "stream-start",
+            eventType: "run.node_started",
+            nodeId: "draft" as const,
+            createdAt: "2026-08-01T02:20:00.000Z",
+          },
+          {
+            id: "stream-delta",
+            eventType: "run.node_output_delta",
+            nodeId: "draft" as const,
+            createdAt: "2026-08-01T02:20:01.000Z",
+            draftDelta: "# 流式文章\\n\\n正文正在到达。",
+          },
+          {
+            id: "stream-complete",
+            eventType: "run.node_completed",
+            nodeId: "draft" as const,
+            createdAt: "2026-08-01T02:20:02.000Z",
+          },
+        ];
+        return {
+          runId: "streaming-run",
+          status: "running" as const,
+          events: activityReadCount === 1 ? events.slice(0, 2) : events,
+        };
+      },
+    });
     render(<App />);
     await waitForNativeRuntime();
 
@@ -147,11 +182,11 @@ describe("desktop product flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
-    expect(screen.getByText("正在保存创作要求")).toBeVisible();
-    expect(screen.getByText("写作 Agent")).toBeVisible();
-    expect(screen.getByText(/执行日志/)).toBeVisible();
-    await screen.findByText("多 Agent 工作流正在执行");
-    expect(screen.getByText("已向本地 Agent 运行时提交工作流")).toBeInTheDocument();
+    const editor = await screen.findByLabelText("Markdown 正文");
+    await waitFor(() => expect(activityReadCount).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect((editor as HTMLTextAreaElement).value).toContain("正文正在到达"),
+    );
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         agentInstructions: expect.arrayContaining([
@@ -162,7 +197,7 @@ describe("desktop product flow", () => {
     );
 
     finishWorkflow?.();
-    await screen.findByLabelText("Markdown 正文");
+    await screen.findByText(/文章已生成 · 修订/);
   });
 
   it("keeps the same article and offers a retry after workflow failure", async () => {
@@ -184,13 +219,14 @@ describe("desktop product flow", () => {
     expect(screen.getByText("失败原因：upstream timeout")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "重试本次生成" }));
 
-    await screen.findByLabelText("Markdown 正文");
+    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(2));
+    await screen.findByText(/文章已生成 · 修订/);
     expect(runWorkflow).toHaveBeenCalledTimes(2);
     expect(runWorkflow.mock.calls[1]?.[0].articleId).toBe(
       runWorkflow.mock.calls[0]?.[0].articleId,
     );
-    // The successful retry saves the initial brief, then persists the Markdown
-    // after the visual plan has inserted any required images.
+    // The initial brief is retained after failure. The retry persists only the
+    // final composed revision, preserving the same article identity.
     expect(saveDraft).toHaveBeenCalledTimes(2);
     await waitFor(() => {
       const stored = JSON.parse(
@@ -237,6 +273,8 @@ describe("desktop product flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
     const editor = await screen.findByLabelText("Markdown 正文");
+    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(generateImage).toHaveBeenCalledTimes(1));
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         disabledOptionalNodeIds: expect.not.arrayContaining(["visual"]),
@@ -252,8 +290,10 @@ describe("desktop product flow", () => {
       size: "1536x1024",
       model: "test-image-model",
     });
-    expect((editor as HTMLTextAreaElement).value).toContain(
-      "![自动生成的架构说明图](asset://generated-",
+    await waitFor(() =>
+      expect((editor as HTMLTextAreaElement).value).toContain(
+        "![自动生成的架构说明图](asset://generated-",
+      ),
     );
     expect((editor as HTMLTextAreaElement).value).not.toContain("data:image/");
     expect(saveDraft).toHaveBeenLastCalledWith(
@@ -304,6 +344,8 @@ describe("desktop product flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
     const editor = await screen.findByLabelText("Markdown 正文");
+    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(1));
+    await screen.findByText(/文章已生成 · 修订/);
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         visualComposition: {
@@ -356,6 +398,7 @@ describe("desktop product flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
     const editor = await screen.findByLabelText("Markdown 正文");
+    await screen.findByText(/文章已生成 · 修订/);
 
     fireEvent.change(editor, {
       target: { value: "# 新标题\n\n作者保留最终决定权。" },

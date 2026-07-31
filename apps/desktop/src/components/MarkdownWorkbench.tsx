@@ -10,7 +10,7 @@ import {
   MoreHorizontal,
   Quote,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -32,6 +32,11 @@ interface MarkdownWorkbenchProps {
   platforms: PlatformDefinition[];
   mediaAssets?: MediaAsset[];
   onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
+  onRequestImageInsert?: () => void;
+  pendingImageInsertion?: ImageInsertion | null;
+  onPendingImageInsertionHandled?: () => void;
+  streaming?: boolean;
+  contentReplacing?: boolean;
 }
 
 const editorModes: Array<{
@@ -55,8 +60,14 @@ export function MarkdownWorkbench({
   platforms,
   mediaAssets = [],
   onImageFileDrop,
+  onRequestImageInsert,
+  pendingImageInsertion,
+  onPendingImageInsertionHandled,
+  streaming = false,
+  contentReplacing = false,
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const selectionRef = useRef({ start: 0, end: 0 });
   const [isDroppingImage, setIsDroppingImage] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [imageDropError, setImageDropError] = useState<string | null>(null);
@@ -68,6 +79,7 @@ export function MarkdownWorkbench({
     if (!editor) return;
     const start = editor.selectionStart;
     const end = editor.selectionEnd;
+    selectionRef.current = { start, end };
     const selected = markdown.slice(start, end) || placeholder;
     onMarkdownChange(
       `${markdown.slice(0, start)}${prefix}${selected}${suffix}${markdown.slice(end)}`,
@@ -86,20 +98,27 @@ export function MarkdownWorkbench({
 
   const insertAtSelection = (value: string) => {
     const editor = editorRef.current;
-    if (!editor) return;
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
+    const start = editor ? editor.selectionStart : selectionRef.current.start;
+    const end = editor ? editor.selectionEnd : selectionRef.current.end;
     const before = markdown.slice(0, start);
     const after = markdown.slice(end);
     const prefix = before && !before.endsWith("\n") ? "\n\n" : "";
     const suffix = after && !after.startsWith("\n") ? "\n\n" : "";
     onMarkdownChange(`${before}${prefix}${value}${suffix}${after}`);
+    selectionRef.current = { start: start + prefix.length + value.length, end: start + prefix.length + value.length };
     window.requestAnimationFrame(() => {
+      if (!editor) return;
       editor.focus();
       const position = start + prefix.length + value.length;
       editor.setSelectionRange(position, position);
     });
   };
+
+  useEffect(() => {
+    if (!pendingImageInsertion) return;
+    insertAtSelection(`![${pendingImageInsertion.alt}](${pendingImageInsertion.src})`);
+    onPendingImageInsertionHandled?.();
+  }, [pendingImageInsertion]); // Selection is intentionally captured before the dialog takes focus.
 
   const importFiles = async (files: File[]) => {
     if (!onImageFileDrop) {
@@ -135,8 +154,15 @@ export function MarkdownWorkbench({
     void importFiles(Array.from(event.dataTransfer.files));
   };
 
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    event.preventDefault();
+    void importFiles(images);
+  };
+
   return (
-    <section className="markdown-workbench" aria-label="Markdown 编辑器">
+    <section className={`markdown-workbench${contentReplacing ? " is-content-replacing" : ""}`} aria-label="Markdown 编辑器">
       <div className="editor-toolbar">
         <div className="editor-toolbar__tools" aria-label="格式工具">
           <button
@@ -181,7 +207,7 @@ export function MarkdownWorkbench({
           </button>
           <button
             aria-label="插入图片"
-            onClick={() => applyMarkup("![图片说明](", ")", "https://")}
+            onClick={() => onRequestImageInsert?.()}
             title="插入图片"
             type="button"
           >
@@ -255,6 +281,19 @@ export function MarkdownWorkbench({
               }}
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleDrop}
+              onPaste={handlePaste}
+              onSelect={(event) => {
+                selectionRef.current = {
+                  start: event.currentTarget.selectionStart,
+                  end: event.currentTarget.selectionEnd,
+                };
+              }}
+              onBlur={(event) => {
+                selectionRef.current = {
+                  start: event.currentTarget.selectionStart,
+                  end: event.currentTarget.selectionEnd,
+                };
+              }}
               ref={editorRef}
               spellCheck="false"
               value={markdown}
@@ -283,6 +322,7 @@ export function MarkdownWorkbench({
         <span>{lines} 行</span>
         <span>{characters} 字</span>
         {isDroppingImage && <span className="editor-status__progress" role="status">正在导入图片</span>}
+        {streaming && <span className="editor-status__progress" role="status">写作 Agent 正在流式写入</span>}
         {imageDropError && <span className="editor-status__error" role="alert">{imageDropError}</span>}
       </footer>
     </section>

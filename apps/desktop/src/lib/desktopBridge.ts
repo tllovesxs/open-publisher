@@ -118,6 +118,8 @@ export interface WorkflowActivityEvent {
   eventType: string;
   nodeId: WorkflowNodeId | null;
   createdAt: string;
+  /** Bounded text chunk emitted only by the writing Agent. */
+  draftDelta?: string;
 }
 
 export interface WorkflowActivitySummary {

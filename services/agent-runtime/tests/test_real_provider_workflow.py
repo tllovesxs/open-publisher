@@ -26,6 +26,23 @@ class _JsonResponse:
         return self.payload
 
 
+class _StreamingResponse:
+    def __init__(self, lines: list[str]) -> None:
+        self.lines = lines
+
+    def __enter__(self) -> _StreamingResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self) -> list[str]:
+        return self.lines
+
+
 def test_workflow_persists_openai_compatible_output_as_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -47,7 +64,25 @@ def test_workflow_persists_openai_compatible_output_as_artifacts(
             }
         )
 
+    def stream(method: str, url: str, **kwargs: object) -> _StreamingResponse:
+        assert method == "POST"
+        calls.append({"url": url, **kwargs})
+        index = len(calls)
+        return _StreamingResponse(
+            [
+                (
+                    'data: {"model":"remote-text-model","choices":['
+                    '{"delta":{"content":"remote-output-'
+                    f'{index}'
+                    '"}}]}'
+                ),
+                'data: {"usage":{"prompt_tokens":10,"completion_tokens":4},"choices":[]}',
+                "data: [DONE]",
+            ]
+        )
+
     monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "stream", stream)
     app = create_app(
         Settings(data_dir=tmp_path / "runtime-data", api_token=TEST_API_TOKEN)
     )
@@ -88,3 +123,4 @@ def test_workflow_persists_openai_compatible_output_as_artifacts(
         f"{base_url}/chat/completions",
     ]
     assert all(call["json"]["model"] == "remote-text-model" for call in calls)
+    assert calls[0]["json"]["stream"] is True

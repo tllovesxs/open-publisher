@@ -58,7 +58,7 @@ class EventRecorder:
         )
 
 
-NodeEventRecorder = Callable[[str, str, str], None]
+NodeEventRecorder = Callable[[str, str, str, dict[str, object] | None], None]
 
 
 class WorkflowService:
@@ -107,16 +107,22 @@ class RunController:
         self.events = EventRecorder(repository)
         self.node_event_recorder = node_event_recorder
 
-    def _record_node_event(self, run_id: str, node_id: str, phase: str) -> None:
+    def _record_node_event(
+        self,
+        run_id: str,
+        node_id: str,
+        phase: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
         if self.node_event_recorder is not None:
-            self.node_event_recorder(run_id, node_id, phase)
+            self.node_event_recorder(run_id, node_id, phase, payload)
             return
         self.events.record(
             run_id=run_id,
             aggregate_type="workflow_run",
             aggregate_id=run_id,
             event_type=f"run.node_{phase}",
-            payload={"node_id": node_id},
+            payload={"node_id": node_id, **(payload or {})},
         )
         self.repository.commit()
 
@@ -270,10 +276,11 @@ class RunController:
                 ),
                 disabled_optional_node_ids=disabled_optional_node_ids,
                 max_parallel=policy.max_parallel,
-                on_node_event=lambda node_id, phase: self._record_node_event(
+                on_node_event=lambda node_id, phase, payload=None: self._record_node_event(
                     run.id,
                     node_id,
                     phase,
+                    payload,
                 ),
             )
             elapsed_seconds = monotonic() - workflow_started

@@ -9,8 +9,23 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { CreationLogEntry } from "./CreatePage";
 import type { Article, MediaAsset, PlatformDefinition, PlatformId } from "../types";
+import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
+
+interface WorkflowProgress {
+  articleId: string;
+  title: string;
+  detail: string;
+  value: number | null;
+}
+
+interface WorkflowFailure {
+  detail: string;
+  logs: CreationLogEntry[];
+  retryable: boolean;
+}
 
 interface ArticlesPageProps {
   articles: Article[];
@@ -34,6 +49,11 @@ interface ArticlesPageProps {
   onEditorModeChange: (mode: EditorMode) => void;
   onPlatformChange: (platform: PlatformId) => void;
   onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
+  writerStreaming: boolean;
+  workflowProgress: WorkflowProgress | null;
+  contentReplacing: boolean;
+  workflowFailure: WorkflowFailure | null;
+  onRetryWorkflow: () => void;
 }
 
 const statusLabel: Record<Article["status"], string> = {
@@ -65,8 +85,15 @@ export function ArticlesPage({
   onEditorModeChange,
   onPlatformChange,
   onImageFileDrop,
+  writerStreaming,
+  workflowProgress,
+  contentReplacing,
+  workflowFailure,
+  onRetryWorkflow,
 }: ArticlesPageProps) {
   const [query, setQuery] = useState("");
+  const [imageDialogOpen, setImageDialogOpen] = useState(false);
+  const [pendingImageInsertion, setPendingImageInsertion] = useState<ImageInsertion | null>(null);
   const filteredArticles = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return articles;
@@ -154,6 +181,7 @@ export function ArticlesPage({
               )}
             </div>
             <h1>{selectedArticle.title}</h1>
+            {writerStreaming && <span className="article-editor__streaming" role="status"><LoaderCircle className="spin" size={13} />写作 Agent 正在输出正文</span>}
           </div>
           <div className="article-editor__actions">
             <button
@@ -201,16 +229,81 @@ export function ArticlesPage({
         </header>
 
         <MarkdownWorkbench
+          contentReplacing={contentReplacing}
           dirty={dirty}
           editorMode={editorMode}
           markdown={markdown}
           onEditorModeChange={onEditorModeChange}
           onMarkdownChange={onMarkdownChange}
           onImageFileDrop={onImageFileDrop}
+          onPendingImageInsertionHandled={() => setPendingImageInsertion(null)}
+          onRequestImageInsert={() => setImageDialogOpen(true)}
           onPlatformChange={onPlatformChange}
           mediaAssets={mediaAssets}
           platforms={platforms}
           selectedPlatform={selectedPlatform}
+          pendingImageInsertion={pendingImageInsertion}
+          streaming={writerStreaming}
+        />
+        {workflowFailure && (
+          <aside className="article-workflow-failure" role="alert">
+            <div className="article-workflow-failure__summary">
+              <div>
+                <strong>文章生成失败</strong>
+                <p>{workflowFailure.detail}</p>
+              </div>
+              {workflowFailure.retryable && (
+                <button
+                  className="button button--primary"
+                  onClick={onRetryWorkflow}
+                  type="button"
+                >
+                  <Sparkles size={16} />
+                  重试本次生成
+                </button>
+              )}
+            </div>
+            <details className="article-workflow-failure__logs" open>
+              <summary>查看执行日志</summary>
+              <ol>
+                {workflowFailure.logs.slice(-8).map((entry) => (
+                  <li className={`is-${entry.tone}`} key={entry.id}>
+                    <time dateTime={new Date(entry.timestamp).toISOString()}>
+                      {new Intl.DateTimeFormat("zh-CN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      }).format(entry.timestamp)}
+                    </time>
+                    <span>{entry.message}</span>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          </aside>
+        )}
+        {workflowProgress?.articleId === selectedArticle.id && (
+          <aside aria-live="polite" className="article-progress" role="status">
+            <div>
+              <strong>{workflowProgress.title}</strong>
+              <span>{workflowProgress.detail}</span>
+            </div>
+            {workflowProgress.value !== null && (
+              <div aria-label={`${workflowProgress.value}%`} className="article-progress__track" role="progressbar" aria-valuemax={100} aria-valuemin={0} aria-valuenow={workflowProgress.value}>
+                <i style={{ transform: `scaleX(${workflowProgress.value / 100})` }} />
+              </div>
+            )}
+          </aside>
+        )}
+        <ImageInsertDialog
+          assets={mediaAssets}
+          onClose={() => setImageDialogOpen(false)}
+          onImportFile={async (file) => {
+            if (!onImageFileDrop) throw new Error("图片导入服务尚未连接。");
+            return onImageFileDrop(file);
+          }}
+          onInsert={setPendingImageInsertion}
+          open={imageDialogOpen}
         />
       </div>
     </section>

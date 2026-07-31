@@ -3,6 +3,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { MarkdownWorkbench } from "./MarkdownWorkbench";
+import { ImageInsertDialog } from "./ImageInsertDialog";
 
 const platforms = [
   { id: "csdn" as const, name: "CSDN", shortName: "CSDN", limit: "", status: "connected" as const },
@@ -62,5 +63,48 @@ describe("Markdown media support", () => {
     });
     await waitFor(() => expect(importImage).toHaveBeenCalledTimes(1));
     expect((screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value).toContain("![本地图片](https://cdn.example.com/local.png)");
+  });
+
+  it("imports a pasted image through the supplied async callback", async () => {
+    const importImage = vi.fn().mockResolvedValue({ alt: "剪贴板图片", src: "asset://media-pasted" });
+    render(<WorkbenchHarness onImageFileDrop={importImage} />);
+    const editor = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [new File(["image"], "pasted.png", { type: "image/png" })],
+      },
+    });
+    await waitFor(() => expect(importImage).toHaveBeenCalledTimes(1));
+    expect(editor.value).toContain("![剪贴板图片](asset://media-pasted)");
+  });
+
+  it("inserts a material-library image from the image dialog", () => {
+    const onInsert = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ImageInsertDialog
+        assets={[
+          {
+            id: "media-architecture",
+            name: "产品架构图",
+            alt: "三层产品架构",
+            description: "展示采集、编排、发布三层的数据流。",
+            src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==",
+            source: "uploaded",
+            createdAt: "刚刚",
+          },
+        ]}
+        onClose={onClose}
+        onImportFile={vi.fn()}
+        onInsert={onInsert}
+        open
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /产品架构图/ }));
+    expect(onInsert).toHaveBeenCalledWith({
+      alt: "三层产品架构",
+      src: "asset://media-architecture",
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
