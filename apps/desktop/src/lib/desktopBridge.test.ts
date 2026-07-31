@@ -1,7 +1,49 @@
-import { desktopBridge } from "./desktopBridge";
+import {
+  desktopBridge,
+  setDesktopBridgeForTests,
+  testOnlyMockDesktopBridge,
+} from "./desktopBridge";
 
-describe("desktopBridge browser fallback", () => {
-  it("keeps the frontend on the narrow Rust-shaped contract", async () => {
+describe("desktopBridge browser preview boundary", () => {
+  afterEach(() => {
+    setDesktopBridgeForTests(null);
+  });
+
+  it("does not simulate writes or Agent execution outside the desktop host", async () => {
+    const snapshot = await desktopBridge.runtimeSnapshot();
+    expect(snapshot).toMatchObject({
+      state: "standby",
+      bridgeMode: "interface_only",
+    });
+    expect(snapshot.detail).toContain("浏览器预览不能调用本地 Agent");
+    await expect(
+      desktopBridge.saveDraft({
+        articleId: "article-1",
+        baseRevision: null,
+        markdown: "# draft",
+      }),
+    ).rejects.toThrow(/桌面应用/);
+    await expect(
+      desktopBridge.runWorkflow({
+        articleId: "article-1",
+        revisionId: "revision-1",
+        topic: "Local-first",
+        disabledOptionalNodeIds: [],
+        agentInstructions: [],
+      }),
+    ).rejects.toThrow(/桌面应用/);
+    await expect(
+      desktopBridge.generateImage({
+        prompt: "A restrained editorial cover",
+        size: "1536x1024",
+        model: null,
+      }),
+    ).rejects.toThrow(/桌面应用/);
+    expect(await desktopBridge.listArticles()).toEqual([]);
+  });
+
+  it("keeps the test-only mock on the narrow Rust-shaped contract", async () => {
+    setDesktopBridgeForTests(testOnlyMockDesktopBridge);
     const snapshot = await desktopBridge.runtimeSnapshot();
     expect(snapshot.bridgeMode).toBe("interface_only");
     expect(snapshot).not.toHaveProperty("endpoint");

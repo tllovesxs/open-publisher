@@ -1,15 +1,56 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 import App from "./App";
-import { desktopBridge } from "./lib/desktopBridge";
+import {
+  type DesktopBridge,
+  desktopBridge,
+  setDesktopBridgeForTests,
+  testOnlyMockDesktopBridge,
+} from "./lib/desktopBridge";
+
+const nativeTestBridge: DesktopBridge = {
+  ...testOnlyMockDesktopBridge,
+  runtimeSnapshot: async () => ({
+    state: "ready",
+    bridgeMode: "python_sidecar",
+    generation: 1,
+    detail: "Test-only local Python sidecar.",
+  }),
+  ensureAgentRuntime: async () => ({
+    state: "ready",
+    bridgeMode: "python_sidecar",
+    generation: 1,
+    detail: "Test-only local Python sidecar.",
+  }),
+  modelConfiguration: async () => ({
+    name: "Test model",
+    baseUrl: "https://example.test/v1",
+    textModel: "test-text-model",
+    imageBaseUrl: null,
+    imageModel: null,
+    imageTrustedHosts: [],
+    timeoutSeconds: 30,
+    secretConfigured: true,
+    persistence: "session",
+  }),
+  testModelConnection: async () => ({
+    provider: "openai-compatible",
+    model: "test-text-model",
+    mocked: false,
+  }),
+};
+
+const waitForNativeRuntime = () => screen.findByText("test-text-model");
 
 describe("desktop product flow", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    setDesktopBridgeForTests(nativeTestBridge);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    setDesktopBridgeForTests(null);
   });
 
   it("exposes the focused content-production areas", async () => {
@@ -35,6 +76,7 @@ describe("desktop product flow", () => {
 
   it("creates an article from a brief and opens the generated revision", async () => {
     render(<App />);
+    await waitForNativeRuntime();
 
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "如何设计可靠的多平台发布流程" },
@@ -73,6 +115,7 @@ describe("desktop product flow", () => {
         }),
     );
     render(<App />);
+    await waitForNativeRuntime();
 
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "可观察的智能写作流程" },
@@ -105,6 +148,7 @@ describe("desktop product flow", () => {
       .mockRejectedValueOnce(new Error("upstream timeout"))
       .mockImplementation(originalRunWorkflow);
     render(<App />);
+    await waitForNativeRuntime();
 
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "失败后可恢复的写作流程" },
@@ -136,6 +180,7 @@ describe("desktop product flow", () => {
 
   it("edits and saves a local article revision", async () => {
     render(<App />);
+    await waitForNativeRuntime();
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "本地保存测试" },
     });
@@ -169,6 +214,7 @@ describe("desktop product flow", () => {
 
   it("extracts a reusable template from Markdown and saves it after review", async () => {
     render(<App />);
+    await waitForNativeRuntime();
     fireEvent.click(screen.getByRole("button", { name: "模板" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "从文章提取" }));
@@ -197,7 +243,7 @@ describe("desktop product flow", () => {
     fireEvent.change(keyInput, { target: { value: "test-session-secret-value" } });
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
 
-    expect(await screen.findByText("Mock 模型")).toBeVisible();
+    expect(await screen.findByText("连接成功")).toBeVisible();
     expect(screen.queryByText("test-session-secret-value")).toBeNull();
     expect(keyInput.type).toBe("password");
   });

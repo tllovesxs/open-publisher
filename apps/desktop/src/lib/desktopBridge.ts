@@ -352,7 +352,11 @@ const mockTemplateMarkdown = (sourceMarkdown: string) => {
   ].join("\n").trim();
 };
 
-const mockBridge: DesktopBridge = {
+/**
+ * In-memory bridge retained solely for unit tests. Production browser previews
+ * must use `browserPreviewBridge` below so they cannot appear to run agents.
+ */
+export const testOnlyMockDesktopBridge: DesktopBridge = {
   async runtimeSnapshot() {
     return {
       state: mockRuntimeState,
@@ -684,69 +688,70 @@ const tauriBridge: DesktopBridge = {
     invoke<ModelConnectionTestSummary>("test_model_connection"),
 };
 
+const DESKTOP_HOST_REQUIRED =
+  "浏览器预览不能调用本地 Agent。请在 Open Publisher 桌面应用中执行此操作。";
+
+const desktopHostRequired = (): Promise<never> =>
+  Promise.reject(new Error(DESKTOP_HOST_REQUIRED));
+
+/** Browser previews are read-only and deliberately cannot simulate execution. */
+const browserPreviewBridge: DesktopBridge = {
+  runtimeSnapshot: async () => ({
+    state: "standby",
+    bridgeMode: "interface_only",
+    generation: 0,
+    detail: "浏览器预览不能调用本地 Agent 或访问本地数据。请使用桌面应用。",
+  }),
+  ensureAgentRuntime: desktopHostRequired,
+  stopAgentRuntime: desktopHostRequired,
+  listArticles: async () => [],
+  saveDraft: desktopHostRequired,
+  runWorkflow: desktopHostRequired,
+  createPublishPlan: desktopHostRequired,
+  getPublishPlan: desktopHostRequired,
+  approvePublishPlan: desktopHostRequired,
+  enqueuePublishPlan: desktopHostRequired,
+  processPublishJob: desktopHostRequired,
+  generateImage: desktopHostRequired,
+  extractTemplate: desktopHostRequired,
+  listConnectionProfiles: async () => [],
+  createConnectionProfile: desktopHostRequired,
+  configureModel: desktopHostRequired,
+  modelConfiguration: async () => null,
+  testModelConnection: desktopHostRequired,
+};
+
+let testBridgeOverride: DesktopBridge | null = null;
+
+/** Test-only injection point. Never call this from application code. */
+export function setDesktopBridgeForTests(bridge: DesktopBridge | null) {
+  testBridgeOverride = bridge;
+}
+
+const activeBridge = () =>
+  testBridgeOverride ?? (isTauriHost() ? tauriBridge : browserPreviewBridge);
+
 /**
  * React only sees this narrow Rust command surface. It receives neither a Python
  * endpoint nor plaintext provider/platform credentials.
  */
 export const desktopBridge: DesktopBridge = {
-  runtimeSnapshot: () =>
-    isTauriHost() ? tauriBridge.runtimeSnapshot() : mockBridge.runtimeSnapshot(),
-  ensureAgentRuntime: () =>
-    isTauriHost() ? tauriBridge.ensureAgentRuntime() : mockBridge.ensureAgentRuntime(),
-  stopAgentRuntime: () =>
-    isTauriHost() ? tauriBridge.stopAgentRuntime() : mockBridge.stopAgentRuntime(),
-  listArticles: () =>
-    isTauriHost() ? tauriBridge.listArticles() : mockBridge.listArticles(),
-  saveDraft: (request) =>
-    isTauriHost() ? tauriBridge.saveDraft(request) : mockBridge.saveDraft(request),
-  runWorkflow: (request) =>
-    isTauriHost() ? tauriBridge.runWorkflow(request) : mockBridge.runWorkflow(request),
-  createPublishPlan: (request) =>
-    isTauriHost()
-      ? tauriBridge.createPublishPlan(request)
-      : mockBridge.createPublishPlan(request),
-  getPublishPlan: (request) =>
-    isTauriHost()
-      ? tauriBridge.getPublishPlan(request)
-      : mockBridge.getPublishPlan(request),
-  approvePublishPlan: (request) =>
-    isTauriHost()
-      ? tauriBridge.approvePublishPlan(request)
-      : mockBridge.approvePublishPlan(request),
-  enqueuePublishPlan: (request) =>
-    isTauriHost()
-      ? tauriBridge.enqueuePublishPlan(request)
-      : mockBridge.enqueuePublishPlan(request),
-  processPublishJob: (request) =>
-    isTauriHost()
-      ? tauriBridge.processPublishJob(request)
-      : mockBridge.processPublishJob(request),
-  generateImage: (request) =>
-    isTauriHost()
-      ? tauriBridge.generateImage(request)
-      : mockBridge.generateImage(request),
-  extractTemplate: (request) =>
-    isTauriHost()
-      ? tauriBridge.extractTemplate(request)
-      : mockBridge.extractTemplate(request),
-  listConnectionProfiles: () =>
-    isTauriHost()
-      ? tauriBridge.listConnectionProfiles()
-      : mockBridge.listConnectionProfiles(),
-  createConnectionProfile: (request) =>
-    isTauriHost()
-      ? tauriBridge.createConnectionProfile(request)
-      : mockBridge.createConnectionProfile(request),
-  configureModel: (request) =>
-    isTauriHost()
-      ? tauriBridge.configureModel(request)
-      : mockBridge.configureModel(request),
-  modelConfiguration: () =>
-    isTauriHost()
-      ? tauriBridge.modelConfiguration()
-      : mockBridge.modelConfiguration(),
-  testModelConnection: () =>
-    isTauriHost()
-      ? tauriBridge.testModelConnection()
-      : mockBridge.testModelConnection(),
+  runtimeSnapshot: () => activeBridge().runtimeSnapshot(),
+  ensureAgentRuntime: () => activeBridge().ensureAgentRuntime(),
+  stopAgentRuntime: () => activeBridge().stopAgentRuntime(),
+  listArticles: () => activeBridge().listArticles(),
+  saveDraft: (request) => activeBridge().saveDraft(request),
+  runWorkflow: (request) => activeBridge().runWorkflow(request),
+  createPublishPlan: (request) => activeBridge().createPublishPlan(request),
+  getPublishPlan: (request) => activeBridge().getPublishPlan(request),
+  approvePublishPlan: (request) => activeBridge().approvePublishPlan(request),
+  enqueuePublishPlan: (request) => activeBridge().enqueuePublishPlan(request),
+  processPublishJob: (request) => activeBridge().processPublishJob(request),
+  generateImage: (request) => activeBridge().generateImage(request),
+  extractTemplate: (request) => activeBridge().extractTemplate(request),
+  listConnectionProfiles: () => activeBridge().listConnectionProfiles(),
+  createConnectionProfile: (request) => activeBridge().createConnectionProfile(request),
+  configureModel: (request) => activeBridge().configureModel(request),
+  modelConfiguration: () => activeBridge().modelConfiguration(),
+  testModelConnection: () => activeBridge().testModelConnection(),
 };

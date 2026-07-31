@@ -70,7 +70,7 @@ export function MediaPage({
         <div>
           <span className="page-kicker">文章图片资产</span>
           <h1>素材库</h1>
-          <p>选中图片后，可以直接插入正在编辑的文章，或交给 AI 判断正文中的合适位置。</p>
+          <p>选中图片后，可以直接插入正在编辑的文章；也可以带回创作页，在下一次工作流运行时交给 AI 判断正文中的合适位置。</p>
         </div>
         <div className="page-heading__actions">
           <button className="button button--quiet" disabled={uploading} onClick={() => inputRef.current?.click()} type="button"><Upload aria-hidden="true" size={16} />{uploading ? "导入中" : "上传图片"}</button>
@@ -85,7 +85,7 @@ export function MediaPage({
         </div>
         <div>
           <button className="button button--quiet" disabled={selected.size === 0 || !hasSelectedArticle} onClick={onInsertInArticle} type="button"><ImagePlus aria-hidden="true" size={16} />插入当前文章</button>
-          <button className="button button--primary" disabled={selected.size === 0} onClick={onStartCreating} type="button"><WandSparkles aria-hidden="true" size={16} />让 AI 编排图片</button>
+          <button className="button button--primary" disabled={selected.size === 0} onClick={onStartCreating} type="button"><WandSparkles aria-hidden="true" size={16} />带入创作</button>
         </div>
       </section>
       {uploadError && <p className="media-upload-error" role="alert">{uploadError}</p>}
