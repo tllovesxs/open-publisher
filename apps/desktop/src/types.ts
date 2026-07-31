@@ -38,6 +38,11 @@ export interface StudioSkill {
   id: string;
   name: string;
   description: string;
+  /** Instruction text appended to an agent's working context. Never executable code. */
+  instructions: string;
+  /** Human-readable origin shown in the Skill library. */
+  source: string;
+  isBuiltIn: boolean;
 }
 
 export interface StudioAgent {
@@ -65,6 +70,6 @@ export interface MediaAsset {
   name: string;
   alt: string;
   src: string;
-  source: "builtin" | "uploaded" | "generated";
+  source: "uploaded" | "generated";
   createdAt: string;
 }

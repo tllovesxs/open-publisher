@@ -1,5 +1,5 @@
 import { Check, ImagePlus, Sparkles, Upload, WandSparkles } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { MediaAsset } from "../types";
 
 interface MediaPageProps {
@@ -7,6 +7,7 @@ interface MediaPageProps {
   selectedAssetIds: string[];
   hasSelectedArticle: boolean;
   onAdd: (asset: MediaAsset) => void;
+  onUpload?: (file: File) => Promise<MediaAsset>;
   onInsertInArticle: () => void;
   onSelectionChange: (assetIds: string[]) => void;
   onStartCreating: () => void;
@@ -17,11 +18,14 @@ export function MediaPage({
   selectedAssetIds,
   hasSelectedArticle,
   onAdd,
+  onUpload,
   onInsertInArticle,
   onSelectionChange,
   onStartCreating,
 }: MediaPageProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const selected = new Set(selectedAssetIds);
 
   const toggle = (assetId: string) => {
@@ -31,21 +35,33 @@ export function MediaPage({
     onSelectionChange([...next]);
   };
 
-  const upload = (file: File | undefined) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") return;
-      onAdd({
-        id: `upload-${Date.now()}`,
-        name: file.name.replace(/\.[^.]+$/, ""),
-        alt: file.name.replace(/\.[^.]+$/, ""),
-        src: reader.result,
-        source: "uploaded",
-        createdAt: "刚刚上传",
-      });
-    };
-    reader.readAsDataURL(file);
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setUploadError("请选择 PNG、JPEG、WebP、GIF 或 AVIF 图片。");
+      return;
+    }
+    if (!onUpload) {
+      setUploadError("图片导入服务尚未连接。");
+      return;
+    }
+    setUploading(true);
+    setUploadError(null);
+    try {
+      onAdd(await onUpload(file));
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "图片导入失败，请重试。");
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const startDrag = (event: React.DragEvent<HTMLElement>, asset: MediaAsset) => {
+    const markdown = `![${asset.alt || asset.name}](${asset.src})`;
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-open-publisher-markdown-image", markdown);
+    event.dataTransfer.setData("text/plain", markdown);
   };
 
   return (
@@ -57,8 +73,8 @@ export function MediaPage({
           <p>选中图片后，可以直接插入正在编辑的文章，或交给 AI 判断正文中的合适位置。</p>
         </div>
         <div className="page-heading__actions">
-          <button className="button button--quiet" onClick={() => inputRef.current?.click()} type="button"><Upload aria-hidden="true" size={16} />上传图片</button>
-          <input accept="image/*" className="visually-hidden" onChange={(event) => upload(event.target.files?.[0])} ref={inputRef} type="file" />
+          <button className="button button--quiet" disabled={uploading} onClick={() => inputRef.current?.click()} type="button"><Upload aria-hidden="true" size={16} />{uploading ? "导入中" : "上传图片"}</button>
+          <input accept="image/png,image/jpeg,image/webp,image/gif,image/avif" className="visually-hidden" disabled={uploading} onChange={(event) => void upload(event.target.files?.[0])} ref={inputRef} type="file" />
         </div>
       </header>
 
@@ -72,17 +88,19 @@ export function MediaPage({
           <button className="button button--primary" disabled={selected.size === 0} onClick={onStartCreating} type="button"><WandSparkles aria-hidden="true" size={16} />让 AI 编排图片</button>
         </div>
       </section>
+      {uploadError && <p className="media-upload-error" role="alert">{uploadError}</p>}
 
       <div className="media-grid" aria-label="图片素材">
         {assets.map((asset) => (
-          <article className={`media-card${selected.has(asset.id) ? " is-selected" : ""}`} key={asset.id}>
+          <article className={`media-card${selected.has(asset.id) ? " is-selected" : ""}`} draggable onDragStart={(event) => startDrag(event, asset)} key={asset.id}>
             <button aria-label={`选择${asset.name}`} className="media-card__image" onClick={() => toggle(asset.id)} type="button">
               <img alt={asset.alt} src={asset.src} />
               {selected.has(asset.id) && <span className="media-card__selected"><Check aria-hidden="true" size={16} /></span>}
             </button>
             <div className="media-card__meta">
               <strong>{asset.name}</strong>
-              <span>{asset.source === "builtin" ? "内置素材" : asset.source === "generated" ? "AI 生成" : "本地上传"} · {asset.createdAt}</span>
+              <span>{asset.source === "generated" ? "AI 生成" : "本地上传"} · {asset.createdAt}</span>
+              <small>拖入文章即可插入</small>
             </div>
           </article>
         ))}

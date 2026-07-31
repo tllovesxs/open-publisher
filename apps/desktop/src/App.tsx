@@ -21,10 +21,9 @@ import { TemplatesPage } from "./components/TemplatesPage";
 import {
   availableSkills,
   defaultAgents,
-  defaultMediaAssets,
   defaultTemplates,
 } from "./data/contentStudio";
-import { articles as browserExamples, platforms } from "./data/mock";
+import { platforms } from "./data/mock";
 import {
   desktopBridge,
   type ConfigureModelRequest,
@@ -34,6 +33,8 @@ import {
   type PublishPlanSummary,
   type PublishReceiptSummary,
   type RuntimeSnapshot,
+  type WorkflowAgentInstruction,
+  type WorkflowNodeId,
   type RunWorkflowSummary,
   type StoredArticleSummary,
 } from "./lib/desktopBridge";
@@ -44,6 +45,7 @@ import type {
   NavKey,
   PlatformId,
   StudioAgent,
+  StudioSkill,
 } from "./types";
 
 type Theme = "light" | "dark";
@@ -62,21 +64,41 @@ interface FailedCreationContext {
 
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
 const AGENTS_STORAGE_KEY = "open-publisher-studio-agents";
+const SKILLS_STORAGE_KEY = "open-publisher-studio-skills";
 const TEMPLATES_STORAGE_KEY = "open-publisher-studio-templates";
 const MEDIA_STORAGE_KEY = "open-publisher-studio-media";
+const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024;
+const SUPPORTED_LOCAL_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
+const OPTIONAL_WORKFLOW_NODE_IDS: DisabledOptionalNodeId[] = [
+  "research",
+  "outline",
+  "natural-style",
+  "review",
+  "visual",
+];
+
+function isOptionalWorkflowNodeId(
+  value: string | undefined,
+): value is DisabledOptionalNodeId {
+  return Boolean(
+    value && OPTIONAL_WORKFLOW_NODE_IDS.includes(value as DisabledOptionalNodeId),
+  );
+}
+
+function isWorkflowNodeId(value: string | undefined): value is WorkflowNodeId {
+  return value === "draft" || value === "risk" || isOptionalWorkflowNodeId(value);
+}
 
 function creationAgentLabels(
-  agents: StudioAgent[],
-  disabledNodeIds: DisabledOptionalNodeId[],
+  agents: WorkflowAgentInstruction[],
 ) {
-  const disabled = new Set(disabledNodeIds);
-  return agents
-    .filter(
-      (agent) =>
-        agent.enabled &&
-        (!agent.runtimeNodeId || !disabled.has(agent.runtimeNodeId as DisabledOptionalNodeId)),
-    )
-    .map((agent) => agent.name);
+  return agents.map((agent) => agent.name);
 }
 
 function loadStudioValue<T>(key: string, fallback: T): T {
@@ -86,6 +108,159 @@ function loadStudioValue<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function isStoredSkill(value: unknown): value is StudioSkill {
+  if (!value || typeof value !== "object") return false;
+  const skill = value as Partial<StudioSkill>;
+  return (
+    typeof skill.id === "string" &&
+    typeof skill.name === "string" &&
+    typeof skill.description === "string" &&
+    typeof skill.instructions === "string" &&
+    typeof skill.source === "string" &&
+    skill.isBuiltIn === false
+  );
+}
+
+function loadCustomSkills() {
+  const stored = loadStudioValue<unknown>(SKILLS_STORAGE_KEY, []);
+  return Array.isArray(stored) ? stored.filter(isStoredSkill) : [];
+}
+
+function normalizeStudioAgents(value: unknown): StudioAgent[] {
+  const stored = Array.isArray(value) ? value : [];
+  const byId = new Map(
+    stored
+      .filter((agent): agent is StudioAgent => Boolean(agent && typeof agent === "object" && typeof (agent as StudioAgent).id === "string"))
+      .map((agent) => [agent.id, agent]),
+  );
+  return defaultAgents.map((defaultAgent) => {
+    const saved = byId.get(defaultAgent.id);
+    if (!saved) return { ...defaultAgent, skillIds: [...defaultAgent.skillIds] };
+    return {
+      ...defaultAgent,
+      name: typeof saved.name === "string" ? saved.name.slice(0, 120) : defaultAgent.name,
+      role: typeof saved.role === "string" ? saved.role.slice(0, 120) : defaultAgent.role,
+      description:
+        typeof saved.description === "string"
+          ? saved.description.slice(0, 500)
+          : defaultAgent.description,
+      prompt:
+        typeof saved.prompt === "string" ? saved.prompt.slice(0, 6000) : defaultAgent.prompt,
+      skillIds: Array.isArray(saved.skillIds)
+        ? saved.skillIds.filter((id): id is string => typeof id === "string").slice(0, 12)
+        : [...defaultAgent.skillIds],
+      enabled: typeof saved.enabled === "boolean" ? saved.enabled : defaultAgent.enabled,
+      // Node ownership is a fixed workflow contract, not a user-editable field.
+      runtimeNodeId: defaultAgent.runtimeNodeId,
+    };
+  });
+}
+
+function isStoredMediaAsset(value: unknown): value is MediaAsset {
+  if (!value || typeof value !== "object") return false;
+  const asset = value as Partial<MediaAsset>;
+  return (
+    typeof asset.id === "string" &&
+    typeof asset.name === "string" &&
+    typeof asset.alt === "string" &&
+    typeof asset.src === "string" &&
+    (asset.source === "uploaded" || asset.source === "generated") &&
+    typeof asset.createdAt === "string"
+  );
+}
+
+function loadMediaAssets() {
+  const stored = loadStudioValue<unknown>(MEDIA_STORAGE_KEY, []);
+  return Array.isArray(stored) ? stored.filter(isStoredMediaAsset) : [];
+}
+
+function newLocalId(prefix: string) {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function baseName(filename: string) {
+  return (
+    filename
+      .replace(/\.[^.]+$/, "")
+      .replace(/[\[\]\r\n]+/g, " ")
+      .trim()
+      .slice(0, 100) || "本地图片"
+  );
+}
+
+function readLocalImage(file: File): Promise<string> {
+  if (!SUPPORTED_LOCAL_IMAGE_TYPES.has(file.type)) {
+    return Promise.reject(new Error("请选择 PNG、JPEG、WebP、GIF 或 AVIF 图片。"));
+  }
+  if (file.size === 0 || file.size > MAX_LOCAL_IMAGE_BYTES) {
+    return Promise.reject(new Error("单张图片需小于 2 MB，方便安全地保存在本机素材库。"));
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("无法读取这张图片，请重新选择。"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string" || !reader.result.startsWith("data:image/")) {
+        reject(new Error("图片格式无效，请重新选择。"));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function assetReference(asset: MediaAsset) {
+  return `asset://${asset.id}`;
+}
+
+function resolveAssetReferences(markdown: string, assets: MediaAsset[]) {
+  const sourceByReference = new Map(
+    assets.map((asset) => [assetReference(asset), asset.src]),
+  );
+  return markdown.replace(/asset:\/\/[a-z0-9_-]+/gi, (reference) =>
+    sourceByReference.get(reference) ?? reference,
+  );
+}
+
+function buildWorkflowAgentInstructions(
+  agents: StudioAgent[],
+  skills: StudioSkill[],
+): WorkflowAgentInstruction[] {
+  const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
+  return agents
+    .filter((agent) => agent.enabled && isWorkflowNodeId(agent.runtimeNodeId))
+    .map((agent) => ({
+      id: agent.id,
+      name: agent.name.trim(),
+      role: agent.role.trim(),
+      nodeId: agent.runtimeNodeId as WorkflowNodeId,
+      prompt: agent.prompt.trim(),
+      skills: agent.skillIds
+        .map((skillId) => skillsById.get(skillId))
+        .filter((skill): skill is StudioSkill => Boolean(skill))
+        .map((skill) => ({
+          id: skill.id,
+          name: skill.name,
+          instructions: skill.instructions,
+        })),
+    }))
+    .filter(
+      (agent) =>
+        Boolean(agent.id) &&
+        Boolean(agent.name) &&
+        Boolean(agent.role) &&
+        Boolean(agent.prompt),
+    );
+}
+
+function disabledOptionalNodesFor(agents: StudioAgent[]): DisabledOptionalNodeId[] {
+  return agents.flatMap((agent) =>
+    !agent.enabled && isOptionalWorkflowNodeId(agent.runtimeNodeId)
+      ? [agent.runtimeNodeId]
+      : [],
+  );
 }
 
 function sanitizeActivityMessage(message: string) {
@@ -214,17 +389,8 @@ function buildCreationSeed(request: CreationRequest) {
     ? `\n\n## 写作结构\n\n请按「${request.template.name}」的章节组织正文。不要输出花括号占位符、模板说明或创作要求。\n\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}`
     : "";
   const images = request.imageAssets.length
-    ? `\n\n## 已选图片素材\n\n${request.imageAssets
-        .map((asset) => `![${asset.alt}](${asset.src})`)
-        .join("\n\n")}`
-    : "";
-  const agentInstructions = request.agents.filter((agent) => agent.enabled).length
-    ? `\n\n## 本次智能体工作规则\n\n${request.agents
-        .filter((agent) => agent.enabled)
-        .map(
-          (agent) =>
-            `### ${agent.name}（${agent.role}）\n${agent.prompt}\n已加载 Skill：${agent.skillIds.join("、") || "无"}`,
-        )
+    ? `\n\n## 已选图片素材\n\n以下图片保存在作者本机。仅在能帮助读者理解时，保留对应的 Markdown 图片标记并放到合适的小节；不要编造图片地址或添加未提供的图片。\n\n${request.imageAssets
+        .map((asset) => `![${asset.alt}](${assetReference(asset)})`)
         .join("\n\n")}`
     : "";
   return `# ${title}
@@ -235,7 +401,7 @@ function buildCreationSeed(request: CreationRequest) {
 - 类型：${request.contentType}
 - 风格：${request.tone}
 - 篇幅：${request.length}
-${references}${template}${images}${agentInstructions}`.trim();
+${references}${template}${images}`.trim();
 }
 
 export default function App() {
@@ -276,8 +442,9 @@ export default function App() {
     useState<FailedCreationContext | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [studioAgents, setStudioAgents] = useState<StudioAgent[]>(() =>
-    loadStudioValue(AGENTS_STORAGE_KEY, defaultAgents),
+    normalizeStudioAgents(loadStudioValue<unknown>(AGENTS_STORAGE_KEY, defaultAgents)),
   );
+  const [customSkills, setCustomSkills] = useState<StudioSkill[]>(loadCustomSkills);
   const [templates, setTemplates] = useState<MarkdownTemplate[]>(() =>
     loadStudioValue(TEMPLATES_STORAGE_KEY, defaultTemplates),
   );
@@ -285,9 +452,14 @@ export default function App() {
     () => defaultTemplates[0]?.id ?? null,
   );
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>(() =>
-    loadStudioValue(MEDIA_STORAGE_KEY, defaultMediaAssets),
+    loadMediaAssets(),
   );
   const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
+
+  const studioSkills = useMemo(
+    () => [...availableSkills, ...customSkills],
+    [customSkills],
+  );
 
   const selectedArticle =
     articleItems.find((article) => article.id === selectedArticleId) ?? null;
@@ -331,12 +503,7 @@ export default function App() {
         ]);
         if (cancelled) return;
         setModelConfiguration(configuration);
-        const loaded =
-          storedArticles.length > 0
-            ? storedArticles.map(storedArticleToArticle)
-            : snapshot.bridgeMode === "interface_only"
-              ? browserExamples
-              : [];
+        const loaded = storedArticles.map(storedArticleToArticle);
         setArticleItems((current) => [
           ...current,
           ...loaded.filter(
@@ -396,6 +563,10 @@ export default function App() {
   }, [studioAgents]);
 
   useEffect(() => {
+    window.localStorage.setItem(SKILLS_STORAGE_KEY, JSON.stringify(customSkills));
+  }, [customSkills]);
+
+  useEffect(() => {
     window.localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       setSelectedTemplateId(templates[0]?.id ?? null);
@@ -403,7 +574,11 @@ export default function App() {
   }, [selectedTemplateId, templates]);
 
   useEffect(() => {
-    window.localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(mediaAssets));
+    try {
+      window.localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(mediaAssets));
+    } catch {
+      setToast("素材库空间不足：本次图片仍可使用，但关闭应用后无法保留。请删除不需要的图片后重试。");
+    }
     setSelectedMediaIds((current) => current.filter((id) => mediaAssets.some((asset) => asset.id === id)));
   }, [mediaAssets]);
 
@@ -495,6 +670,32 @@ export default function App() {
     setToast(`已插入 ${selectedMedia.length} 张图片，请在编辑器中调整位置和说明`);
   };
 
+  const createLocalMediaAsset = async (file: File): Promise<MediaAsset> => {
+    const src = await readLocalImage(file);
+    const name = baseName(file.name);
+    return {
+      id: newLocalId("media"),
+      name,
+      alt: name,
+      src,
+      source: "uploaded",
+      createdAt: "刚刚导入",
+    };
+  };
+
+  const addMediaAsset = (asset: MediaAsset) => {
+    setMediaAssets((current) => [
+      asset,
+      ...current.filter((existing) => existing.id !== asset.id),
+    ]);
+  };
+
+  const importImageIntoArticle = async (file: File) => {
+    const asset = await createLocalMediaAsset(file);
+    addMediaAsset(asset);
+    return { alt: asset.alt, src: asset.src };
+  };
+
   const persistRevision = async (
     articleId: string,
     markdown: string,
@@ -553,14 +754,15 @@ export default function App() {
     summary: RunWorkflowSummary,
     channels?: PlatformId[],
   ) => {
-    const nextTitle = titleFromMarkdown(summary.outputMarkdown);
+    const outputMarkdown = resolveAssetReferences(summary.outputMarkdown, mediaAssets);
+    const nextTitle = titleFromMarkdown(outputMarkdown);
     setRevisionIds((current) => ({
       ...current,
       [articleId]: summary.outputRevisionId,
     }));
     setDrafts((current) => ({
       ...current,
-      [articleId]: summary.outputMarkdown,
+      [articleId]: outputMarkdown,
     }));
     setArticleItems((current) =>
       current.map((article) =>
@@ -568,11 +770,11 @@ export default function App() {
           ? {
               ...article,
               title: nextTitle,
-              deck: deckFromMarkdown(summary.outputMarkdown),
-              markdown: summary.outputMarkdown,
+              deck: deckFromMarkdown(outputMarkdown),
+              markdown: outputMarkdown,
               status: "review",
               updatedAt: "刚刚",
-              wordCount: summary.outputMarkdown.replace(/\s/g, "").length,
+              wordCount: outputMarkdown.replace(/\s/g, "").length,
               channels: channels ?? article.channels,
               revisionId: summary.outputRevisionId,
               revisionNumber: summary.outputRevisionNumber,
@@ -592,6 +794,7 @@ export default function App() {
     markdown: string,
     disabledNodeIds: DisabledOptionalNodeId[],
     channels?: PlatformId[],
+    agentInstructions = buildWorkflowAgentInstructions(studioAgents, studioSkills),
   ) => {
     const revisionId = await ensureRevision(article.id, markdown);
     const summary = await desktopBridge.runWorkflow({
@@ -599,6 +802,7 @@ export default function App() {
       revisionId,
       topic: article.deck || article.title,
       disabledOptionalNodeIds: disabledNodeIds,
+      agentInstructions,
     });
     applyWorkflowResult(article.id, summary, channels);
     const snapshot = await desktopBridge.runtimeSnapshot();
@@ -614,6 +818,8 @@ export default function App() {
   ) => {
     const startedAt = Date.now();
     const previousLogs = retrying ? (creationActivity?.logs ?? []) : [];
+    const agentInstructions =
+      request.agentInstructions ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
     setCreatingArticle(true);
     setWorkflowRunning(true);
     setFailedCreationContext(null);
@@ -622,7 +828,7 @@ export default function App() {
       phase: "正在保存创作要求",
       startedAt,
       elapsedSeconds: 0,
-      agentLabels: creationAgentLabels(studioAgents, request.disabledNodeIds),
+      agentLabels: creationAgentLabels(agentInstructions),
       logs: [
         ...previousLogs,
         activityLog(
@@ -662,6 +868,7 @@ export default function App() {
         revisionId,
         topic: article.deck || article.title,
         disabledOptionalNodeIds: request.disabledNodeIds,
+        agentInstructions,
       });
       applyWorkflowResult(article.id, summary, request.platforms);
       setRuntime(await desktopBridge.runtimeSnapshot());
@@ -730,12 +937,11 @@ export default function App() {
 
   const createFromBrief = (request: CreationRequest) => {
     if (creatingArticle || workflowRunning) return;
-    const agentDisabledNodes = studioAgents
-      .filter((agent) => !agent.enabled && agent.runtimeNodeId)
-      .map((agent) => agent.runtimeNodeId as DisabledOptionalNodeId);
-    const normalizedRequest = {
+    const agentDisabledNodes = disabledOptionalNodesFor(studioAgents);
+    const normalizedRequest: CreationRequest = {
       ...request,
       disabledNodeIds: [...new Set([...request.disabledNodeIds, ...agentDisabledNodes])],
+      agentInstructions: buildWorkflowAgentInstructions(studioAgents, studioSkills),
     };
     const id = `article-${Date.now()}`;
     const markdown = buildCreationSeed(normalizedRequest);
@@ -810,9 +1016,7 @@ export default function App() {
         [
           ...new Set([
             ...disabledNodes,
-            ...studioAgents
-              .filter((agent) => !agent.enabled && agent.runtimeNodeId)
-              .map((agent) => agent.runtimeNodeId as DisabledOptionalNodeId),
+            ...disabledOptionalNodesFor(studioAgents),
           ]),
         ],
       );
@@ -834,15 +1038,35 @@ export default function App() {
         size: "1536x1024",
         model: modelConfiguration?.imageModel ?? null,
       });
+      if (result.images.length === 0) {
+        throw new Error("生图服务没有返回可保存的图片数据");
+      }
+      const createdAssets = result.images.map((image, index) => ({
+        id: `generated-${image.id}`,
+        name: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 120),
+        alt: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 160),
+        src: image.dataUrl,
+        source: "generated" as const,
+        createdAt: "刚刚生成",
+      }));
+      setMediaAssets((current) => [
+        ...createdAssets,
+        ...current.filter(
+          (asset) => !createdAssets.some((created) => created.id === asset.id),
+        ),
+      ]);
+      setSelectedMediaIds((current) => [
+        ...new Set([...current, ...createdAssets.map((asset) => asset.id)]),
+      ]);
       setGeneratedImages((current) => ({
         ...current,
         [selectedArticle.id]:
-          (current[selectedArticle.id] ?? 0) + result.artifactCount,
+          (current[selectedArticle.id] ?? 0) + createdAssets.length,
       }));
       setToast(
         result.mocked
-          ? "已生成本地演示配图"
-          : `已生成 ${result.artifactCount} 张配图 · ${result.model}`,
+          ? "已生成测试配图并加入本机素材库"
+          : `已生成 ${createdAssets.length} 张配图并加入素材库 · ${result.model}`,
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -1068,6 +1292,7 @@ export default function App() {
             onCreate={createBlankArticle}
             onEditorModeChange={setEditorMode}
             onGenerateImage={() => void generateImage()}
+            onImageFileDrop={importImageIntoArticle}
             onMarkdownChange={updateArticleMarkdown}
             onPlatformChange={setSelectedPlatform}
             onRunWorkflow={() => void improveCurrentArticle()}
@@ -1108,7 +1333,8 @@ export default function App() {
           <AgentsPage
             agents={studioAgents}
             onChange={setStudioAgents}
-            skills={availableSkills}
+            onSkillsChange={(skills) => setCustomSkills(skills.filter(isStoredSkill))}
+            skills={studioSkills}
           />
         );
       case "templates":
@@ -1127,10 +1353,11 @@ export default function App() {
           <MediaPage
             assets={mediaAssets}
             hasSelectedArticle={Boolean(selectedArticle)}
-            onAdd={(asset) => setMediaAssets((current) => [asset, ...current])}
+            onAdd={addMediaAsset}
             onInsertInArticle={insertSelectedMediaInArticle}
             onSelectionChange={setSelectedMediaIds}
             onStartCreating={() => navigate("create")}
+            onUpload={createLocalMediaAsset}
             selectedAssetIds={selectedMediaIds}
           />
         );

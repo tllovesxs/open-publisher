@@ -70,6 +70,29 @@ pub struct RunWorkflowRequest {
     pub topic: String,
     #[serde(default)]
     pub disabled_optional_node_ids: Vec<String>,
+    #[serde(default)]
+    pub agent_instructions: Vec<WorkflowAgentInstruction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkflowSkillInstruction {
+    pub id: String,
+    pub name: String,
+    pub instructions: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkflowAgentInstruction {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    #[serde(rename = "node_id", alias = "nodeId")]
+    pub node_id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub skills: Vec<WorkflowSkillInstruction>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -193,6 +216,15 @@ pub struct GenerateImageSummary {
     pub mocked: bool,
     pub remote_urls_ignored: usize,
     pub media_types: Vec<String>,
+    pub images: Vec<GeneratedImageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageSummary {
+    pub id: String,
+    pub media_type: String,
+    pub data_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -452,6 +484,7 @@ struct StartRunPolicyWire<'a> {
     max_wall_clock_seconds: u16,
     allow_remote_publish: bool,
     disabled_optional_node_ids: &'a [String],
+    agent_instructions: &'a [WorkflowAgentInstruction],
 }
 
 #[derive(Debug, Serialize)]
@@ -642,7 +675,11 @@ struct ProcessPublishJobWire {
 
 #[derive(Debug, Deserialize)]
 struct GeneratedArtifactWire {
+    id: String,
+    kind: String,
     media_type: String,
+    size_bytes: usize,
+    content_base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1259,6 +1296,7 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
                 max_wall_clock_seconds: 900,
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &request.disabled_optional_node_ids,
+                agent_instructions: &request.agent_instructions,
             },
         };
         let run: WorkflowRunWire = self.post_json(&connection, ApiRoute::Runs, &payload)?;
@@ -1703,6 +1741,77 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
         })
     {
         return Err("workflow disabled node selection is invalid".to_owned());
+    }
+    if request.agent_instructions.len() > 12 {
+        return Err("workflow can include at most twelve Agent instructions".to_owned());
+    }
+    let mut agent_ids = HashSet::new();
+    let mut total_instruction_characters = 0usize;
+    for agent in &request.agent_instructions {
+        validate_instruction_identifier(&agent.id, "Agent")?;
+        if !agent_ids.insert(agent.id.as_str()) {
+            return Err("workflow Agent instruction ids must be unique".to_owned());
+        }
+        validate_instruction_text(&agent.name, "Agent name", 120)?;
+        validate_instruction_text(&agent.role, "Agent role", 120)?;
+        validate_instruction_text(&agent.prompt, "Agent prompt", 6_000)?;
+        if !matches!(
+            agent.node_id.as_str(),
+            "research" | "outline" | "draft" | "natural-style" | "review" | "risk" | "visual"
+        ) {
+            return Err("workflow Agent node assignment is invalid".to_owned());
+        }
+        if agent.skills.len() > 12 {
+            return Err("an Agent can load at most twelve Skills".to_owned());
+        }
+        let mut skill_ids = HashSet::new();
+        total_instruction_characters +=
+            agent.name.chars().count() + agent.role.chars().count() + agent.prompt.chars().count();
+        for skill in &agent.skills {
+            validate_instruction_identifier(&skill.id, "Skill")?;
+            if !skill_ids.insert(skill.id.as_str()) {
+                return Err("Agent Skill ids must be unique".to_owned());
+            }
+            validate_instruction_text(&skill.name, "Skill name", 120)?;
+            validate_instruction_text(&skill.instructions, "Skill instructions", 6_000)?;
+            total_instruction_characters +=
+                skill.name.chars().count() + skill.instructions.chars().count();
+        }
+    }
+    if total_instruction_characters > 48_000 {
+        return Err("workflow Agent instruction snapshot exceeds 48000 characters".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_instruction_identifier(value: &str, kind: &str) -> Result<(), String> {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return Err(format!("{kind} id is required"));
+    };
+    if !first.is_ascii_lowercase()
+        || value.len() > 100
+        || characters.any(|character| {
+            !(character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-'))
+        })
+    {
+        return Err(format!("{kind} id is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_instruction_text(value: &str, kind: &str, maximum: usize) -> Result<(), String> {
+    if value.trim().is_empty()
+        || value.chars().count() > maximum
+        || value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    {
+        return Err(format!(
+            "{kind} must contain visible text within the allowed limit"
+        ));
     }
     Ok(())
 }
@@ -2284,37 +2393,59 @@ fn summarize_image_generation(
     if response.artifacts.len() > 4 || response.remote_urls_ignored > 100 {
         return Err("local Python runtime returned an invalid image summary".to_owned());
     }
-    let media_types = response
-        .artifacts
-        .into_iter()
-        .map(|artifact| artifact.media_type)
-        .collect::<Vec<_>>();
-    if media_types.iter().any(|media_type| {
-        !matches!(
-            media_type.as_str(),
-            "image/png"
-                | "image/jpeg"
-                | "image/gif"
-                | "image/webp"
-                | "image/avif"
-                | "image/svg+xml"
-        )
-    }) {
-        return Err("local Python runtime returned an unsupported image media type".to_owned());
+    let mut images = Vec::with_capacity(response.artifacts.len());
+    for artifact in response.artifacts {
+        if artifact.kind != "image.generated"
+            || artifact.size_bytes == 0
+            || artifact.size_bytes > 10 * 1024 * 1024
+            || !matches!(
+                artifact.media_type.as_str(),
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+            )
+            || !valid_base64_payload(&artifact.content_base64)
+        {
+            return Err("local Python runtime returned an invalid generated image".to_owned());
+        }
+        let id = validate_backend_id(artifact.id, "generated image")?;
+        images.push(GeneratedImageSummary {
+            id,
+            data_url: format!(
+                "data:{};base64,{}",
+                artifact.media_type, artifact.content_base64
+            ),
+            media_type: artifact.media_type,
+        });
     }
-    if media_types.is_empty() {
+    if images.is_empty() {
         return Err(
             "image provider returned no storable bytes; URL-only output was ignored".to_owned(),
         );
     }
+    let media_types = images
+        .iter()
+        .map(|image| image.media_type.clone())
+        .collect::<Vec<_>>();
     Ok(GenerateImageSummary {
-        artifact_count: media_types.len(),
+        artifact_count: images.len(),
         provider,
         model,
         mocked: response.mocked,
         remote_urls_ignored: response.remote_urls_ignored,
         media_types,
+        images,
     })
+}
+
+fn valid_base64_payload(value: &str) -> bool {
+    if value.len() < 4 || value.len() > 14_000_000 || value.len() % 4 != 0 {
+        return false;
+    }
+    let padding_start = value.find('=').unwrap_or(value.len());
+    let padding = &value[padding_start..];
+    value[..padding_start]
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+        && matches!(padding, "" | "=" | "==")
 }
 
 fn has_template_placeholder(markdown: &str) -> bool {
@@ -2396,7 +2527,8 @@ mod tests {
         GenerateImagesRequestWire, HealthResponseWire, IdWire, ProcessPublishJobRequest,
         ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
         PythonSidecarSupervisor, RunWorkflowRequest, SaveDraftRequest, SidecarSupervisor,
-        StartRunPolicyWire, StartRunRequestWire, WorkflowRunWire, WorkflowWire,
+        StartRunPolicyWire, StartRunRequestWire, WorkflowAgentInstruction, WorkflowRunWire,
+        WorkflowSkillInstruction, WorkflowWire,
     };
 
     #[test]
@@ -2428,6 +2560,18 @@ mod tests {
         );
 
         let disabled_optional_node_ids = vec!["research".to_owned()];
+        let agent_instructions = vec![WorkflowAgentInstruction {
+            id: "writer".to_owned(),
+            name: "写作 Agent".to_owned(),
+            role: "主笔".to_owned(),
+            node_id: "draft".to_owned(),
+            prompt: "依据资料输出清晰的 Markdown 正文。".to_owned(),
+            skills: vec![WorkflowSkillInstruction {
+                id: "natural-chinese".to_owned(),
+                name: "自然表达".to_owned(),
+                instructions: "删除空泛套话，保留事实边界。".to_owned(),
+            }],
+        }];
         let run = StartRunRequestWire {
             workflow_id: "workflow-1",
             article_id: "article-1",
@@ -2438,6 +2582,7 @@ mod tests {
                 max_wall_clock_seconds: 900,
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &disabled_optional_node_ids,
+                agent_instructions: &agent_instructions,
             },
         };
         assert_eq!(
@@ -2572,6 +2717,7 @@ mod tests {
             revision_id: "revision-1".to_owned(),
             topic: "Local first".to_owned(),
             disabled_optional_node_ids: vec!["research".to_owned()],
+            agent_instructions: Vec::new(),
         })
         .is_ok());
         assert!(validate_workflow_request(&RunWorkflowRequest {
@@ -2579,8 +2725,28 @@ mod tests {
             revision_id: "revision-1".to_owned(),
             topic: "Local first".to_owned(),
             disabled_optional_node_ids: vec!["risk".to_owned()],
+            agent_instructions: Vec::new(),
         })
         .is_err());
+        assert!(validate_workflow_request(&RunWorkflowRequest {
+            article_id: "desktop-article".to_owned(),
+            revision_id: "revision-1".to_owned(),
+            topic: "Local first".to_owned(),
+            disabled_optional_node_ids: Vec::new(),
+            agent_instructions: vec![WorkflowAgentInstruction {
+                id: "writer".to_owned(),
+                name: "Writer".to_owned(),
+                role: "Drafting".to_owned(),
+                node_id: "draft".to_owned(),
+                prompt: "Write from the approved outline.\nUse concise Markdown.".to_owned(),
+                skills: vec![WorkflowSkillInstruction {
+                    id: "style-guide".to_owned(),
+                    name: "Style guide".to_owned(),
+                    instructions: "Use short paragraphs.\nKeep claims verifiable.".to_owned(),
+                }],
+            }],
+        })
+        .is_ok());
         assert!(
             validate_create_publish_plan_request(&CreatePublishPlanRequest {
                 article_id: "desktop-article".to_owned(),
@@ -2883,6 +3049,7 @@ mod tests {
                 revision_id: saved.revision_id,
                 topic: "Private sidecar bridge".to_owned(),
                 disabled_optional_node_ids: Vec::new(),
+                agent_instructions: Vec::new(),
             })
             .expect("workflow completes");
         assert_eq!(workflow.status, "completed");
@@ -2895,6 +3062,7 @@ mod tests {
                 revision_id: workflow.output_revision_id,
                 topic: "Optional node selection".to_owned(),
                 disabled_optional_node_ids: vec!["research".to_owned(), "natural-style".to_owned()],
+                agent_instructions: Vec::new(),
             })
             .expect("customized workflow completes");
         assert_eq!(customized.artifacts.len(), 5);
@@ -2965,7 +3133,10 @@ mod tests {
             .expect("mock image persists");
         assert!(image.mocked);
         assert_eq!(image.artifact_count, 1);
-        assert_eq!(image.media_types, vec!["image/svg+xml"]);
+        assert_eq!(image.media_types, vec!["image/png"]);
+        assert!(image.images[0]
+            .data_url
+            .starts_with("data:image/png;base64,"));
         supervisor.stop().expect("sidecar stops");
     }
 }

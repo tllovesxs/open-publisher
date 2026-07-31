@@ -275,6 +275,91 @@
         "visual"
       ]
     },
+    "WorkflowNodeId": {
+      "enum": [
+        "research",
+        "outline",
+        "draft",
+        "natural-style",
+        "review",
+        "risk",
+        "visual"
+      ]
+    },
+    "WorkflowSkillInstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "instructions"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,99}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": ".*\\S.*"
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 6000,
+          "pattern": ".*\\S.*"
+        }
+      }
+    },
+    "WorkflowAgentInstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "role",
+        "node_id",
+        "prompt",
+        "skills"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,99}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": ".*\\S.*"
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": ".*\\S.*"
+        },
+        "node_id": {
+          "$ref": "#/$defs/WorkflowNodeId"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 6000,
+          "pattern": ".*\\S.*"
+        },
+        "skills": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/WorkflowSkillInstruction"
+          }
+        }
+      }
+    },
     "StartRunPolicyRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -316,6 +401,14 @@
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/OptionalWorkflowNodeId"
+          }
+        },
+        "agent_instructions": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/WorkflowAgentInstruction"
           }
         }
       }
@@ -999,7 +1092,8 @@
         "content_hash",
         "size_bytes",
         "metadata_json",
-        "created_at"
+        "created_at",
+        "content_base64"
       ],
       "properties": {
         "id": {
@@ -1033,6 +1127,12 @@
         },
         "created_at": {
           "$ref": "#/$defs/Timestamp"
+        },
+        "content_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 14000000,
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$"
         }
       }
     },

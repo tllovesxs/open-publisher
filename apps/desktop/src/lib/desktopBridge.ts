@@ -35,6 +35,7 @@ export interface RunWorkflowRequest {
   revisionId: string;
   topic: string;
   disabledOptionalNodeIds: DisabledOptionalNodeId[];
+  agentInstructions: WorkflowAgentInstruction[];
 }
 
 export type DisabledOptionalNodeId =
@@ -43,6 +44,25 @@ export type DisabledOptionalNodeId =
   | "natural-style"
   | "review"
   | "visual";
+
+export type WorkflowNodeId = DisabledOptionalNodeId | "draft" | "risk";
+
+/** A text-only Skill snapshot. The desktop bridge never executes Skill code. */
+export interface WorkflowSkillInstruction {
+  id: string;
+  name: string;
+  instructions: string;
+}
+
+/** A per-node Agent snapshot used for one workflow run. */
+export interface WorkflowAgentInstruction {
+  id: string;
+  name: string;
+  role: string;
+  nodeId: WorkflowNodeId;
+  prompt: string;
+  skills: WorkflowSkillInstruction[];
+}
 
 export interface WorkflowArtifactSummary {
   id: string;
@@ -153,6 +173,14 @@ export interface GenerateImageSummary {
   mocked: boolean;
   remoteUrlsIgnored: number;
   mediaTypes: string[];
+  images: GeneratedImageSummary[];
+}
+
+export interface GeneratedImageSummary {
+  id: string;
+  mediaType: string;
+  /** Locally retained, content-addressed image bytes encoded for the renderer. */
+  dataUrl: string;
 }
 
 export interface ExtractTemplateRequest {
@@ -544,13 +572,22 @@ const mockBridge: DesktopBridge = {
   },
   async generateImage() {
     await pause(100);
+    const imageId = nextMockId("generated-image");
     return {
       artifactCount: 1,
       provider: "mock",
-      model: "deterministic-svg-v1",
+      model: "deterministic-png-v1",
       mocked: true,
       remoteUrlsIgnored: 0,
-      mediaTypes: ["image/svg+xml"],
+      mediaTypes: ["image/png"],
+      images: [
+        {
+          id: imageId,
+          mediaType: "image/png",
+          // A valid one-pixel PNG lets the browser preview exercise the same asset path.
+          dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==",
+        },
+      ],
     };
   },
   async extractTemplate(request) {

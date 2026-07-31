@@ -11,7 +11,10 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useId, useRef, useState } from "react";
-import type { DisabledOptionalNodeId } from "../lib/desktopBridge";
+import type {
+  DisabledOptionalNodeId,
+  WorkflowAgentInstruction,
+} from "../lib/desktopBridge";
 import type {
   MarkdownTemplate,
   MediaAsset,
@@ -33,6 +36,8 @@ export interface CreationRequest {
   template: MarkdownTemplate | null;
   imageAssets: MediaAsset[];
   agents: StudioAgent[];
+  /** Immutable text-only Agent/Skill snapshot assembled when the request starts. */
+  agentInstructions?: WorkflowAgentInstruction[];
 }
 
 export interface CreationLogEntry {

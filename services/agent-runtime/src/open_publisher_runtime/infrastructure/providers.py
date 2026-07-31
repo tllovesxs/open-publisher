@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import html
 import json
 import os
 import re
@@ -163,23 +162,16 @@ class MockImageProvider:
         return "mock"
 
     def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
-        safe_prompt = html.escape(request.prompt, quote=True)[:120]
-        try:
-            width_text, height_text = request.size.casefold().split("x", maxsplit=1)
-            width = int(width_text)
-            height = int(height_text)
-        except (TypeError, ValueError):
-            width = height = 1024
-        svg = (
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
-            '<rect width="100%" height="100%" fill="#172033"/>'
-            f'<text x="64" y="{height // 2}" fill="#ffffff" font-size="32">'
-            f"{safe_prompt}</text></svg>"
+        # Keep the development provider on the same safe raster path as production.
+        # The 1x1 PNG intentionally carries no prompt-derived content.
+        png_base64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/"
+            "ScLZ8QAAAABJRU5ErkJggg=="
         )
         return ImageGenerationResponse(
             provider=self.name,
-            model=request.model or "deterministic-svg-v1",
-            images_base64=[base64.b64encode(svg.encode()).decode("ascii")],
+            model=request.model or "deterministic-png-v1",
+            images_base64=[png_base64],
             mocked=True,
         )
 

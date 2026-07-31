@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import sys
 from typing import Annotated
 
@@ -16,7 +17,6 @@ from open_publisher_runtime.api.schemas import (
     ApprovePublishPlanRequest,
     ArticleDetail,
     ArticleWithRevision,
-    ArtifactPublic,
     ConnectionProfilePublic,
     CreateArticleRequest,
     CreateConnectionProfileRequest,
@@ -27,6 +27,7 @@ from open_publisher_runtime.api.schemas import (
     DemoResponse,
     EnqueueResponse,
     ExportContentPackageRequest,
+    GeneratedImageArtifactPublic,
     GenerateImagesRequest,
     GenerateImagesResponse,
     ImportContentPackageResponse,
@@ -440,7 +441,13 @@ def generate_images(
             model=result.model,
             mocked=result.mocked,
             artifacts=[
-                ArtifactPublic.from_artifact(artifact) for artifact in result.artifacts
+                GeneratedImageArtifactPublic.from_artifact_with_content(
+                    artifact,
+                    content_base64=base64.b64encode(artifacts.read_bytes(artifact.id)).decode(
+                        "ascii"
+                    ),
+                )
+                for artifact in result.artifacts
             ],
             remote_urls_ignored=result.remote_urls_ignored,
         )

@@ -60,6 +60,22 @@
       "allow_remote_publish": false,
       "disabled_optional_node_ids": [
         "research"
+      ],
+      "agent_instructions": [
+        {
+          "id": "writer",
+          "name": "写作 Agent",
+          "role": "主笔",
+          "node_id": "draft",
+          "prompt": "依据资料输出清晰的 Markdown 正文。",
+          "skills": [
+            {
+              "id": "natural-chinese",
+              "name": "自然表达",
+              "instructions": "删除空泛套话，保留事实边界。"
+            }
+          ]
+        }
       ]
     }
   },
@@ -125,7 +141,8 @@
         "metadata_json": {
           "requested_size": "1024x1024"
         },
-        "created_at": "2026-07-30T00:00:00Z"
+        "created_at": "2026-07-30T00:00:00Z",
+        "content_base64": "c2FtcGxl"
       }
     ],
     "remote_urls_ignored": 0

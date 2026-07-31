@@ -49,7 +49,7 @@ class ImageGenerationService:
         self.artifact_service = artifact_service
 
     @staticmethod
-    def _detect_media_type(data: bytes, *, mocked: bool) -> str:
+    def _detect_media_type(data: bytes) -> str:
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
             return "image/png"
         if data.startswith(b"\xff\xd8\xff"):
@@ -63,8 +63,6 @@ class ImageGenerationService:
             b"avis",
         }:
             return "image/avif"
-        if mocked and data.lstrip().startswith(b"<svg"):
-            return "image/svg+xml"
         raise ValueError("image provider returned an unsupported or untrusted image format")
 
     def generate(
@@ -113,7 +111,7 @@ class ImageGenerationService:
                 raise ValueError("generated images exceed the total decoded size limit")
             decoded_images.append(
                 (
-                    self._detect_media_type(data, mocked=response.mocked),
+                    self._detect_media_type(data),
                     data,
                 )
             )

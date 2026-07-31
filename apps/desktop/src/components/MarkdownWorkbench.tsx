@@ -10,11 +10,16 @@ import {
   MoreHorizontal,
   Quote,
 } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { PlatformDefinition, PlatformId } from "../types";
 import { MarkdownPreview } from "./MarkdownPreview";
 
 export type EditorMode = "edit" | "split" | "preview";
+
+export interface ImageInsertion {
+  alt: string;
+  src: string;
+}
 
 interface MarkdownWorkbenchProps {
   markdown: string;
@@ -25,6 +30,7 @@ interface MarkdownWorkbenchProps {
   selectedPlatform: PlatformId;
   onPlatformChange: (platform: PlatformId) => void;
   platforms: PlatformDefinition[];
+  onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
 }
 
 const editorModes: Array<{
@@ -46,8 +52,12 @@ export function MarkdownWorkbench({
   selectedPlatform,
   onPlatformChange,
   platforms,
+  onImageFileDrop,
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const [isDroppingImage, setIsDroppingImage] = useState(false);
+  const [isDropTarget, setIsDropTarget] = useState(false);
+  const [imageDropError, setImageDropError] = useState<string | null>(null);
   const lines = markdown.split("\n").length;
   const characters = markdown.replace(/\s/g, "").length;
 
@@ -71,6 +81,57 @@ export function MarkdownWorkbench({
 
   const insertBlock = (prefix: string, placeholder: string) =>
     applyMarkup(prefix, "", placeholder);
+
+  const insertAtSelection = (value: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    const before = markdown.slice(0, start);
+    const after = markdown.slice(end);
+    const prefix = before && !before.endsWith("\n") ? "\n\n" : "";
+    const suffix = after && !after.startsWith("\n") ? "\n\n" : "";
+    onMarkdownChange(`${before}${prefix}${value}${suffix}${after}`);
+    window.requestAnimationFrame(() => {
+      editor.focus();
+      const position = start + prefix.length + value.length;
+      editor.setSelectionRange(position, position);
+    });
+  };
+
+  const importFiles = async (files: File[]) => {
+    if (!onImageFileDrop) {
+      setImageDropError("图片导入服务尚未连接。");
+      return;
+    }
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (!images.length) {
+      setImageDropError("只能拖入图片文件。");
+      return;
+    }
+    setIsDroppingImage(true);
+    setImageDropError(null);
+    try {
+      const inserted = await Promise.all(images.map(onImageFileDrop));
+      insertAtSelection(inserted.map(({ alt, src }) => `![${alt}](${src})`).join("\n\n"));
+    } catch (error) {
+      setImageDropError(error instanceof Error ? error.message : "图片导入失败，请重试。");
+    } finally {
+      setIsDroppingImage(false);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+    setIsDropTarget(false);
+    const markdownImage = event.dataTransfer.getData("application/x-open-publisher-markdown-image");
+    if (markdownImage) {
+      setImageDropError(null);
+      insertAtSelection(markdownImage);
+      return;
+    }
+    void importFiles(Array.from(event.dataTransfer.files));
+  };
 
   return (
     <section className="markdown-workbench" aria-label="Markdown 编辑器">
@@ -178,7 +239,20 @@ export function MarkdownWorkbench({
             </div>
             <textarea
               aria-label="Markdown 正文"
+              aria-busy={isDroppingImage || undefined}
+              className={isDropTarget ? "is-drop-target" : undefined}
               onChange={(event) => onMarkdownChange(event.target.value)}
+              onDragEnter={(event) => {
+                if (event.dataTransfer.types.includes("Files") || event.dataTransfer.types.includes("application/x-open-publisher-markdown-image")) {
+                  event.preventDefault();
+                  setIsDropTarget(true);
+                }
+              }}
+              onDragLeave={(event) => {
+                if (event.currentTarget === event.target) setIsDropTarget(false);
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={handleDrop}
               ref={editorRef}
               spellCheck="false"
               value={markdown}
@@ -206,6 +280,8 @@ export function MarkdownWorkbench({
         <span>Markdown</span>
         <span>{lines} 行</span>
         <span>{characters} 字</span>
+        {isDroppingImage && <span className="editor-status__progress" role="status">正在导入图片</span>}
+        {imageDropError && <span className="editor-status__error" role="alert">{imageDropError}</span>}
       </footer>
     </section>
   );

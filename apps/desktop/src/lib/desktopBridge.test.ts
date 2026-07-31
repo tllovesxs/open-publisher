@@ -28,6 +28,16 @@ describe("desktopBridge browser fallback", () => {
       revisionId: receipt.revisionId,
       topic: "Local-first",
       disabledOptionalNodeIds: ["research", "natural-style"],
+      agentInstructions: [
+        {
+          id: "writer",
+          name: "写作 Agent",
+          role: "主笔",
+          nodeId: "draft",
+          prompt: "使用清晰、可验证的中文表达。",
+          skills: [],
+        },
+      ],
     });
     expect(workflow.status).toBe("completed");
     expect(workflow.artifacts).toHaveLength(5);
@@ -89,7 +99,8 @@ describe("desktopBridge browser fallback", () => {
       model: null,
     });
     expect(image.artifactCount).toBe(1);
-    expect(image.mediaTypes).toEqual(["image/svg+xml"]);
+    expect(image.mediaTypes).toEqual(["image/png"]);
+    expect(image.images[0]?.dataUrl).toMatch(/^data:image\/png;base64,/);
     expect(image).not.toHaveProperty("prompt");
     expect(image).not.toHaveProperty("storagePath");
 

@@ -246,6 +246,7 @@ class RunController:
                     title=article.title,
                     topic=(topic or article.title).strip(),
                     source_markdown=revision.markdown,
+                    agent_instructions=policy.agent_instructions,
                 ),
                 disabled_optional_node_ids=disabled_optional_node_ids,
                 max_parallel=policy.max_parallel,

@@ -103,7 +103,7 @@ export function PublishingPage({
       <header className="page-heading page-heading--publish">
         <div>
           <span className="page-kicker">发布中心</span>
-          <h1>检查后发送到目标平台</h1>
+          <h1>生成可审核的平台稿</h1>
         </div>
         <label className="article-picker">
           <span>当前文章</span>
@@ -217,10 +217,10 @@ export function PublishingPage({
             <section className="publish-section">
               <header>
                 <span className="step-number">3</span>
-                <div>
-                  <h2>确认并执行</h2>
-                  <p>当前适配器只执行本地发布演练。</p>
-                </div>
+              <div>
+                <h2>确认并演练</h2>
+                <p>当前版本不会登录或发布到外部平台，只记录本地演练结果。</p>
+              </div>
               </header>
 
               {stale && (

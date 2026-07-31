@@ -29,9 +29,8 @@ describe("desktop product flow", () => {
     expect(within(navigation).queryByRole("button", { name: "Skill" })).toBeNull();
 
     fireEvent.click(within(navigation).getByRole("button", { name: "文章" }));
-    await waitFor(() =>
-      expect(screen.getByLabelText("Markdown 正文")).toBeVisible(),
-    );
+    expect(await screen.findByRole("heading", { name: "还没有文章" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "新建文章" })).toBeVisible();
   });
 
   it("creates an article from a brief and opens the generated revision", async () => {
@@ -67,7 +66,7 @@ describe("desktop product flow", () => {
   it("shows the creation stage, execution plan, and timestamped logs", async () => {
     let finishWorkflow: (() => void) | undefined;
     const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
-    vi.spyOn(desktopBridge, "runWorkflow").mockImplementation(
+    const runWorkflow = vi.spyOn(desktopBridge, "runWorkflow").mockImplementation(
       (request) =>
         new Promise((resolve) => {
           finishWorkflow = () => void originalRunWorkflow(request).then(resolve);
@@ -85,6 +84,14 @@ describe("desktop product flow", () => {
     expect(screen.getByText(/执行日志/)).toBeVisible();
     await screen.findByText("多 Agent 工作流正在执行");
     expect(screen.getByText("多 Agent 工作流已启动")).toBeInTheDocument();
+    expect(runWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentInstructions: expect.arrayContaining([
+          expect.objectContaining({ id: "writer", nodeId: "draft" }),
+          expect.objectContaining({ id: "risk", nodeId: "risk" }),
+        ]),
+      }),
+    );
 
     finishWorkflow?.();
     await screen.findByLabelText("Markdown 正文");
@@ -129,7 +136,10 @@ describe("desktop product flow", () => {
 
   it("edits and saves a local article revision", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "文章" }));
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "本地保存测试" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
     const editor = await screen.findByLabelText("Markdown 正文");
 
     fireEvent.change(editor, {

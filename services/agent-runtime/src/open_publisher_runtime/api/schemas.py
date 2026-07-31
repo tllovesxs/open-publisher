@@ -172,6 +172,24 @@ class ArtifactPublic(ApiModel):
         )
 
 
+class GeneratedImageArtifactPublic(ArtifactPublic):
+    """A generated image that the desktop can immediately add to its local library."""
+
+    content_base64: str = Field(min_length=4, max_length=14_000_000)
+
+    @classmethod
+    def from_artifact_with_content(
+        cls,
+        artifact: Artifact,
+        *,
+        content_base64: str,
+    ) -> GeneratedImageArtifactPublic:
+        return cls(
+            **ArtifactPublic.from_artifact(artifact).model_dump(),
+            content_base64=content_base64,
+        )
+
+
 class GenerateImagesRequest(ApiModel):
     prompt: str = Field(min_length=1, max_length=4000)
     size: Literal[
@@ -195,7 +213,7 @@ class GenerateImagesResponse(ApiModel):
     provider: str
     model: str
     mocked: bool
-    artifacts: list[ArtifactPublic]
+    artifacts: list[GeneratedImageArtifactPublic]
     remote_urls_ignored: int = Field(ge=0)
 
 

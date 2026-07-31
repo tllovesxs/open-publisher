@@ -1,30 +1,45 @@
-import type { MarkdownTemplate, MediaAsset, StudioAgent, StudioSkill } from "../types";
+import type { MarkdownTemplate, StudioAgent, StudioSkill } from "../types";
 
 export const availableSkills: StudioSkill[] = [
   {
     id: "research-brief",
     name: "资料梳理",
     description: "提取来源、事实和待验证信息。",
+    instructions: "区分事实、观点和待验证内容。保留可追溯来源，并把无法确认的信息显式标记出来。",
+    source: "Open Publisher 预置",
+    isBuiltIn: true,
   },
   {
     id: "md-structure",
     name: "Markdown 结构",
     description: "按模板组织标题、段落、列表与引用。",
+    instructions: "遵守所选 Markdown 模板的层级，保持标题、段落、列表和引用的语义清晰。",
+    source: "Open Publisher 预置",
+    isBuiltIn: true,
   },
   {
     id: "natural-chinese",
     name: "自然表达",
     description: "清理套话，保持中文叙述自然直接。",
+    instructions: "删除空泛套话和重复结论，使用具体、克制的中文表达，不改变原有事实和立场。",
+    source: "Open Publisher 预置",
+    isBuiltIn: true,
   },
   {
     id: "risk-review",
     name: "事实与风险审校",
     description: "标记无来源结论、敏感词和过度承诺。",
+    instructions: "标记无来源数字、绝对化承诺、敏感表述和易引起误解的结论；只给出可执行的修改建议。",
+    source: "Open Publisher 预置",
+    isBuiltIn: true,
   },
   {
     id: "image-planning",
     name: "配图编排",
     description: "判断图片位置、说明文字和封面比例。",
+    instructions: "仅在图片能帮助理解时插入，为每张图片编写准确替代文本，并避免与正文重复表达。",
+    source: "Open Publisher 预置",
+    isBuiltIn: true,
   },
 ];
 
@@ -60,6 +75,7 @@ export const defaultAgents: StudioAgent[] = [
       "直接回答读者关心的问题。使用短段落、具体名词和可验证的表述，不编造案例或数据。",
     skillIds: ["md-structure", "natural-chinese"],
     enabled: true,
+    runtimeNodeId: "draft",
   },
   {
     id: "natural-style",
@@ -92,6 +108,7 @@ export const defaultAgents: StudioAgent[] = [
       "标记未提供来源的数字、绝对化承诺和可能引起误解的表达。不要替作者作价值判断。",
     skillIds: ["risk-review"],
     enabled: true,
+    runtimeNodeId: "risk",
   },
   {
     id: "visual",
@@ -214,32 +231,5 @@ export const defaultTemplates: MarkdownTemplate[] = [
 
 {{limits}}`,
     isBuiltIn: true,
-  },
-];
-
-export const defaultMediaAssets: MediaAsset[] = [
-  {
-    id: "builtin-circuit",
-    name: "芯片与电路板",
-    alt: "带有蓝绿色灯光的芯片电路板特写",
-    src: "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=82",
-    source: "builtin",
-    createdAt: "内置素材",
-  },
-  {
-    id: "builtin-desk",
-    name: "写作工作台",
-    alt: "桌面上的笔记本电脑与笔记本",
-    src: "https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&w=1200&q=82",
-    source: "builtin",
-    createdAt: "内置素材",
-  },
-  {
-    id: "builtin-team",
-    name: "协作讨论",
-    alt: "团队围绕桌面协作讨论",
-    src: "https://images.unsplash.com/photo-1521737711867-e3b97375f902?auto=format&fit=crop&w=1200&q=82",
-    source: "builtin",
-    createdAt: "内置素材",
   },
 ];

@@ -50,13 +50,13 @@ def test_authenticated_mock_image_generation_stores_public_artifact_without_netw
     assert response.status_code == 201, response.text
     payload = response.json()
     assert payload["provider"] == "mock"
-    assert payload["model"] == "deterministic-svg-v1"
+    assert payload["model"] == "deterministic-png-v1"
     assert payload["mocked"] is True
     assert payload["remote_urls_ignored"] == 0
     assert len(payload["artifacts"]) == 1
     artifact = payload["artifacts"][0]
     assert artifact["kind"] == "image.generated"
-    assert artifact["media_type"] == "image/svg+xml"
+    assert artifact["media_type"] == "image/png"
     assert artifact["metadata_json"]["requested_size"] == "512x512"
     assert "prompt_hash" in artifact["metadata_json"]
     assert "storage_path" not in artifact
@@ -65,10 +65,9 @@ def test_authenticated_mock_image_generation_stores_public_artifact_without_netw
     with client.app.state.container.database.session() as session:
         repository = SqlAlchemyRuntimeRepository(session)
         artifacts = ArtifactService(repository, client.app.state.container.blob_store)
-        svg = artifacts.read_text(artifact["id"])
-    assert "<script>" not in svg
-    assert "&lt;script&gt;" in svg
-    assert "&amp;" in svg
+        image_bytes = artifacts.read_bytes(artifact["id"])
+    assert image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    assert base64.b64decode(artifact["content_base64"]) == image_bytes
 
 
 @pytest.mark.parametrize(

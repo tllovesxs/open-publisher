@@ -308,7 +308,7 @@ export function SettingsPage({
                   <Server aria-hidden="true" size={19} />
                   <div>
                     <h2 id="account-settings-title">平台账号</h2>
-                    <p>账号凭证由桌面端安全边界管理。</p>
+                    <p>平台适配器尚未接入；当前只能生成本地平台稿与演练记录。</p>
                   </div>
                 </div>
               </div>
@@ -323,7 +323,7 @@ export function SettingsPage({
                       <small>{platform.limit}</small>
                     </div>
                     <span className="account-state">
-                      {platform.status === "connected" ? "已连接" : "未连接"}
+                      {platform.status === "connected" ? "已连接" : "尚未接入"}
                     </span>
                   </article>
                 ))}

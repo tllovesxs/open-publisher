@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Article, PlatformDefinition, PlatformId } from "../types";
-import { MarkdownWorkbench, type EditorMode } from "./MarkdownWorkbench";
+import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
 
 interface ArticlesPageProps {
   articles: Article[];
@@ -32,6 +32,7 @@ interface ArticlesPageProps {
   onGenerateImage: () => void;
   onEditorModeChange: (mode: EditorMode) => void;
   onPlatformChange: (platform: PlatformId) => void;
+  onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
 }
 
 const statusLabel: Record<Article["status"], string> = {
@@ -61,6 +62,7 @@ export function ArticlesPage({
   onGenerateImage,
   onEditorModeChange,
   onPlatformChange,
+  onImageFileDrop,
 }: ArticlesPageProps) {
   const [query, setQuery] = useState("");
   const filteredArticles = useMemo(() => {
@@ -202,6 +204,7 @@ export function ArticlesPage({
           markdown={markdown}
           onEditorModeChange={onEditorModeChange}
           onMarkdownChange={onMarkdownChange}
+          onImageFileDrop={onImageFileDrop}
           onPlatformChange={onPlatformChange}
           platforms={platforms}
           selectedPlatform={selectedPlatform}

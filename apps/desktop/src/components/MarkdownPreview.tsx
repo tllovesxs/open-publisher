@@ -5,6 +5,25 @@ interface MarkdownPreviewProps {
   compact?: boolean;
 }
 
+function safeImageSource(value: string): string | null {
+  if (/^data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i.test(value)) {
+    return value;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function markdownImage(line: string): { alt: string; src: string } | null {
+  const match = line.match(/^\s*!\[([^\]]*)\]\(([^\s)]+)(?:\s+[^)]*)?\)\s*$/);
+  if (!match) return null;
+  const src = safeImageSource(match[2]);
+  return src ? { alt: match[1], src } : null;
+}
+
 function inlineMarkup(text: string): ReactNode[] {
   const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
   return parts.filter(Boolean).map((part, index) => {
@@ -85,6 +104,12 @@ export function MarkdownPreview({ markdown, compact = false }: MarkdownPreviewPr
 
     flushLists();
     if (!line.trim()) return;
+
+    const image = markdownImage(line);
+    if (image) {
+      output.push(<img alt={image.alt} key={lineIndex} loading="lazy" src={image.src} />);
+      return;
+    }
 
     if (line.startsWith("### ")) {
       output.push(<h3 key={lineIndex}>{inlineMarkup(line.slice(4))}</h3>);
