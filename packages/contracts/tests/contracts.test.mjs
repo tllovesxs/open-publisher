@@ -46,6 +46,29 @@ test("canonical Markdown revision validates and unknown fields fail", () => {
   assert.equal(validate({ ...revision, schemaVersion: "2.0" }), false);
 });
 
+test("template extraction keeps source input private and returns an editable placeholder template", () => {
+  const schemaId = "https://schemas.openpublisher.dev/v1/template-extraction.schema.json";
+  const request = ajv.compile({ $ref: `${schemaId}#/$defs/TemplateExtractionRequest` });
+  const response = ajv.compile({ $ref: `${schemaId}#/$defs/TemplateExtractionResponse` });
+
+  assert.equal(request({ source_markdown: "# A source article\n\nConcrete details." }), true);
+  assert.equal(request({ source_markdown: "   " }), false);
+  assert.equal(request({ source_markdown: "# Safe", api_key: "must-not-cross-boundary" }), false);
+
+  const template = {
+    name: "技术解读结构",
+    description: "适合按结论、背景和实践展开的文章。",
+    category: "技术文章",
+    markdown: "# {{title}}\n\n{{lead}}\n\n## {{section_heading}}\n\n{{section_content}}",
+    provider: "mock",
+    model: "deterministic-mock-v1",
+    mocked: true,
+  };
+  assert.equal(response(template), true, JSON.stringify(response.errors));
+  assert.equal(response({ ...template, source_markdown: "must-not-return" }), false);
+  assert.equal(response({ ...template, markdown: "# no placeholders" }), false);
+});
+
 test("connection profiles accept opaque references and reject plaintext fields", () => {
   const validate = ajv.getSchema(
     "https://schemas.openpublisher.dev/v1/connection-profile.schema.json",

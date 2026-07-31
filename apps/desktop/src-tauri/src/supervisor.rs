@@ -197,6 +197,24 @@ pub struct GenerateImageSummary {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExtractTemplateRequest {
+    pub source_markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateExtractionSummary {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub markdown: String,
+    pub provider: String,
+    pub model: String,
+    pub mocked: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CreateConnectionProfileRequest {
     pub name: String,
     pub provider: String,
@@ -286,6 +304,10 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
     ) -> Result<ProcessPublishJobSummary, String>;
     fn generate_image(&self, request: GenerateImageRequest)
         -> Result<GenerateImageSummary, String>;
+    fn extract_template(
+        &self,
+        request: ExtractTemplateRequest,
+    ) -> Result<TemplateExtractionSummary, String>;
     fn list_connection_profiles(&self) -> Result<Vec<ConnectionProfilePublic>, String>;
     fn create_connection_profile(
         &self,
@@ -370,6 +392,7 @@ enum ApiRoute<'a> {
     EnqueuePublishPlan(&'a str),
     ProcessPublishJob(&'a str),
     GenerateImage,
+    ExtractTemplate,
     Connections,
     ModelTest,
 }
@@ -398,6 +421,7 @@ impl ApiRoute<'_> {
                 format!("/api/v1/publish/jobs/{job_id}/process")
             }
             Self::GenerateImage => "/api/v1/images/generate".to_owned(),
+            Self::ExtractTemplate => "/api/v1/templates/extract".to_owned(),
             Self::Connections => "/api/v1/connections".to_owned(),
             Self::ModelTest => "/api/v1/models/test".to_owned(),
         }
@@ -507,6 +531,11 @@ struct GenerateImagesRequestWire<'a> {
     prompt: &'a str,
     size: &'a str,
     model: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExtractTemplateRequestWire<'a> {
+    source_markdown: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -624,6 +653,18 @@ struct GenerateImageResponseWire {
     mocked: bool,
     artifacts: Vec<GeneratedArtifactWire>,
     remote_urls_ignored: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtractTemplateResponseWire {
+    name: String,
+    description: String,
+    category: String,
+    markdown: String,
+    provider: String,
+    model: String,
+    mocked: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1413,6 +1454,25 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         summarize_image_generation(response)
     }
 
+    fn extract_template(
+        &self,
+        request: ExtractTemplateRequest,
+    ) -> Result<TemplateExtractionSummary, String> {
+        let normalized = validate_template_extraction_request(request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let payload = ExtractTemplateRequestWire {
+            source_markdown: &normalized.source_markdown,
+        };
+        let response: ExtractTemplateResponseWire =
+            self.post_json(&connection, ApiRoute::ExtractTemplate, &payload)?;
+        summarize_template_extraction(response)
+    }
+
     fn list_connection_profiles(&self) -> Result<Vec<ConnectionProfilePublic>, String> {
         let mut state = self.lock_state()?;
         self.ensure_started_locked(&mut state)?;
@@ -1811,6 +1871,27 @@ fn validate_image_request(
         return Err("配图尺寸不在当前白名单中。".to_owned());
     }
     request.model = normalize_public_option(request.model, "生图模型", 200)?;
+    Ok(request)
+}
+
+fn validate_template_extraction_request(
+    mut request: ExtractTemplateRequest,
+) -> Result<ExtractTemplateRequest, String> {
+    request.source_markdown = request
+        .source_markdown
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_owned();
+    if request.source_markdown.is_empty()
+        || request.source_markdown.chars().count() > 60_000
+        || request
+            .source_markdown
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    {
+        return Err("待提取的 Markdown 应为 1–60000 个可见字符。".to_owned());
+    }
     Ok(request)
 }
 
@@ -2236,19 +2317,82 @@ fn summarize_image_generation(
     })
 }
 
+fn has_template_placeholder(markdown: &str) -> bool {
+    markdown.split("{{").skip(1).any(|remainder| {
+        let Some((name, _)) = remainder.split_once("}}") else {
+            return false;
+        };
+        let mut characters = name.chars();
+        characters
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase())
+            && characters.all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+            })
+    })
+}
+
+fn summarize_template_extraction(
+    response: ExtractTemplateResponseWire,
+) -> Result<TemplateExtractionSummary, String> {
+    let name = normalize_public_option(Some(response.name), "模板名称", 80)?
+        .ok_or_else(|| "local Python runtime returned an empty template name".to_owned())?;
+    let description = normalize_public_option(Some(response.description), "模板说明", 300)?
+        .ok_or_else(|| "local Python runtime returned an empty template description".to_owned())?;
+    let category = normalize_public_option(Some(response.category), "模板分类", 60)?
+        .ok_or_else(|| "local Python runtime returned an empty template category".to_owned())?;
+    let markdown = response
+        .markdown
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_owned();
+    if markdown.is_empty()
+        || markdown.chars().count() > 32_768
+        || markdown
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+        || !has_template_placeholder(&markdown)
+    {
+        return Err("local Python runtime returned an invalid template".to_owned());
+    }
+    let normalized_markdown = markdown.to_ascii_lowercase();
+    if normalized_markdown.contains("http://")
+        || normalized_markdown.contains("https://")
+        || normalized_markdown.contains("www.")
+    {
+        return Err("local Python runtime returned a template with a concrete URL".to_owned());
+    }
+    let provider = normalize_public_option(Some(response.provider), "provider", 100)?
+        .ok_or_else(|| "local Python runtime returned an empty template provider".to_owned())?;
+    let model = normalize_public_option(Some(response.model), "model", 200)?
+        .ok_or_else(|| "local Python runtime returned an empty template model".to_owned())?;
+    Ok(TemplateExtractionSummary {
+        name,
+        description,
+        category,
+        markdown,
+        provider,
+        model,
+        mocked: response.mocked,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         public_process_publish_job, public_publish_job, public_publish_plan, strong_token,
-        title_from_markdown, validate_connection_request, validate_create_publish_plan_request,
-        validate_draft, validate_image_request, validate_process_publish_job_request,
-        validate_process_summary_against_plan, validate_publish_plan_request,
+        summarize_template_extraction, title_from_markdown, validate_connection_request,
+        validate_create_publish_plan_request, validate_draft, validate_image_request,
+        validate_process_publish_job_request, validate_process_summary_against_plan,
+        validate_publish_plan_request, validate_template_extraction_request,
         validate_workflow_request, ApprovePublishPlanRequestWire, ArticleDetailWire,
         ArticleListItemWire, ArticleWithRevisionWire, ConnectionConfigRequestWire,
         ConnectionProfilePublic, ConnectionProfileWire, CreateArticleMetadataWire,
         CreateArticleRequestWire, CreateConnectionProfileRequest, CreateConnectionRequestWire,
         CreatePublishPlanRequest, CreatePublishPlanRequestWire, CreateRevisionRequestWire,
-        EmptyRequestWire, EnqueuePublishPlanWire, GenerateImageRequest, GenerateImageResponseWire,
+        EmptyRequestWire, EnqueuePublishPlanWire, ExtractTemplateRequest,
+        ExtractTemplateResponseWire, GenerateImageRequest, GenerateImageResponseWire,
         GenerateImagesRequestWire, HealthResponseWire, IdWire, ProcessPublishJobRequest,
         ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
         PythonSidecarSupervisor, RunWorkflowRequest, SaveDraftRequest, SidecarSupervisor,
@@ -2490,6 +2634,46 @@ mod tests {
     }
 
     #[test]
+    fn template_extraction_inputs_and_results_are_bounded() {
+        assert!(
+            validate_template_extraction_request(ExtractTemplateRequest {
+                source_markdown: "# 原文\n\n可保留的结构。".to_owned(),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_template_extraction_request(ExtractTemplateRequest {
+                source_markdown: "   ".to_owned(),
+            })
+            .is_err()
+        );
+
+        let summary = summarize_template_extraction(ExtractTemplateResponseWire {
+            name: "技术解读结构".to_owned(),
+            description: "适合技术文章的通用结构。".to_owned(),
+            category: "技术文章".to_owned(),
+            markdown: "# {{title}}\n\n{{lead}}".to_owned(),
+            provider: "mock".to_owned(),
+            model: "deterministic-mock-v1".to_owned(),
+            mocked: true,
+        })
+        .expect("template summary");
+        assert_eq!(summary.name, "技术解读结构");
+        assert!(summary.markdown.contains("{{title}}"));
+
+        assert!(summarize_template_extraction(ExtractTemplateResponseWire {
+            name: "不安全模板".to_owned(),
+            description: "不应保留原始链接。".to_owned(),
+            category: "测试".to_owned(),
+            markdown: "# {{title}}\n\nhttps://example.invalid/private".to_owned(),
+            provider: "mock".to_owned(),
+            model: "deterministic-mock-v1".to_owned(),
+            mocked: true,
+        })
+        .is_err());
+    }
+
+    #[test]
     fn connection_inputs_accept_references_but_reject_secret_shaped_values() {
         let valid = validate_connection_request(CreateConnectionProfileRequest {
             name: "Local model".to_owned(),
@@ -2647,6 +2831,16 @@ mod tests {
             PythonSidecarSupervisor::new(data_dir.path().to_path_buf()).expect("supervisor");
         let snapshot = supervisor.ensure_started().expect("sidecar starts");
         assert!(matches!(snapshot.state, super::RuntimeState::Ready));
+
+        let template = supervisor
+            .extract_template(ExtractTemplateRequest {
+                source_markdown: "# Wandao 体积下降 42%\n\nhttps://example.invalid/release\n\n## 改动\n\n具体版本与链接不应进入模板。".to_owned(),
+            })
+            .expect("template extraction completes");
+        assert!(template.mocked);
+        assert!(template.markdown.contains("{{title}}"));
+        assert!(!template.markdown.contains("Wandao"));
+        assert!(!template.markdown.contains("example.invalid"));
 
         let saved = supervisor
             .save_draft(SaveDraftRequest {

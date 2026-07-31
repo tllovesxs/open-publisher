@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use supervisor::{
     ConfigureModelRequest, ConnectionProfilePublic, CreateConnectionProfileRequest,
-    CreatePublishPlanRequest, GenerateImageRequest, GenerateImageSummary,
+    CreatePublishPlanRequest, ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary,
     ModelConfigurationSummary, ModelConnectionTestSummary, ProcessPublishJobRequest,
     ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor,
     RunWorkflowRequest, RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest,
-    SidecarSupervisor, StoredArticleSummary,
+    SidecarSupervisor, StoredArticleSummary, TemplateExtractionSummary,
 };
 use tauri::Manager;
 
@@ -140,6 +140,17 @@ async fn generate_image(
 }
 
 #[tauri::command]
+async fn extract_template(
+    request: ExtractTemplateRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<TemplateExtractionSummary, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.extract_template(request))
+        .await
+        .map_err(|_| "template extraction task was cancelled".to_owned())?
+}
+
+#[tauri::command]
 async fn list_connection_profiles(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Vec<ConnectionProfilePublic>, String> {
@@ -216,6 +227,7 @@ pub fn run() {
             enqueue_publish_plan,
             process_publish_job,
             generate_image,
+            extract_template,
             list_connection_profiles,
             create_connection_profile,
             configure_model,

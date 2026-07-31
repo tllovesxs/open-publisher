@@ -20,6 +20,7 @@ const expectedTitles = new Set([
   "PlatformAdapterManifest",
   "RunEvent",
   "SidecarProtocol",
+  "TemplateExtraction",
 ]);
 const fileNames = (await readdir(schemaDirectory))
   .filter((fileName) => fileName.endsWith(".schema.json"))

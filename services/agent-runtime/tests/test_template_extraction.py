@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import json
+
+from open_publisher_runtime.application.model_access import (
+    TextGenerationResponse,
+)
+
+
+class StaticTextProvider:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    @property
+    def name(self) -> str:
+        return "test"
+
+    def generate(self, request):
+        return TextGenerationResponse(
+            text=self.text,
+            provider=self.name,
+            model="template-test-model",
+            mocked=False,
+        )
+
+
+def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) -> None:
+    source = (
+        "# Wandao 体积下降 42%\n\n"
+        "https://example.invalid/release\n\n"
+        "## 改动\n\n具体版本与数字。\n\n"
+        "## 使用建议\n\n具体示例。"
+    )
+
+    response = client.post("/api/v1/templates/extract", json={"source_markdown": source})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["provider"] == "mock"
+    assert payload["mocked"] is True
+    assert "{{title}}" in payload["markdown"]
+    assert "Wandao" not in payload["markdown"]
+    assert "example.invalid" not in payload["markdown"]
+    assert "source_markdown" not in payload
+    assert set(payload) == {
+        "name",
+        "description",
+        "category",
+        "markdown",
+        "provider",
+        "model",
+        "mocked",
+    }
+
+
+def test_template_extraction_rejects_concrete_links_from_model_output(client) -> None:
+    client.app.state.container.model_access.text_provider = StaticTextProvider(
+        json.dumps(
+            {
+                "name": "不安全模板",
+                "description": "包含不该保留的链接。",
+                "category": "测试",
+                "markdown": "# {{title}}\n\n[原文](https://example.invalid/private)",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    response = client.post(
+        "/api/v1/templates/extract",
+        json={"source_markdown": "# 原文\n\n不能保留链接"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "model did not return a reusable template; retry extraction"
+    }
+    assert "example.invalid" not in response.text
+
+
+def test_template_extraction_rejects_a_repeated_source_title(client) -> None:
+    client.app.state.container.model_access.text_provider = StaticTextProvider(
+        json.dumps(
+            {
+                "name": "产品更新模板",
+                "description": "可复用的更新结构。",
+                "category": "测试",
+                "markdown": "# Wandao 体积下降 42%\n\n{{lead}}",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    response = client.post(
+        "/api/v1/templates/extract",
+        json={"source_markdown": "# Wandao 体积下降 42%\n\n文章正文"},
+    )
+
+    assert response.status_code == 502
+    assert "Wandao" not in response.text
+
+
+def test_template_extraction_validates_source_before_calling_model(client) -> None:
+    response = client.post("/api/v1/templates/extract", json={"source_markdown": "  "})
+    assert response.status_code == 422
+
+    oversized = client.post(
+        "/api/v1/templates/extract",
+        json={"source_markdown": "x" * 60_001},
+    )
+    assert oversized.status_code == 422

@@ -56,6 +56,29 @@ class ModelTestResponse(ApiModel):
     mocked: bool
 
 
+class TemplateExtractionRequest(ApiModel):
+    source_markdown: str = Field(min_length=1, max_length=60_000)
+
+    @field_validator("source_markdown")
+    @classmethod
+    def validate_source_markdown_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source markdown cannot be blank")
+        if "\x00" in value:
+            raise ValueError("source markdown contains an unsupported control character")
+        return value
+
+
+class TemplateExtractionResponse(ApiModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=300)
+    category: str = Field(min_length=1, max_length=60)
+    markdown: str = Field(min_length=1, max_length=32_768)
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    mocked: bool
+
+
 class CreateArticleRequest(ApiModel):
     title: str = Field(min_length=1, max_length=500)
     markdown: str = Field(min_length=1)

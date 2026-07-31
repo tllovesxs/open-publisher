@@ -93,6 +93,18 @@ describe("desktopBridge browser fallback", () => {
     expect(image).not.toHaveProperty("prompt");
     expect(image).not.toHaveProperty("storagePath");
 
+    const template = await desktopBridge.extractTemplate({
+      sourceMarkdown: "# 原始文章\n\n## 一段结构\n\n具体事实和链接不应保留。",
+    });
+    expect(template).toMatchObject({
+      name: "文章结构模板",
+      provider: "mock",
+      mocked: true,
+    });
+    expect(template.markdown).toContain("{{title}}");
+    expect(template.markdown).not.toContain("原始文章");
+    expect(template).not.toHaveProperty("sourceMarkdown");
+
     expect(await desktopBridge.listConnectionProfiles()).toEqual([]);
     const profile = await desktopBridge.createConnectionProfile({
       name: "Deterministic mock",

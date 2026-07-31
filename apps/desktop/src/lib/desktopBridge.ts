@@ -155,6 +155,20 @@ export interface GenerateImageSummary {
   mediaTypes: string[];
 }
 
+export interface ExtractTemplateRequest {
+  sourceMarkdown: string;
+}
+
+export interface TemplateExtractionSummary {
+  name: string;
+  description: string;
+  category: string;
+  markdown: string;
+  provider: string;
+  model: string;
+  mocked: boolean;
+}
+
 export type ConnectionProvider = "openai-compatible" | "mock";
 
 export interface CreateConnectionProfileRequest {
@@ -222,6 +236,7 @@ export interface DesktopBridge {
   enqueuePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   processPublishJob(request: ProcessPublishJobRequest): Promise<ProcessPublishJobSummary>;
   generateImage(request: GenerateImageRequest): Promise<GenerateImageSummary>;
+  extractTemplate(request: ExtractTemplateRequest): Promise<TemplateExtractionSummary>;
   listConnectionProfiles(): Promise<ConnectionProfilePublic[]>;
   createConnectionProfile(
     request: CreateConnectionProfileRequest,
@@ -272,6 +287,41 @@ const requireMockPlan = (planId: string) => {
   const plan = mockPublishPlans.get(planId);
   if (!plan) throw new Error(`publish plan ${planId} not found`);
   return plan;
+};
+
+const mockTemplateMarkdown = (sourceMarkdown: string) => {
+  const normalized = sourceMarkdown.replace(/\r\n?/g, "\n").trim();
+  if (!normalized || normalized.length > 60_000) {
+    throw new Error("待提取的 Markdown 应为 1–60000 个可见字符。");
+  }
+  if ([...normalized].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 && character !== "\n" && character !== "\t";
+  })) {
+    throw new Error("待提取的 Markdown 包含不支持的控制字符。");
+  }
+  const headingDepths = normalized
+    .split("\n")
+    .map((line) => line.match(/^(#{1,6})\s+\S/)?.[1].length)
+    .filter((depth): depth is number => depth !== undefined)
+    .slice(1, 9);
+  const sectionDepths = headingDepths.length > 0 ? headingDepths : [2, 2, 2];
+  const sections = sectionDepths.flatMap((depth, index) => [
+    `${"#".repeat(depth)} {{section_${index + 1}_heading}}`,
+    "",
+    `{{section_${index + 1}_content}}`,
+    "",
+  ]);
+  return [
+    "# {{title}}",
+    "",
+    "{{lead}}",
+    "",
+    ...sections,
+    "## {{closing_heading}}",
+    "",
+    "{{closing}}",
+  ].join("\n").trim();
 };
 
 const mockBridge: DesktopBridge = {
@@ -503,6 +553,18 @@ const mockBridge: DesktopBridge = {
       mediaTypes: ["image/svg+xml"],
     };
   },
+  async extractTemplate(request) {
+    await pause(180);
+    return {
+      name: "文章结构模板",
+      description: "从原文层级提取的可复用 Markdown 结构。",
+      category: "自定义文章",
+      markdown: mockTemplateMarkdown(request.sourceMarkdown),
+      provider: "mock",
+      model: mockModelConfiguration?.textModel ?? "deterministic-mock-v1",
+      mocked: true,
+    };
+  },
   async listConnectionProfiles() {
     await pause(60);
     return [...mockConnectionProfiles];
@@ -571,6 +633,8 @@ const tauriBridge: DesktopBridge = {
     invoke<ProcessPublishJobSummary>("process_publish_job", { request }),
   generateImage: (request) =>
     invoke<GenerateImageSummary>("generate_image", { request }),
+  extractTemplate: (request) =>
+    invoke<TemplateExtractionSummary>("extract_template", { request }),
   listConnectionProfiles: () =>
     invoke<ConnectionProfilePublic[]>("list_connection_profiles"),
   createConnectionProfile: (request) =>
@@ -624,6 +688,10 @@ export const desktopBridge: DesktopBridge = {
     isTauriHost()
       ? tauriBridge.generateImage(request)
       : mockBridge.generateImage(request),
+  extractTemplate: (request) =>
+    isTauriHost()
+      ? tauriBridge.extractTemplate(request)
+      : mockBridge.extractTemplate(request),
   listConnectionProfiles: () =>
     isTauriHost()
       ? tauriBridge.listConnectionProfiles()

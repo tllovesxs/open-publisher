@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v1/template-extraction.schema.json",
+  "title": "TemplateExtraction",
+  "description": "Authenticated local-sidecar contract for turning a source Markdown article into an editable, reusable Markdown template. Source Markdown is input-only and must never be returned.",
+  "$defs": {
+    "TemplateExtractionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_markdown"
+      ],
+      "properties": {
+        "source_markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60000,
+          "pattern": ".*\\S.*"
+        }
+      }
+    },
+    "TemplateExtractionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "category",
+        "markdown",
+        "provider",
+        "model",
+        "mocked"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": ".*\\S.*"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": ".*\\S.*"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "pattern": ".*\\S.*"
+        },
+        "markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "pattern": "\\{\\{[a-z][a-z0-9_]*\\}\\}"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": ".*\\S.*"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": ".*\\S.*"
+        },
+        "mocked": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

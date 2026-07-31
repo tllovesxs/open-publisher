@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import os
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -48,7 +50,42 @@ class MockTextProvider:
         source = str(request.context.get("source_markdown") or "").strip()
         topic = str(request.context.get("topic") or title).strip()
 
-        if request.purpose == "research":
+        if request.purpose == "template-extraction":
+            headings = [
+                match.group(1)
+                for line in source.splitlines()
+                if (match := re.match(r"^(#{1,6})\\s+\\S", line))
+            ]
+            section_depths = [len(heading) for heading in headings[1:9]] or [2, 2, 2]
+            sections = []
+            for index, depth in enumerate(section_depths, start=1):
+                sections.extend(
+                    [
+                        f"{'#' * depth} {{{{section_{index}_heading}}}}",
+                        "",
+                        f"{{{{section_{index}_content}}}}",
+                        "",
+                    ]
+                )
+            template = {
+                "name": "文章结构模板",
+                "description": "从原文层级提取的可复用 Markdown 结构。",
+                "category": "自定义文章",
+                "markdown": "\n".join(
+                    [
+                        "# {{title}}",
+                        "",
+                        "{{lead}}",
+                        "",
+                        *sections,
+                        "## {{closing_heading}}",
+                        "",
+                        "{{closing}}",
+                    ]
+                ).strip(),
+            }
+            text = json.dumps(template, ensure_ascii=False)
+        elif request.purpose == "research":
             text = (
                 "## 研究卡片\n\n"
                 f"- 主题：{topic}\n"

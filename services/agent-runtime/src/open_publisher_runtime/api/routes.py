@@ -39,6 +39,8 @@ from open_publisher_runtime.api.schemas import (
     ResumeRunRequest,
     RunDetail,
     RuntimeCatalog,
+    TemplateExtractionRequest,
+    TemplateExtractionResponse,
     VersionResponse,
 )
 from open_publisher_runtime.application.articles import ArticleService
@@ -62,6 +64,10 @@ from open_publisher_runtime.application.platform_adapters import (
 from open_publisher_runtime.application.publishing import (
     PublishOutboxService,
     PublishTarget,
+)
+from open_publisher_runtime.application.template_extraction import (
+    TemplateExtractionError,
+    TemplateExtractionService,
 )
 from open_publisher_runtime.domain.contracts import ContentPackageV1
 from open_publisher_runtime.domain.entities import (
@@ -153,6 +159,36 @@ def test_model_connection(
             detail="model connection test failed",
         ) from error
     return ModelTestResponse(
+        provider=result.provider,
+        model=result.model,
+        mocked=result.mocked,
+    )
+
+
+@router.post("/templates/extract", response_model=TemplateExtractionResponse)
+def extract_template(
+    request: TemplateExtractionRequest,
+    container: ContainerDep,
+) -> TemplateExtractionResponse:
+    try:
+        result = TemplateExtractionService(model_access=container.model_access).extract(
+            source_markdown=request.source_markdown
+        )
+    except TemplateExtractionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="model did not return a reusable template; retry extraction",
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="template extraction failed",
+        ) from error
+    return TemplateExtractionResponse(
+        name=result.name,
+        description=result.description,
+        category=result.category,
+        markdown=result.markdown,
         provider=result.provider,
         model=result.model,
         mocked=result.mocked,

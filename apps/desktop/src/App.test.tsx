@@ -157,6 +157,28 @@ describe("desktop product flow", () => {
     expect(screen.getByRole("button", { name: "上传图片" })).toBeVisible();
   });
 
+  it("extracts a reusable template from Markdown and saves it after review", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "模板" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "从文章提取" }));
+    const source = await screen.findByLabelText("原始 Markdown");
+    fireEvent.change(source, {
+      target: {
+        value: "# Wandao 体积下降 42%\n\n## 改动\n\n具体版本与链接不应进入模板。",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提取为模板" }));
+
+    expect(await screen.findByRole("heading", { name: "审核并保存模板" })).toBeVisible();
+    const markdown = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
+    expect(markdown.value).toContain("{{title}}");
+    expect(markdown.value).not.toContain("Wandao");
+    fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+
+    expect(await screen.findByRole("heading", { name: "文章结构模板" })).toBeVisible();
+  });
+
   it("configures and tests the model from settings without rendering the secret", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "设置" }));

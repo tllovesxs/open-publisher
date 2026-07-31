@@ -852,6 +852,28 @@ export default function App() {
     }
   };
 
+  const extractTemplateFromArticle = async (sourceMarkdown: string) => {
+    try {
+      const result = await desktopBridge.extractTemplate({ sourceMarkdown });
+      setToast(
+        result.mocked
+          ? "已提取本地演示模板，请检查后保存"
+          : `已提取模板结构 · ${result.model} · 请检查后保存`,
+      );
+      return {
+        id: `template-${Date.now()}`,
+        name: result.name,
+        description: result.description,
+        category: result.category,
+        markdown: result.markdown,
+        isBuiltIn: false,
+      } satisfies MarkdownTemplate;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(sanitizeActivityMessage(detail || "模板提取失败"));
+    }
+  };
+
   const toggleWorkflowNode = (nodeId: DisabledOptionalNodeId) => {
     setDisabledNodes((current) => {
       const next = new Set(current);
@@ -1093,6 +1115,7 @@ export default function App() {
         return (
           <TemplatesPage
             onChange={setTemplates}
+            onExtractTemplate={extractTemplateFromArticle}
             onSelect={setSelectedTemplateId}
             onStartCreating={() => navigate("create")}
             selectedTemplateId={selectedTemplateId}
