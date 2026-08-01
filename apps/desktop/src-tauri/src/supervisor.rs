@@ -6,7 +6,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -15,6 +15,11 @@ use rand::{rngs::OsRng, RngCore};
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+
+const MODEL_CONFIGURATION_FILE: &str = "model-configuration.json";
+const DESKTOP_KEYRING_SERVICE: &str = "io.openpublisher.desktop";
+const MODEL_API_KEY_SECRET: &str = "model-api-key";
+const TAVILY_API_KEY_SECRET: &str = "tavily-api-key";
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -663,8 +668,106 @@ impl PrivateModelConfiguration {
             timeout_seconds: self.timeout_seconds,
             secret_configured: !self.api_key.is_empty(),
             web_search_configured: !self.tavily_api_key.is_empty(),
-            persistence: "session",
+            persistence: "os_keychain",
         }
+    }
+
+    fn persisted(&self) -> PersistedModelConfiguration {
+        PersistedModelConfiguration {
+            schema_version: 1,
+            name: self.name.clone(),
+            base_url: self.base_url.clone(),
+            text_model: self.text_model.clone(),
+            image_base_url: self.image_base_url.clone(),
+            image_model: self.image_model.clone(),
+            image_trusted_hosts: self.image_trusted_hosts.clone(),
+            timeout_seconds: self.timeout_seconds,
+        }
+    }
+}
+
+/// Non-secret fields are durable in the app data directory. API keys are kept
+/// separately in the operating system credential store and never serialized.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedModelConfiguration {
+    schema_version: u8,
+    name: String,
+    base_url: String,
+    text_model: String,
+    image_base_url: Option<String>,
+    image_model: Option<String>,
+    image_trusted_hosts: Vec<String>,
+    timeout_seconds: u16,
+}
+
+trait SecretStore: Send + Sync {
+    fn read(&self, name: &str) -> Result<Option<String>, String>;
+    fn write(&self, name: &str, value: &str) -> Result<(), String>;
+    fn remove(&self, name: &str) -> Result<(), String>;
+}
+
+struct KeyringSecretStore;
+
+impl SecretStore for KeyringSecretStore {
+    fn read(&self, name: &str) -> Result<Option<String>, String> {
+        let entry = keyring::Entry::new(DESKTOP_KEYRING_SERVICE, name)
+            .map_err(|_| "无法访问系统凭据库。".to_owned())?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err("无法读取系统凭据库中的模型密钥。".to_owned()),
+        }
+    }
+
+    fn write(&self, name: &str, value: &str) -> Result<(), String> {
+        keyring::Entry::new(DESKTOP_KEYRING_SERVICE, name)
+            .map_err(|_| "无法访问系统凭据库。".to_owned())?
+            .set_password(value)
+            .map_err(|_| "无法将模型密钥保存到系统凭据库。".to_owned())
+    }
+
+    fn remove(&self, name: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(DESKTOP_KEYRING_SERVICE, name)
+            .map_err(|_| "无法访问系统凭据库。".to_owned())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("无法从系统凭据库移除模型密钥。".to_owned()),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct InMemorySecretStore {
+    values: Mutex<HashMap<String, String>>,
+}
+
+#[cfg(test)]
+impl SecretStore for InMemorySecretStore {
+    fn read(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .values
+            .lock()
+            .map_err(|_| "test secret store lock was poisoned".to_owned())?
+            .get(name)
+            .cloned())
+    }
+
+    fn write(&self, name: &str, value: &str) -> Result<(), String> {
+        self.values
+            .lock()
+            .map_err(|_| "test secret store lock was poisoned".to_owned())?
+            .insert(name.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    fn remove(&self, name: &str) -> Result<(), String> {
+        self.values
+            .lock()
+            .map_err(|_| "test secret store lock was poisoned".to_owned())?
+            .remove(name);
+        Ok(())
     }
 }
 
@@ -1114,19 +1217,24 @@ pub struct PythonSidecarSupervisor {
     data_dir: PathBuf,
     repository_root: PathBuf,
     local_demo: bool,
+    secret_store: Arc<dyn SecretStore>,
 }
 
 impl PythonSidecarSupervisor {
     pub fn new(data_dir: PathBuf) -> Result<Self, String> {
-        Self::new_with_local_demo(data_dir, false)
+        Self::new_with_local_demo_and_secret_store(data_dir, false, Arc::new(KeyringSecretStore))
     }
 
     #[cfg(test)]
     fn new_for_explicit_local_demo(data_dir: PathBuf) -> Result<Self, String> {
-        Self::new_with_local_demo(data_dir, true)
+        Self::new_with_local_demo_and_secret_store(data_dir, true, Arc::new(KeyringSecretStore))
     }
 
-    fn new_with_local_demo(data_dir: PathBuf, local_demo: bool) -> Result<Self, String> {
+    fn new_with_local_demo_and_secret_store(
+        data_dir: PathBuf,
+        local_demo: bool,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Result<Self, String> {
         let repository_root = repository_root();
         let client = Client::builder()
             .connect_timeout(Duration::from_millis(350))
@@ -1135,6 +1243,7 @@ impl PythonSidecarSupervisor {
             .redirect(Policy::none())
             .build()
             .map_err(|_| "failed to initialize the local runtime HTTP client".to_owned())?;
+        let model_configuration = load_model_configuration(&data_dir, secret_store.as_ref())?;
 
         Ok(Self {
             inner: Mutex::new(SupervisorState {
@@ -1144,12 +1253,13 @@ impl PythonSidecarSupervisor {
                 child: None,
                 connection: None,
                 article_mappings: HashMap::new(),
-                model_configuration: None,
+                model_configuration,
             }),
             client,
             data_dir,
             repository_root,
             local_demo,
+            secret_store,
         })
     }
 
@@ -2260,6 +2370,7 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         let mut state = self.lock_state()?;
         let configuration =
             validate_model_configuration(request, state.model_configuration.as_ref())?;
+        persist_model_configuration(&self.data_dir, self.secret_store.as_ref(), &configuration)?;
         let summary = configuration.summary();
 
         terminate_child(&mut state);
@@ -2267,7 +2378,7 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         state.article_mappings.clear();
         state.model_configuration = Some(configuration);
         state.state = RuntimeState::Stopped;
-        state.detail = "模型配置已应用到当前会话；下次调用会重启本地服务。".to_owned();
+        state.detail = "模型配置已安全保存；下次调用会重启本地服务。".to_owned();
         Ok(summary)
     }
 
@@ -2318,6 +2429,66 @@ fn repository_root() -> PathBuf {
         .nth(3)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn model_configuration_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MODEL_CONFIGURATION_FILE)
+}
+
+fn load_model_configuration(
+    data_dir: &Path,
+    secret_store: &dyn SecretStore,
+) -> Result<Option<PrivateModelConfiguration>, String> {
+    let path = model_configuration_path(data_dir);
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("无法读取本地模型配置。".to_owned()),
+    };
+    let persisted: PersistedModelConfiguration =
+        serde_json::from_slice(&bytes).map_err(|_| "本地模型配置文件无效。".to_owned())?;
+    if persisted.schema_version != 1 {
+        return Err("本地模型配置版本不受支持。".to_owned());
+    }
+    let api_key = secret_store
+        .read(MODEL_API_KEY_SECRET)?
+        .ok_or_else(|| "已保存的模型配置缺少系统凭据。请在设置中重新保存 API Key。".to_owned())?;
+    let tavily_api_key = secret_store
+        .read(TAVILY_API_KEY_SECRET)?
+        .unwrap_or_default();
+    validate_model_configuration(
+        ConfigureModelRequest {
+            name: persisted.name,
+            base_url: persisted.base_url,
+            api_key,
+            text_model: persisted.text_model,
+            image_base_url: persisted.image_base_url,
+            image_model: persisted.image_model,
+            image_trusted_hosts: persisted.image_trusted_hosts,
+            tavily_api_key,
+            timeout_seconds: persisted.timeout_seconds,
+        },
+        None,
+    )
+    .map(Some)
+}
+
+fn persist_model_configuration(
+    data_dir: &Path,
+    secret_store: &dyn SecretStore,
+    configuration: &PrivateModelConfiguration,
+) -> Result<(), String> {
+    secret_store.write(MODEL_API_KEY_SECRET, &configuration.api_key)?;
+    if configuration.tavily_api_key.is_empty() {
+        secret_store.remove(TAVILY_API_KEY_SECRET)?;
+    } else {
+        secret_store.write(TAVILY_API_KEY_SECRET, &configuration.tavily_api_key)?;
+    }
+    fs::create_dir_all(data_dir).map_err(|_| "无法创建本地模型配置目录。".to_owned())?;
+    let contents = serde_json::to_vec_pretty(&configuration.persisted())
+        .map_err(|_| "无法序列化本地模型配置。".to_owned())?;
+    fs::write(model_configuration_path(data_dir), contents)
+        .map_err(|_| "无法保存本地模型配置。".to_owned())
 }
 
 fn joined_python_path(source_root: &Path) -> Result<OsString, String> {
@@ -3605,24 +3776,27 @@ fn summarize_template_extraction(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
-        public_process_publish_job, public_publish_job, public_publish_plan, strong_token,
-        summarize_template_extraction, title_from_markdown, unavailable_wechat_sync_status,
-        validate_connection_request, validate_create_publish_plan_request, validate_draft,
-        validate_image_request, validate_process_publish_job_request,
-        validate_process_summary_against_plan, validate_publish_plan_request,
-        validate_template_extraction_request, validate_workflow_request,
-        wechat_sync_platform_defaults, ApprovePublishPlanRequestWire, ArticleDetailWire,
-        ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate, BatchTopicCandidateWire,
-        BatchTopicPlanWire, ConnectionConfigRequestWire, ConnectionProfilePublic,
-        ConnectionProfileWire, CreateArticleMetadataWire, CreateArticleRequestWire,
-        CreateConnectionProfileRequest, CreateConnectionRequestWire, CreatePublishPlanRequest,
-        CreatePublishPlanRequestWire, CreateRevisionRequestWire, EmptyRequestWire,
-        EnqueuePublishPlanWire, ExtractTemplateRequest, ExtractTemplateResponseWire,
-        GenerateImageRequest, GenerateImageResponseWire, GenerateImagesRequestWire,
-        HealthResponseWire, IdWire, ProcessPublishJobRequest, ProcessPublishJobWire,
+        model_configuration_path, public_process_publish_job, public_publish_job,
+        public_publish_plan, strong_token, summarize_template_extraction, title_from_markdown,
+        unavailable_wechat_sync_status, validate_connection_request,
+        validate_create_publish_plan_request, validate_draft, validate_image_request,
+        validate_process_publish_job_request, validate_process_summary_against_plan,
+        validate_publish_plan_request, validate_template_extraction_request,
+        validate_workflow_request, wechat_sync_platform_defaults, ApprovePublishPlanRequestWire,
+        ArticleDetailWire, ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate,
+        BatchTopicCandidateWire, BatchTopicPlanWire, ConfigureModelRequest,
+        ConnectionConfigRequestWire, ConnectionProfilePublic, ConnectionProfileWire,
+        CreateArticleMetadataWire, CreateArticleRequestWire, CreateConnectionProfileRequest,
+        CreateConnectionRequestWire, CreatePublishPlanRequest, CreatePublishPlanRequestWire,
+        CreateRevisionRequestWire, EmptyRequestWire, EnqueuePublishPlanWire,
+        ExtractTemplateRequest, ExtractTemplateResponseWire, GenerateImageRequest,
+        GenerateImageResponseWire, GenerateImagesRequestWire, HealthResponseWire, IdWire,
+        InMemorySecretStore, ProcessPublishJobRequest, ProcessPublishJobWire,
         PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
-        PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, SaveDraftRequest,
+        PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, SaveDraftRequest, SecretStore,
         SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire, VisualCompositionRequest,
         WorkflowAgentInstruction, WorkflowRunWire, WorkflowSkillInstruction, WorkflowWire,
     };
@@ -3829,6 +4003,51 @@ mod tests {
             serde_json::json!(["依赖整理", "安装体验", "升级建议"])
         );
         assert!(serialized.get("keyPoints").is_none());
+    }
+
+    #[test]
+    fn model_configuration_survives_restart_without_serializing_secrets() {
+        let data_dir = tempfile::tempdir().expect("temporary runtime directory");
+        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
+        let first = PythonSidecarSupervisor::new_with_local_demo_and_secret_store(
+            data_dir.path().to_path_buf(),
+            false,
+            Arc::clone(&secrets),
+        )
+        .expect("supervisor");
+        let initial = first
+            .configure_model(ConfigureModelRequest {
+                name: "Persisted local model".to_owned(),
+                base_url: "https://models.example/v1".to_owned(),
+                api_key: "model-secret-kept-in-keyring".to_owned(),
+                text_model: "example-text".to_owned(),
+                image_base_url: Some("https://images.example/v1".to_owned()),
+                image_model: Some("example-image".to_owned()),
+                image_trusted_hosts: vec!["images.example".to_owned()],
+                tavily_api_key: "tavily-secret-kept-in-keyring".to_owned(),
+                timeout_seconds: 120,
+            })
+            .expect("persist model configuration");
+        assert_eq!(initial.persistence, "os_keychain");
+
+        let serialized = std::fs::read_to_string(model_configuration_path(data_dir.path()))
+            .expect("non-secret model configuration");
+        assert!(!serialized.contains("model-secret-kept-in-keyring"));
+        assert!(!serialized.contains("tavily-secret-kept-in-keyring"));
+        drop(first);
+
+        let restored = PythonSidecarSupervisor::new_with_local_demo_and_secret_store(
+            data_dir.path().to_path_buf(),
+            false,
+            secrets,
+        )
+        .expect("reload supervisor")
+        .model_configuration()
+        .expect("read model configuration")
+        .expect("persisted model configuration");
+        assert_eq!(restored, initial);
+        assert!(restored.secret_configured);
+        assert!(restored.web_search_configured);
     }
 
     #[test]

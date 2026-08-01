@@ -34,11 +34,12 @@ export const availableSkills: StudioSkill[] = [
     isBuiltIn: true,
   },
   {
-    id: "image-planning",
-    name: "配图编排",
-    description: "判断图片位置、说明文字和封面比例。",
-    instructions: "仅在图片能帮助理解时插入，为每张图片编写准确替代文本，并避免与正文重复表达。",
-    source: "Open Publisher 预置",
+    id: "baoyu-article-illustrator",
+    name: "文章正文配图",
+    description: "按文章结构规划位置、图形类型、素材与生成提示词。",
+    instructions:
+      "先通读全文，只在图片确实能帮助理解时规划位置，避免把比喻按字面画出来。按信息结构选择图形类型：数据或技术概念用信息图，过程用流程图，选项用对比图，模型用框架图，时间演进用时间线，叙事才用场景图。每项必须放在文章实际存在的小节标题之后，替代文本描述图片真正表达的内容。优先使用作者提供的素材且不重复；缺少素材时才写生图提示词。生成提示词应突出该小节的核心概念与关系，全文保持一致的风格和配色，并且不包含可读文字、品牌标识、人物肖像、水印或未经证实的数据。只输出配图计划，不改写文章或直接生成图片。",
+    source: "JimLiu/baoyu-skills · baoyu-article-illustrator (MIT)",
     isBuiltIn: true,
   },
 ];
@@ -112,12 +113,12 @@ export const defaultAgents: StudioAgent[] = [
   },
   {
     id: "visual",
-    name: "配图规划 Agent",
+    name: "正文配图 Agent",
     role: "视觉编辑",
-    description: "将已选素材或生成图片放到合适的位置。",
+    description: "按文章结构安排素材和生成图片，并写回合适的位置。",
     prompt:
-      "只在图片能帮助理解时插入。为每张图片写准确的替代文本，并避免图片与正文重复表达。",
-    skillIds: ["image-planning"],
+      "先为每张图确定信息目的和正文位置，再选择作者素材或生成图片。图片应补充正文，不重复文章已经说清的内容。",
+    skillIds: ["baoyu-article-illustrator"],
     enabled: true,
     runtimeNodeId: "visual",
   },

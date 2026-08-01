@@ -175,7 +175,8 @@ scripts/                        安装与质量检查脚本
 
 仓库核心代码采用 [`AGPL-3.0-only`](LICENSE)。
 
-AIWriteX 和 Guizang Social Card Skill 只用于产品/架构研究或可选集成评估；v0.1
-没有复制或内置它们的源码与素材。来源、核对版本和许可证记录在
+AIWriteX 仅用于产品/架构研究。内置的正文配图规则改编自 MIT 协议的
+`JimLiu/baoyu-skills` 中 `baoyu-article-illustrator` 的工作流；它只提供文字规则，
+不会打包或执行上游的脚本、提供商或素材。来源、核对版本和许可证记录在
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。引入新的模板、提示词、Skill
 或适配器前，需要记录来源 URL、精确版本、SPDX 标识、归属信息和兼容性结论。

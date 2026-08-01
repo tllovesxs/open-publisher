@@ -376,7 +376,7 @@ export interface ModelConfigurationSummary {
   timeoutSeconds: number;
   secretConfigured: boolean;
   webSearchConfigured: boolean;
-  persistence: "session";
+  persistence: "os_keychain";
 }
 
 export interface ModelConnectionTestSummary {
@@ -900,7 +900,7 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       timeoutSeconds: request.timeoutSeconds,
       secretConfigured: Boolean(request.apiKey.trim()),
       webSearchConfigured: Boolean(request.tavilyApiKey.trim()),
-      persistence: "session",
+      persistence: "os_keychain",
     };
     return { ...mockModelConfiguration };
   },

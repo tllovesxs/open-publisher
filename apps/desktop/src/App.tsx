@@ -111,6 +111,10 @@ const OPTIONAL_WORKFLOW_NODE_IDS: DisabledOptionalNodeId[] = [
   "visual",
 ];
 
+const LEGACY_BUILT_IN_SKILL_ID_MIGRATIONS: Readonly<Record<string, string>> = {
+  "image-planning": "baoyu-article-illustrator",
+};
+
 function isOptionalWorkflowNodeId(
   value: string | undefined,
 ): value is DisabledOptionalNodeId {
@@ -156,7 +160,16 @@ function loadCustomSkills() {
   return Array.isArray(stored) ? stored.filter(isStoredSkill) : [];
 }
 
-function normalizeStudioAgents(value: unknown): StudioAgent[] {
+function normalizeSavedSkillIds(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const normalized = value
+    .filter((id): id is string => typeof id === "string")
+    .map((id) => LEGACY_BUILT_IN_SKILL_ID_MIGRATIONS[id] ?? id)
+    .slice(0, 12);
+  return [...new Set(normalized)];
+}
+
+export function normalizeStudioAgents(value: unknown): StudioAgent[] {
   const stored = Array.isArray(value) ? value : [];
   const byId = new Map(
     stored
@@ -176,9 +189,7 @@ function normalizeStudioAgents(value: unknown): StudioAgent[] {
           : defaultAgent.description,
       prompt:
         typeof saved.prompt === "string" ? saved.prompt.slice(0, 6000) : defaultAgent.prompt,
-      skillIds: Array.isArray(saved.skillIds)
-        ? saved.skillIds.filter((id): id is string => typeof id === "string").slice(0, 12)
-        : [...defaultAgent.skillIds],
+      skillIds: normalizeSavedSkillIds(saved.skillIds, defaultAgent.skillIds),
       enabled: typeof saved.enabled === "boolean" ? saved.enabled : defaultAgent.enabled,
       // Node ownership is a fixed workflow contract, not a user-editable field.
       runtimeNodeId: defaultAgent.runtimeNodeId,

@@ -258,7 +258,7 @@ export function SettingsPage({
                       onChange={(event) => setApiKey(event.target.value)}
                       placeholder={
                         modelConfiguration?.secretConfigured
-                          ? "留空则继续使用当前会话密钥"
+                          ? "留空则继续使用已保存的密钥"
                           : "输入 API Key"
                       }
                       type={showKey ? "text" : "password"}
@@ -272,7 +272,7 @@ export function SettingsPage({
                       {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   </span>
-                  <small>密钥只保留在当前桌面会话和 Sidecar 进程环境中。</small>
+                  <small>密钥仅由桌面端保存在系统凭据库，不进入 WebView、SQLite 或配置文件。</small>
                 </div>
 
                 <div className="form-grid form-grid--two">
@@ -349,7 +349,7 @@ export function SettingsPage({
                         onChange={(event) => setTavilyApiKey(event.target.value)}
                         placeholder={
                           modelConfiguration?.webSearchConfigured
-                            ? "留空则继续使用当前会话密钥"
+                            ? "留空则继续使用已保存的密钥"
                             : "输入 Tavily API Key（可选）"
                         }
                         type={showTavilyKey ? "text" : "password"}
@@ -363,7 +363,7 @@ export function SettingsPage({
                         {showTavilyKey ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
                     </span>
-                    <small>写作 Agent 会自行判断是否检索；密钥只保留在当前桌面会话。</small>
+                    <small>写作 Agent 会自行判断是否检索；密钥仅保存在系统凭据库。</small>
                   </div>
                 </details>
 

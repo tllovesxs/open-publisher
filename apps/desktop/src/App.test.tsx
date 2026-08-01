@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
-import App from "./App";
+import App, { normalizeStudioAgents } from "./App";
+import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
   type DesktopBridge,
   desktopBridge,
@@ -33,7 +34,7 @@ const nativeTestBridge: DesktopBridge = {
     timeoutSeconds: 30,
     secretConfigured: true,
     webSearchConfigured: false,
-    persistence: "session",
+    persistence: "os_keychain",
   }),
   testModelConnection: async () => ({
     provider: "openai-compatible",
@@ -53,6 +54,34 @@ describe("desktop product flow", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     setDesktopBridgeForTests(null);
+  });
+
+  it("uses the built-in Baoyu article-illustration Skill and migrates the retired visual Skill", () => {
+    expect(availableSkills).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "baoyu-article-illustrator", isBuiltIn: true }),
+      ]),
+    );
+    expect(availableSkills.some((skill) => skill.id === "image-planning")).toBe(false);
+    expect(defaultAgents.find((agent) => agent.id === "visual")?.skillIds).toEqual([
+      "baoyu-article-illustrator",
+    ]);
+
+    const migrated = normalizeStudioAgents([
+      {
+        id: "visual",
+        name: "旧配图 Agent",
+        role: "视觉编辑",
+        description: "旧配置",
+        prompt: "旧提示词",
+        skillIds: ["image-planning"],
+        enabled: true,
+      },
+    ]);
+
+    expect(migrated.find((agent) => agent.id === "visual")?.skillIds).toEqual([
+      "baoyu-article-illustrator",
+    ]);
   });
 
   it("exposes the focused content-production areas", async () => {
