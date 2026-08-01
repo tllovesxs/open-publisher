@@ -34,7 +34,7 @@ const nativeTestBridge: DesktopBridge = {
     timeoutSeconds: 30,
     secretConfigured: true,
     webSearchConfigured: false,
-    persistence: "os_keychain",
+    persistence: "encrypted_local_database",
   }),
   testModelConnection: async () => ({
     provider: "openai-compatible",
@@ -256,7 +256,7 @@ describe("desktop product flow", () => {
 
     expect(await screen.findByText("文章生成失败")).toBeVisible();
     expect(screen.getByText("失败原因：upstream timeout")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "重试本次生成" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "重试本次生成" })[0]!);
 
     await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(2));
     await screen.findByText(/文章已生成 · 修订/);

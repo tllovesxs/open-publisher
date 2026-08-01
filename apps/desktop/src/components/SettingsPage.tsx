@@ -272,7 +272,7 @@ export function SettingsPage({
                       {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   </span>
-                  <small>密钥仅由桌面端保存在系统凭据库，不进入 WebView、SQLite 或配置文件。</small>
+                  <small>密钥保存于本机加密数据库，不进入 WebView、文章数据库或配置文件。</small>
                 </div>
 
                 <div className="form-grid form-grid--two">
@@ -363,7 +363,7 @@ export function SettingsPage({
                         {showTavilyKey ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
                     </span>
-                    <small>写作 Agent 会自行判断是否检索；密钥仅保存在系统凭据库。</small>
+                    <small>写作 Agent 会自行判断是否检索；密钥保存于本机加密数据库。</small>
                   </div>
                 </details>
 
@@ -502,7 +502,7 @@ export function SettingsPage({
                   <dt>模型密钥</dt>
                   <dd>
                     {modelConfiguration?.secretConfigured
-                      ? "当前会话已配置"
+                      ? "本机加密数据库已配置"
                       : "未配置"}
                   </dd>
                 </div>

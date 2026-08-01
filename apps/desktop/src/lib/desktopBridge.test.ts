@@ -192,7 +192,7 @@ describe("desktopBridge browser preview boundary", () => {
       textModel: "test-text-model",
       secretConfigured: true,
       webSearchConfigured: false,
-      persistence: "os_keychain",
+      persistence: "encrypted_local_database",
     });
     expect(configuration).not.toHaveProperty("apiKey");
     expect(await desktopBridge.modelConfiguration()).toEqual(configuration);

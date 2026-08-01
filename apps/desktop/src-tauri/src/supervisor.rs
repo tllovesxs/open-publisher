@@ -13,10 +13,12 @@ use std::{
 
 use rand::{rngs::OsRng, RngCore};
 use reqwest::{blocking::Client, redirect::Policy, StatusCode};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
 const MODEL_CONFIGURATION_FILE: &str = "model-configuration.json";
+const MODEL_SECRETS_DATABASE_FILE: &str = "model-secrets.sqlite3";
 const DESKTOP_KEYRING_SERVICE: &str = "io.openpublisher.desktop";
 const MODEL_API_KEY_SECRET: &str = "model-api-key";
 const TAVILY_API_KEY_SECRET: &str = "tavily-api-key";
@@ -683,7 +685,7 @@ impl PrivateModelConfiguration {
             timeout_seconds: self.timeout_seconds,
             secret_configured: !self.api_key.is_empty(),
             web_search_configured: !self.tavily_api_key.is_empty(),
-            persistence: "os_keychain",
+            persistence: "encrypted_local_database",
         }
     }
 
@@ -701,8 +703,8 @@ impl PrivateModelConfiguration {
     }
 }
 
-/// Non-secret fields are durable in the app data directory. API keys are kept
-/// separately in the operating system credential store and never serialized.
+/// Non-secret fields stay in a small JSON document. API keys are stored in a
+/// separate local SQLite database as Windows DPAPI-protected blobs.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PersistedModelConfiguration {
@@ -718,8 +720,6 @@ struct PersistedModelConfiguration {
 
 trait SecretStore: Send + Sync {
     fn read(&self, name: &str) -> Result<Option<String>, String>;
-    fn write(&self, name: &str, value: &str) -> Result<(), String>;
-    fn remove(&self, name: &str) -> Result<(), String>;
 }
 
 struct KeyringSecretStore;
@@ -732,22 +732,6 @@ impl SecretStore for KeyringSecretStore {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err("无法读取系统凭据库中的模型密钥。".to_owned()),
-        }
-    }
-
-    fn write(&self, name: &str, value: &str) -> Result<(), String> {
-        keyring::Entry::new(DESKTOP_KEYRING_SERVICE, name)
-            .map_err(|_| "无法访问系统凭据库。".to_owned())?
-            .set_password(value)
-            .map_err(|_| "无法将模型密钥保存到系统凭据库。".to_owned())
-    }
-
-    fn remove(&self, name: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new(DESKTOP_KEYRING_SERVICE, name)
-            .map_err(|_| "无法访问系统凭据库。".to_owned())?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err("无法从系统凭据库移除模型密钥。".to_owned()),
         }
     }
 }
@@ -767,22 +751,6 @@ impl SecretStore for InMemorySecretStore {
             .map_err(|_| "test secret store lock was poisoned".to_owned())?
             .get(name)
             .cloned())
-    }
-
-    fn write(&self, name: &str, value: &str) -> Result<(), String> {
-        self.values
-            .lock()
-            .map_err(|_| "test secret store lock was poisoned".to_owned())?
-            .insert(name.to_owned(), value.to_owned());
-        Ok(())
-    }
-
-    fn remove(&self, name: &str) -> Result<(), String> {
-        self.values
-            .lock()
-            .map_err(|_| "test secret store lock was poisoned".to_owned())?
-            .remove(name);
-        Ok(())
     }
 }
 
@@ -2450,6 +2418,168 @@ fn model_configuration_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MODEL_CONFIGURATION_FILE)
 }
 
+fn model_secrets_database_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MODEL_SECRETS_DATABASE_FILE)
+}
+
+fn open_model_secrets_database(data_dir: &Path) -> Result<Connection, String> {
+    fs::create_dir_all(data_dir).map_err(|_| "无法创建本地模型配置目录。".to_owned())?;
+    let database = Connection::open(model_secrets_database_path(data_dir))
+        .map_err(|_| "无法打开本地加密密钥数据库。".to_owned())?;
+    database
+        .execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE IF NOT EXISTS protected_secrets (
+                name TEXT PRIMARY KEY NOT NULL,
+                protected_value BLOB NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            ",
+        )
+        .map_err(|_| "无法初始化本地加密密钥数据库。".to_owned())?;
+    Ok(database)
+}
+
+fn save_database_secret(data_dir: &Path, name: &str, value: &str) -> Result<(), String> {
+    let database = open_model_secrets_database(data_dir)?;
+    if value.is_empty() {
+        database
+            .execute(
+                "DELETE FROM protected_secrets WHERE name = ?1",
+                params![name],
+            )
+            .map_err(|_| "无法更新本地加密密钥数据库。".to_owned())?;
+        return Ok(());
+    }
+    let protected_value = protect_local_secret(value)?;
+    database
+        .execute(
+            "
+            INSERT INTO protected_secrets (name, protected_value, updated_at)
+            VALUES (?1, ?2, unixepoch())
+            ON CONFLICT(name) DO UPDATE SET
+                protected_value = excluded.protected_value,
+                updated_at = excluded.updated_at
+            ",
+            params![name, protected_value],
+        )
+        .map_err(|_| "无法保存本地加密密钥。".to_owned())?;
+    Ok(())
+}
+
+fn load_database_secret(data_dir: &Path, name: &str) -> Result<Option<String>, String> {
+    let path = model_secrets_database_path(data_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let database = open_model_secrets_database(data_dir)?;
+    let protected_value = database
+        .query_row(
+            "SELECT protected_value FROM protected_secrets WHERE name = ?1",
+            params![name],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(|_| "无法读取本地加密密钥数据库。".to_owned())?;
+    protected_value
+        .map(|value| unprotect_local_secret(&value))
+        .transpose()
+}
+
+#[cfg(windows)]
+fn protect_local_secret(value: &str) -> Result<Vec<u8>, String> {
+    use std::{ffi::c_void, ptr, slice};
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB},
+    };
+
+    let value = value.as_bytes();
+    let length = u32::try_from(value.len()).map_err(|_| "API Key 过长。".to_owned())?;
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: length,
+        pbData: value.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+    let protected = unsafe {
+        CryptProtectData(
+            &input,
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if protected == 0 || output.pbData.is_null() {
+        return Err("无法使用 Windows 数据保护保存 API Key。".to_owned());
+    }
+    let protected_value =
+        unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    unsafe {
+        LocalFree(output.pbData.cast::<c_void>());
+    }
+    Ok(protected_value)
+}
+
+#[cfg(windows)]
+fn unprotect_local_secret(value: &[u8]) -> Result<String, String> {
+    use std::{ffi::c_void, ptr, slice};
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{
+            CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        },
+    };
+
+    let length = u32::try_from(value.len()).map_err(|_| "已保存的 API Key 无效。".to_owned())?;
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: length,
+        pbData: value.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: ptr::null_mut(),
+    };
+    let unprotected = unsafe {
+        CryptUnprotectData(
+            &input,
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if unprotected == 0 || output.pbData.is_null() {
+        return Err("无法读取本地加密 API Key。请重新保存模型连接。".to_owned());
+    }
+    let result = String::from_utf8(
+        unsafe { slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec(),
+    )
+    .map_err(|_| "已保存的 API Key 编码无效。".to_owned());
+    unsafe {
+        LocalFree(output.pbData.cast::<c_void>());
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn protect_local_secret(_value: &str) -> Result<Vec<u8>, String> {
+    Err("本机加密密钥数据库目前仅支持 Windows。".to_owned())
+}
+
+#[cfg(not(windows))]
+fn unprotect_local_secret(_value: &[u8]) -> Result<String, String> {
+    Err("本机加密密钥数据库目前仅支持 Windows。".to_owned())
+}
+
 fn load_model_configuration(
     data_dir: &Path,
     secret_store: &dyn SecretStore,
@@ -2465,12 +2595,28 @@ fn load_model_configuration(
     if persisted.schema_version != 1 {
         return Err("本地模型配置版本不受支持。".to_owned());
     }
-    let api_key = secret_store
-        .read(MODEL_API_KEY_SECRET)?
-        .ok_or_else(|| "已保存的模型配置缺少系统凭据。请在设置中重新保存 API Key。".to_owned())?;
-    let tavily_api_key = secret_store
-        .read(TAVILY_API_KEY_SECRET)?
-        .unwrap_or_default();
+    let api_key = match load_database_secret(data_dir, MODEL_API_KEY_SECRET)? {
+        Some(value) => value,
+        None => {
+            let value = secret_store
+                .read(MODEL_API_KEY_SECRET)?
+                .ok_or_else(|| "已保存的模型配置缺少 API Key。请在设置中重新保存。".to_owned())?;
+            save_database_secret(data_dir, MODEL_API_KEY_SECRET, &value)?;
+            value
+        }
+    };
+    let tavily_api_key = match load_database_secret(data_dir, TAVILY_API_KEY_SECRET)? {
+        Some(value) => value,
+        None => {
+            let value = secret_store
+                .read(TAVILY_API_KEY_SECRET)?
+                .unwrap_or_default();
+            if !value.is_empty() {
+                save_database_secret(data_dir, TAVILY_API_KEY_SECRET, &value)?;
+            }
+            value
+        }
+    };
     validate_model_configuration(
         ConfigureModelRequest {
             name: persisted.name,
@@ -2490,15 +2636,15 @@ fn load_model_configuration(
 
 fn persist_model_configuration(
     data_dir: &Path,
-    secret_store: &dyn SecretStore,
+    _secret_store: &dyn SecretStore,
     configuration: &PrivateModelConfiguration,
 ) -> Result<(), String> {
-    secret_store.write(MODEL_API_KEY_SECRET, &configuration.api_key)?;
-    if configuration.tavily_api_key.is_empty() {
-        secret_store.remove(TAVILY_API_KEY_SECRET)?;
-    } else {
-        secret_store.write(TAVILY_API_KEY_SECRET, &configuration.tavily_api_key)?;
-    }
+    save_database_secret(data_dir, MODEL_API_KEY_SECRET, &configuration.api_key)?;
+    save_database_secret(
+        data_dir,
+        TAVILY_API_KEY_SECRET,
+        &configuration.tavily_api_key,
+    )?;
     fs::create_dir_all(data_dir).map_err(|_| "无法创建本地模型配置目录。".to_owned())?;
     let contents = serde_json::to_vec_pretty(&configuration.persisted())
         .map_err(|_| "无法序列化本地模型配置。".to_owned())?;
@@ -3885,27 +4031,28 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        model_configuration_path, public_process_publish_job, public_publish_job,
-        public_publish_plan, strong_token, summarize_template_extraction,
-        summarize_workflow_activity_event, title_from_markdown, unavailable_wechat_sync_status,
-        validate_connection_request, validate_create_publish_plan_request, validate_draft,
-        validate_image_request, validate_process_publish_job_request,
-        validate_process_summary_against_plan, validate_publish_plan_request,
-        validate_template_extraction_request, validate_workflow_request,
-        wechat_sync_platform_defaults, ApprovePublishPlanRequestWire, ArticleDetailWire,
-        ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate, BatchTopicCandidateWire,
-        BatchTopicPlanWire, ConfigureModelRequest, ConnectionConfigRequestWire,
-        ConnectionProfilePublic, ConnectionProfileWire, CreateArticleMetadataWire,
-        CreateArticleRequestWire, CreateConnectionProfileRequest, CreateConnectionRequestWire,
-        CreatePublishPlanRequest, CreatePublishPlanRequestWire, CreateRevisionRequestWire,
-        EmptyRequestWire, EnqueuePublishPlanWire, ExtractTemplateRequest,
-        ExtractTemplateResponseWire, GenerateImageRequest, GenerateImageResponseWire,
-        GenerateImagesRequestWire, HealthResponseWire, IdWire, InMemorySecretStore,
-        ProcessPublishJobRequest, ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest,
-        PublishTargetRequestWire, PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest,
-        RuntimeEventWire, SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire,
-        StartRunRequestWire, VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
-        WorkflowSkillInstruction, WorkflowWire,
+        load_database_secret, model_configuration_path, model_secrets_database_path,
+        public_process_publish_job, public_publish_job, public_publish_plan, strong_token,
+        summarize_template_extraction, summarize_workflow_activity_event, title_from_markdown,
+        unavailable_wechat_sync_status, validate_connection_request,
+        validate_create_publish_plan_request, validate_draft, validate_image_request,
+        validate_process_publish_job_request, validate_process_summary_against_plan,
+        validate_publish_plan_request, validate_template_extraction_request,
+        validate_workflow_request, wechat_sync_platform_defaults, ApprovePublishPlanRequestWire,
+        ArticleDetailWire, ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate,
+        BatchTopicCandidateWire, BatchTopicPlanWire, ConfigureModelRequest,
+        ConnectionConfigRequestWire, ConnectionProfilePublic, ConnectionProfileWire,
+        CreateArticleMetadataWire, CreateArticleRequestWire, CreateConnectionProfileRequest,
+        CreateConnectionRequestWire, CreatePublishPlanRequest, CreatePublishPlanRequestWire,
+        CreateRevisionRequestWire, EmptyRequestWire, EnqueuePublishPlanWire,
+        ExtractTemplateRequest, ExtractTemplateResponseWire, GenerateImageRequest,
+        GenerateImageResponseWire, GenerateImagesRequestWire, HealthResponseWire, IdWire,
+        InMemorySecretStore, PersistedModelConfiguration, ProcessPublishJobRequest,
+        ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
+        PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, RuntimeEventWire,
+        SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire,
+        VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
+        WorkflowSkillInstruction, WorkflowWire, MODEL_API_KEY_SECRET, TAVILY_API_KEY_SECRET,
     };
 
     #[test]
@@ -4182,21 +4329,29 @@ mod tests {
             .configure_model(ConfigureModelRequest {
                 name: "Persisted local model".to_owned(),
                 base_url: "https://models.example/v1".to_owned(),
-                api_key: "model-secret-kept-in-keyring".to_owned(),
+                api_key: "model-secret-kept-in-encrypted-database".to_owned(),
                 text_model: "example-text".to_owned(),
                 image_base_url: Some("https://images.example/v1".to_owned()),
                 image_model: Some("example-image".to_owned()),
                 image_trusted_hosts: vec!["images.example".to_owned()],
-                tavily_api_key: "tavily-secret-kept-in-keyring".to_owned(),
+                tavily_api_key: "tavily-secret-kept-in-encrypted-database".to_owned(),
                 timeout_seconds: 120,
             })
             .expect("persist model configuration");
-        assert_eq!(initial.persistence, "os_keychain");
+        assert_eq!(initial.persistence, "encrypted_local_database");
 
         let serialized = std::fs::read_to_string(model_configuration_path(data_dir.path()))
             .expect("non-secret model configuration");
-        assert!(!serialized.contains("model-secret-kept-in-keyring"));
-        assert!(!serialized.contains("tavily-secret-kept-in-keyring"));
+        assert!(!serialized.contains("model-secret-kept-in-encrypted-database"));
+        assert!(!serialized.contains("tavily-secret-kept-in-encrypted-database"));
+        let encrypted_database = std::fs::read(model_secrets_database_path(data_dir.path()))
+            .expect("encrypted local secrets database");
+        assert!(!encrypted_database
+            .windows(b"model-secret-kept-in-encrypted-database".len())
+            .any(|value| value == b"model-secret-kept-in-encrypted-database"));
+        assert!(!encrypted_database
+            .windows(b"tavily-secret-kept-in-encrypted-database".len())
+            .any(|value| value == b"tavily-secret-kept-in-encrypted-database"));
         drop(first);
 
         let restored = PythonSidecarSupervisor::new_with_local_demo_and_secret_store(
@@ -4211,6 +4366,72 @@ mod tests {
         assert_eq!(restored, initial);
         assert!(restored.secret_configured);
         assert!(restored.web_search_configured);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_keyring_secrets_migrate_to_the_encrypted_local_database() {
+        let data_dir = tempfile::tempdir().expect("temporary runtime directory");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        {
+            let mut values = secrets.values.lock().expect("legacy secrets lock");
+            values.insert(
+                MODEL_API_KEY_SECRET.to_owned(),
+                "legacy-model-key-for-migration".to_owned(),
+            );
+            values.insert(
+                TAVILY_API_KEY_SECRET.to_owned(),
+                "legacy-tavily-key-for-migration".to_owned(),
+            );
+        }
+        let persisted = PersistedModelConfiguration {
+            schema_version: 1,
+            name: "Legacy local model".to_owned(),
+            base_url: "https://models.example/v1".to_owned(),
+            text_model: "example-text".to_owned(),
+            image_base_url: Some("https://images.example/v1".to_owned()),
+            image_model: Some("example-image".to_owned()),
+            image_trusted_hosts: vec!["images.example".to_owned()],
+            timeout_seconds: 120,
+        };
+        std::fs::write(
+            model_configuration_path(data_dir.path()),
+            serde_json::to_vec(&persisted).expect("legacy configuration JSON"),
+        )
+        .expect("write legacy configuration");
+
+        let restored = PythonSidecarSupervisor::new_with_local_demo_and_secret_store(
+            data_dir.path().to_path_buf(),
+            false,
+            secrets,
+        )
+        .expect("reload supervisor")
+        .model_configuration()
+        .expect("read model configuration")
+        .expect("migrated model configuration");
+
+        assert!(restored.secret_configured);
+        assert!(restored.web_search_configured);
+        assert_eq!(
+            load_database_secret(data_dir.path(), MODEL_API_KEY_SECRET)
+                .expect("read migrated model key")
+                .as_deref(),
+            Some("legacy-model-key-for-migration")
+        );
+        assert_eq!(
+            load_database_secret(data_dir.path(), TAVILY_API_KEY_SECRET)
+                .expect("read migrated Tavily key")
+                .as_deref(),
+            Some("legacy-tavily-key-for-migration")
+        );
+        let encrypted_database = std::fs::read(model_secrets_database_path(data_dir.path()))
+            .expect("encrypted local secrets database");
+        assert!(!encrypted_database
+            .windows(b"legacy-model-key-for-migration".len())
+            .any(|value| value == b"legacy-model-key-for-migration"));
+        assert!(!encrypted_database
+            .windows(b"legacy-tavily-key-for-migration".len())
+            .any(|value| value == b"legacy-tavily-key-for-migration"));
     }
 
     #[test]
