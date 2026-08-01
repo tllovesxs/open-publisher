@@ -14,6 +14,7 @@ import type { CreationLogEntry } from "./CreatePage";
 import type { Article, MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
+import { WorkflowWorkspace, type WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
 
 interface WorkflowProgress {
   articleId: string;
@@ -52,6 +53,7 @@ interface ArticlesPageProps {
   onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
   writerStreaming: boolean;
   workflowProgress: WorkflowProgress | null;
+  workflowWorkspace: WorkflowWorkspaceSnapshot | null;
   contentReplacing: boolean;
   workflowFailure: WorkflowFailure | null;
   onRetryWorkflow: () => void;
@@ -89,6 +91,7 @@ export function ArticlesPage({
   onImageFileDrop,
   writerStreaming,
   workflowProgress,
+  workflowWorkspace,
   contentReplacing,
   workflowFailure,
   onRetryWorkflow,
@@ -231,23 +234,31 @@ export function ArticlesPage({
           </div>
         </header>
 
-        <MarkdownWorkbench
-          contentReplacing={contentReplacing}
-          dirty={dirty}
-          editorMode={editorMode}
-          markdown={markdown}
-          onEditorModeChange={onEditorModeChange}
-          onMarkdownChange={onMarkdownChange}
-          onImageFileDrop={onImageFileDrop}
-          onPendingImageInsertionHandled={() => setPendingImageInsertion(null)}
-          onRequestImageInsert={() => setImageDialogOpen(true)}
-          onPlatformChange={onPlatformChange}
-          mediaAssets={mediaAssets}
-          platforms={platforms}
-          selectedPlatform={selectedPlatform}
-          pendingImageInsertion={pendingImageInsertion}
-          streaming={writerStreaming}
-        />
+        <div className="article-editor__body">
+          <MarkdownWorkbench
+            contentReplacing={contentReplacing}
+            dirty={dirty}
+            editorMode={editorMode}
+            markdown={markdown}
+            onEditorModeChange={onEditorModeChange}
+            onMarkdownChange={onMarkdownChange}
+            onImageFileDrop={onImageFileDrop}
+            onPendingImageInsertionHandled={() => setPendingImageInsertion(null)}
+            onRequestImageInsert={() => setImageDialogOpen(true)}
+            onPlatformChange={onPlatformChange}
+            mediaAssets={mediaAssets}
+            platforms={platforms}
+            selectedPlatform={selectedPlatform}
+            pendingImageInsertion={pendingImageInsertion}
+            streaming={writerStreaming}
+          />
+          <WorkflowWorkspace
+            onRetry={onRetryWorkflow}
+            progress={workflowProgress}
+            retryable={workflowFailure?.retryable}
+            snapshot={workflowWorkspace}
+          />
+        </div>
         {workflowFailure && (
           <aside className="article-workflow-failure" role="alert">
             <div className="article-workflow-failure__summary">

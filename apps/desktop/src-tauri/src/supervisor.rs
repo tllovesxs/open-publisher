@@ -338,6 +338,21 @@ pub struct WorkflowActivityEvent {
     pub node_id: Option<String>,
     pub created_at: String,
     pub draft_delta: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_query: Option<String>,
+    pub sources: Vec<WorkflowSourceSummary>,
+}
+
+/// A display-safe source projection. The Python runtime deliberately omits
+/// provider payloads, credentials, and unbounded scraped content.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSourceSummary {
+    pub source_id: String,
+    pub title: String,
+    pub url: String,
+    pub excerpt: String,
+    pub published_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3246,6 +3261,7 @@ fn summarize_workflow_activity_event(
             | "run.node_completed"
             | "run.node_failed"
             | "run.node_skipped"
+            | "run.node_tool_called"
             | "run.node_output_delta"
             | "run.interrupted"
             | "run.failed"
@@ -3300,12 +3316,102 @@ fn summarize_workflow_activity_event(
     } else {
         None
     };
+    let (tool_name, tool_query, sources) = if event_type == "run.node_tool_called" {
+        if node_id.as_deref() != Some("draft") {
+            return Err(
+                "local Python runtime returned a tool event for a non-draft node".to_owned(),
+            );
+        }
+        let tool_name = event
+            .payload_json
+            .get("tool")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| *value == "web_search")
+            .ok_or_else(|| "local Python runtime returned an unknown workflow tool".to_owned())?
+            .to_owned();
+        let tool_query = event
+            .payload_json
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| {
+                !value.is_empty() && value.len() <= 500 && !value.chars().any(char::is_control)
+            })
+            .ok_or_else(|| {
+                "local Python runtime returned an invalid workflow tool query".to_owned()
+            })?
+            .to_owned();
+        let source_values = event
+            .payload_json
+            .get("sources")
+            .and_then(Value::as_array)
+            .filter(|values| values.len() <= 5)
+            .ok_or_else(|| "local Python runtime returned invalid workflow sources".to_owned())?;
+        let sources = source_values
+            .iter()
+            .map(summarize_workflow_source)
+            .collect::<Result<Vec<_>, _>>()?;
+        (Some(tool_name), Some(tool_query), sources)
+    } else {
+        (None, None, Vec::new())
+    };
     Ok(WorkflowActivityEvent {
         id,
         event_type,
         node_id,
         created_at,
         draft_delta,
+        tool_name,
+        tool_query,
+        sources,
+    })
+}
+
+fn summarize_workflow_source(value: &Value) -> Result<WorkflowSourceSummary, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "local Python runtime returned an invalid workflow source".to_owned())?;
+    let visible = |field: &str, maximum: usize| -> Result<String, String> {
+        object
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| {
+                !value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+            })
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!("local Python runtime returned an invalid workflow source {field}")
+            })
+    };
+    let url = visible("url", 2_000)?;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(
+            "local Python runtime returned a workflow source with an invalid URL".to_owned(),
+        );
+    }
+    let published_date = match object.get("published_date") {
+        Some(Value::String(value)) => {
+            let value = value.trim();
+            if value.is_empty() || value.len() > 80 || value.chars().any(char::is_control) {
+                return Err(
+                    "local Python runtime returned an invalid workflow source date".to_owned(),
+                );
+            }
+            Some(value.to_owned())
+        }
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return Err("local Python runtime returned an invalid workflow source date".to_owned())
+        }
+    };
+    Ok(WorkflowSourceSummary {
+        source_id: visible("source_id", 100)?,
+        title: visible("title", 240)?,
+        url,
+        excerpt: visible("excerpt", 360)?,
+        published_date,
     })
 }
 
@@ -3780,25 +3886,26 @@ mod tests {
 
     use super::{
         model_configuration_path, public_process_publish_job, public_publish_job,
-        public_publish_plan, strong_token, summarize_template_extraction, title_from_markdown,
-        unavailable_wechat_sync_status, validate_connection_request,
-        validate_create_publish_plan_request, validate_draft, validate_image_request,
-        validate_process_publish_job_request, validate_process_summary_against_plan,
-        validate_publish_plan_request, validate_template_extraction_request,
-        validate_workflow_request, wechat_sync_platform_defaults, ApprovePublishPlanRequestWire,
-        ArticleDetailWire, ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate,
-        BatchTopicCandidateWire, BatchTopicPlanWire, ConfigureModelRequest,
-        ConnectionConfigRequestWire, ConnectionProfilePublic, ConnectionProfileWire,
-        CreateArticleMetadataWire, CreateArticleRequestWire, CreateConnectionProfileRequest,
-        CreateConnectionRequestWire, CreatePublishPlanRequest, CreatePublishPlanRequestWire,
-        CreateRevisionRequestWire, EmptyRequestWire, EnqueuePublishPlanWire,
-        ExtractTemplateRequest, ExtractTemplateResponseWire, GenerateImageRequest,
-        GenerateImageResponseWire, GenerateImagesRequestWire, HealthResponseWire, IdWire,
-        InMemorySecretStore, ProcessPublishJobRequest, ProcessPublishJobWire,
-        PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
-        PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, SaveDraftRequest, SecretStore,
-        SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire, VisualCompositionRequest,
-        WorkflowAgentInstruction, WorkflowRunWire, WorkflowSkillInstruction, WorkflowWire,
+        public_publish_plan, strong_token, summarize_template_extraction,
+        summarize_workflow_activity_event, title_from_markdown, unavailable_wechat_sync_status,
+        validate_connection_request, validate_create_publish_plan_request, validate_draft,
+        validate_image_request, validate_process_publish_job_request,
+        validate_process_summary_against_plan, validate_publish_plan_request,
+        validate_template_extraction_request, validate_workflow_request,
+        wechat_sync_platform_defaults, ApprovePublishPlanRequestWire, ArticleDetailWire,
+        ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate, BatchTopicCandidateWire,
+        BatchTopicPlanWire, ConfigureModelRequest, ConnectionConfigRequestWire,
+        ConnectionProfilePublic, ConnectionProfileWire, CreateArticleMetadataWire,
+        CreateArticleRequestWire, CreateConnectionProfileRequest, CreateConnectionRequestWire,
+        CreatePublishPlanRequest, CreatePublishPlanRequestWire, CreateRevisionRequestWire,
+        EmptyRequestWire, EnqueuePublishPlanWire, ExtractTemplateRequest,
+        ExtractTemplateResponseWire, GenerateImageRequest, GenerateImageResponseWire,
+        GenerateImagesRequestWire, HealthResponseWire, IdWire, InMemorySecretStore,
+        ProcessPublishJobRequest, ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest,
+        PublishTargetRequestWire, PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest,
+        RuntimeEventWire, SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire,
+        StartRunRequestWire, VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
+        WorkflowSkillInstruction, WorkflowWire,
     };
 
     #[test]
@@ -3969,6 +4076,62 @@ mod tests {
         let mut leaked_connection = fixtures["ConnectionProfilePublic"].clone();
         leaked_connection["secret_ref"] = serde_json::json!("env://MUST_NOT_LEAK");
         assert!(serde_json::from_value::<ConnectionProfileWire>(leaked_connection).is_err());
+    }
+
+    #[test]
+    fn workflow_tool_activity_projects_bounded_display_safe_sources() {
+        let event: RuntimeEventWire = serde_json::from_value(serde_json::json!({
+            "id": "event-search-1",
+            "event_type": "run.node_tool_called",
+            "created_at": "2026-08-02T03:15:00Z",
+            "payload_json": {
+                "node_id": "draft",
+                "tool": "web_search",
+                "query": "Open Publisher release notes",
+                "sources": [{
+                    "source_id": "source-1",
+                    "title": "Open Publisher release notes",
+                    "url": "https://example.test/releases",
+                    "excerpt": "A reviewed source excerpt.",
+                    "published_date": "2026-08-01"
+                }]
+            }
+        }))
+        .expect("valid runtime event wire");
+
+        let summary = summarize_workflow_activity_event(event).expect("safe source projection");
+        assert_eq!(summary.tool_name.as_deref(), Some("web_search"));
+        assert_eq!(
+            summary.tool_query.as_deref(),
+            Some("Open Publisher release notes")
+        );
+        assert_eq!(summary.sources.len(), 1);
+        assert_eq!(summary.sources[0].url, "https://example.test/releases");
+    }
+
+    #[test]
+    fn workflow_tool_activity_rejects_unsafe_source_url() {
+        let event: RuntimeEventWire = serde_json::from_value(serde_json::json!({
+            "id": "event-search-2",
+            "event_type": "run.node_tool_called",
+            "created_at": "2026-08-02T03:15:00Z",
+            "payload_json": {
+                "node_id": "draft",
+                "tool": "web_search",
+                "query": "Open Publisher release notes",
+                "sources": [{
+                    "source_id": "source-1",
+                    "title": "Unsafe source",
+                    "url": "file:///private/path",
+                    "excerpt": "A source that must not reach the desktop.",
+                    "published_date": null
+                }]
+            }
+        }))
+        .expect("runtime event wire");
+
+        let error = summarize_workflow_activity_event(event).expect_err("unsafe URL is rejected");
+        assert!(error.contains("invalid URL"));
     }
 
     #[test]

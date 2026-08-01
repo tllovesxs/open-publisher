@@ -207,6 +207,19 @@ export interface WorkflowActivityEvent {
   createdAt: string;
   /** Bounded text chunk emitted only by the writing Agent. */
   draftDelta?: string;
+  /** Present only when the writer called a reviewed workflow tool. */
+  toolName?: "web_search";
+  toolQuery?: string;
+  sources?: WorkflowSourceSummary[];
+}
+
+/** Safe source fields projected from a workflow tool result for the workspace. */
+export interface WorkflowSourceSummary {
+  sourceId: string;
+  title: string;
+  url: string;
+  excerpt: string;
+  publishedDate?: string | null;
 }
 
 export interface WorkflowActivitySummary {

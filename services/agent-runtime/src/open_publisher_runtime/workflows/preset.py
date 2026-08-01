@@ -290,6 +290,19 @@ class PresetArticleWorkflow:
                         "tool": name,
                         "query": " ".join(query.split())[:500],
                         "source_count": len(sources),
+                        # The desktop needs enough evidence to show what the
+                        # writer consulted, but never provider payloads or a
+                        # full scraped page in its live activity transport.
+                        "sources": [
+                            {
+                                "source_id": source.source_id,
+                                "title": source.title[:240],
+                                "url": str(source.url),
+                                "excerpt": source.content[:360],
+                                "published_date": source.published_date,
+                            }
+                            for source in sources
+                        ],
                     },
                 )
             return self.web_search_tool.tool_result(sources)

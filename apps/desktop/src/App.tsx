@@ -12,6 +12,7 @@ import {
 import { LifecycleRail } from "./components/LifecycleRail";
 import { MediaPage } from "./components/MediaPage";
 import type { EditorMode } from "./components/MarkdownWorkbench";
+import type { WorkflowWorkspaceSnapshot } from "./components/WorkflowWorkspace";
 import {
   PublishingPage,
   type PublishAction,
@@ -89,6 +90,7 @@ const SELECTED_TEMPLATE_STORAGE_KEY = "open-publisher-studio-selected-template";
 const SELECTED_MEDIA_STORAGE_KEY = "open-publisher-studio-selected-media";
 const EDITOR_MODE_STORAGE_KEY = "open-publisher-studio-editor-mode";
 const WORKFLOW_NODES_STORAGE_KEY = "open-publisher-studio-workflow-nodes";
+const WORKFLOW_WORKSPACES_STORAGE_KEY = "open-publisher-studio-workflow-workspaces";
 const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
 const WORKFLOW_ACTIVITY_TIMEOUT_MS = 120_000;
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
@@ -138,6 +140,38 @@ function loadStudioValue<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function isStoredWorkflowWorkspace(value: unknown): value is WorkflowWorkspaceSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Partial<WorkflowWorkspaceSnapshot>;
+  if (
+    !["running", "completed", "failed"].includes(snapshot.status ?? "") ||
+    !Array.isArray(snapshot.events) ||
+    !Array.isArray(snapshot.artifacts) ||
+    typeof snapshot.updatedAt !== "number"
+  ) {
+    return false;
+  }
+  return snapshot.events.every((event) =>
+    Boolean(
+      event &&
+        typeof event.id === "string" &&
+        typeof event.eventType === "string" &&
+        typeof event.createdAt === "string" &&
+        (event.nodeId === null || isWorkflowNodeId(event.nodeId)),
+    ),
+  );
+}
+
+function loadWorkflowWorkspaces(): Record<string, WorkflowWorkspaceSnapshot> {
+  const stored = loadStudioValue<unknown>(WORKFLOW_WORKSPACES_STORAGE_KEY, {});
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  return Object.fromEntries(
+    Object.entries(stored)
+      .filter(([articleId, snapshot]) => articleId.length <= 120 && isStoredWorkflowWorkspace(snapshot))
+      .slice(-24),
+  ) as Record<string, WorkflowWorkspaceSnapshot>;
 }
 
 function isStoredSkill(value: unknown): value is StudioSkill {
@@ -681,6 +715,8 @@ export default function App() {
     useState<CreationActivity | null>(loadCreationActivity);
   const [failedCreationContext, setFailedCreationContext] =
     useState<FailedCreationContext | null>(loadFailedCreationContext);
+  const [workflowWorkspaces, setWorkflowWorkspaces] =
+    useState<Record<string, WorkflowWorkspaceSnapshot>>(loadWorkflowWorkspaces);
   const [toast, setToast] = useState<string | null>(null);
   const [studioAgents, setStudioAgents] = useState<StudioAgent[]>(() =>
     normalizeStudioAgents(loadStudioValue<unknown>(AGENTS_STORAGE_KEY, defaultAgents)),
@@ -719,6 +755,83 @@ export default function App() {
       dismissedWorkflowProgressArticleIds.current.add(articleProgress.articleId);
     }
     setArticleProgress(null);
+  };
+
+  const beginWorkflowWorkspace = (articleId: string) => {
+    setWorkflowWorkspaces((current) => ({
+      ...current,
+      [articleId]: {
+        runId: null,
+        status: "running",
+        events: [],
+        artifacts: [],
+        visualPlan: null,
+        error: null,
+        updatedAt: Date.now(),
+      },
+    }));
+  };
+
+  const appendWorkflowWorkspaceEvents = (
+    articleId: string,
+    runId: string,
+    incoming: WorkflowActivityEvent[],
+  ) => {
+    if (incoming.length === 0) return;
+    setWorkflowWorkspaces((current) => {
+      const existing = current[articleId];
+      const deduplicated = new Map(
+        [...(existing?.events ?? []), ...incoming].map((event) => [event.id, event]),
+      );
+      return {
+        ...current,
+        [articleId]: {
+          runId,
+          status: "running",
+          events: Array.from(deduplicated.values()).slice(-160),
+          artifacts: existing?.artifacts ?? [],
+          visualPlan: existing?.visualPlan ?? null,
+          error: null,
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  };
+
+  const completeWorkflowWorkspace = (articleId: string, summary: RunWorkflowSummary) => {
+    setWorkflowWorkspaces((current) => {
+      const existing = current[articleId];
+      return {
+        ...current,
+        [articleId]: {
+          runId: summary.runId,
+          status: "completed",
+          events: existing?.events ?? [],
+          artifacts: summary.artifacts,
+          visualPlan: summary.visualPlan,
+          error: null,
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  };
+
+  const failWorkflowWorkspace = (articleId: string, error: string) => {
+    setWorkflowWorkspaces((current) => {
+      const existing = current[articleId];
+      return {
+        ...current,
+        [articleId]: {
+          runId: existing?.runId ?? null,
+          status: "failed",
+          events: existing?.events ?? [],
+          artifacts: existing?.artifacts ?? [],
+          visualPlan: existing?.visualPlan ?? null,
+          error: sanitizeActivityMessage(error).slice(0, 500),
+          updatedAt: Date.now(),
+        },
+      };
+    });
   };
 
   const studioSkills = useMemo(
@@ -930,6 +1043,13 @@ export default function App() {
   }, [disabledNodes]);
 
   useEffect(() => {
+    window.localStorage.setItem(
+      WORKFLOW_WORKSPACES_STORAGE_KEY,
+      JSON.stringify(workflowWorkspaces),
+    );
+  }, [workflowWorkspaces]);
+
+  useEffect(() => {
     let cancelled = false;
     const loadMedia = async () => {
       try {
@@ -1062,11 +1182,14 @@ export default function App() {
         return;
       }
 
-      // A small batch preserves the visual rhythm without re-rendering a full
-      // Markdown preview once for every individual character.
+      // Keep the typewriter effect perceptible at the edge of the stream, then
+      // catch up when a provider or local polling delivers a larger backlog.
+      // This avoids making long-form output appear stalled after a burst.
       const characters = Array.from(queued);
-      const renderedDelta = characters.slice(0, 3).join("");
-      writerTypewriterQueueRef.current[articleId] = characters.slice(3).join("");
+      const batchSize =
+        characters.length >= 900 ? 18 : characters.length >= 180 ? 8 : 3;
+      const renderedDelta = characters.slice(0, batchSize).join("");
+      writerTypewriterQueueRef.current[articleId] = characters.slice(batchSize).join("");
       const markdown = `${writerStreamRef.current[articleId] ?? ""}${renderedDelta}`;
       writerStreamRef.current[articleId] = markdown;
       setDrafts((current) => ({ ...current, [articleId]: markdown }));
@@ -1170,6 +1293,7 @@ export default function App() {
         const unseen = activity.events.filter((event) => !seenEventIds.has(event.id));
         unseen.forEach((event) => seenEventIds.add(event.id));
         if (unseen.length > 0) lastWorkflowActivityAt.current = Date.now();
+        appendWorkflowWorkspaceEvents(articleId, activity.runId, unseen);
         unseen.forEach((event) => receiveWorkflowActivity(articleId, event, agents));
         setCreationActivity((current) => {
           if (!current || current.status !== "running") return current;
@@ -1665,6 +1789,7 @@ export default function App() {
     const revisionId = await ensureRevision(article.id, markdown);
     dismissedWorkflowProgressArticleIds.current.delete(article.id);
     lastWorkflowActivityAt.current = Date.now();
+    beginWorkflowWorkspace(article.id);
     const workflowPromise = desktopBridge.runWorkflow({
       articleId: article.id,
       revisionId,
@@ -1680,11 +1805,16 @@ export default function App() {
       summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
     } catch (error) {
       clearWriterTypewriter(article.id);
+      failWorkflowWorkspace(
+        article.id,
+        error instanceof Error ? error.message : String(error),
+      );
       throw error;
     } finally {
       stopActivityPolling();
     }
     clearWriterTypewriter(article.id);
+    completeWorkflowWorkspace(article.id, summary);
     setArticleContentReplacing(true);
     applyWorkflowResult(article.id, summary, channels);
     window.setTimeout(() => setArticleContentReplacing(false), 260);
@@ -1755,6 +1885,7 @@ export default function App() {
             }
           : current,
       );
+      beginWorkflowWorkspace(article.id);
       const workflowPromise = desktopBridge.runWorkflow({
         articleId: article.id,
         revisionId,
@@ -1779,6 +1910,7 @@ export default function App() {
         stopActivityPolling();
       }
       clearWriterTypewriter(article.id);
+      completeWorkflowWorkspace(article.id, summary);
       setArticleContentReplacing(true);
       applyWorkflowResult(article.id, summary, request.platforms);
       window.setTimeout(() => setArticleContentReplacing(false), 260);
@@ -1813,6 +1945,7 @@ export default function App() {
       const detail = error instanceof Error ? error.message : String(error);
       const safeDetail = sanitizeActivityMessage(detail || "未知错误");
       clearWriterTypewriter(article.id);
+      failWorkflowWorkspace(article.id, safeDetail);
       if (!revisionSaved) {
         setDirtyIds((current) => new Set(current).add(article.id));
       }
@@ -2238,6 +2371,9 @@ export default function App() {
             selectedArticle={selectedArticle}
             selectedPlatform={selectedPlatform}
             workflowProgress={articleProgress}
+            workflowWorkspace={
+              selectedArticle ? workflowWorkspaces[selectedArticle.id] ?? null : null
+            }
             workflowRunning={workflowRunning}
             writerStreaming={writerStreamingArticleId === selectedArticle?.id}
             workflowFailure={
