@@ -187,6 +187,8 @@ describe("desktop product flow", () => {
     await waitFor(() =>
       expect((editor as HTMLTextAreaElement).value).toContain("正文正在到达"),
     );
+    fireEvent.click(await screen.findByRole("button", { name: "关闭进度提示" }));
+    expect(screen.queryByRole("button", { name: "关闭进度提示" })).toBeNull();
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         agentInstructions: expect.arrayContaining([

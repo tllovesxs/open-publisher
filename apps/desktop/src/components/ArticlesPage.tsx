@@ -7,6 +7,7 @@ import {
   Save,
   Search,
   Sparkles,
+  X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { CreationLogEntry } from "./CreatePage";
@@ -54,6 +55,7 @@ interface ArticlesPageProps {
   contentReplacing: boolean;
   workflowFailure: WorkflowFailure | null;
   onRetryWorkflow: () => void;
+  onDismissWorkflowProgress: () => void;
 }
 
 const statusLabel: Record<Article["status"], string> = {
@@ -90,6 +92,7 @@ export function ArticlesPage({
   contentReplacing,
   workflowFailure,
   onRetryWorkflow,
+  onDismissWorkflowProgress,
 }: ArticlesPageProps) {
   const [query, setQuery] = useState("");
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
@@ -284,6 +287,15 @@ export function ArticlesPage({
         )}
         {workflowProgress?.articleId === selectedArticle.id && (
           <aside aria-live="polite" className="article-progress" role="status">
+            <button
+              aria-label="关闭进度提示"
+              className="article-progress__dismiss"
+              onClick={onDismissWorkflowProgress}
+              title="关闭进度提示"
+              type="button"
+            >
+              <X aria-hidden="true" size={15} />
+            </button>
             <div>
               <strong>{workflowProgress.title}</strong>
               <span>{workflowProgress.detail}</span>

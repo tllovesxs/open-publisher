@@ -47,6 +47,23 @@ class _StreamResponse:
         yield self.data[3:]
 
 
+class _TextStreamResponse:
+    def __init__(self, lines: list[str]) -> None:
+        self.lines = lines
+
+    def __enter__(self) -> _TextStreamResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self) -> Iterator[str]:
+        yield from self.lines
+
+
 def _provider(**overrides: object) -> OpenAICompatibleImageProvider:
     options: dict[str, object] = {
         "base_url": "https://models.example/v1",
@@ -98,6 +115,47 @@ def test_text_provider_rejects_reserved_extra_request_fields() -> None:
             api_key="not-a-real-secret",
             default_model="text-model",
             extra_request_fields={"messages": []},
+        )
+
+
+def test_text_provider_streams_delta_content_and_rejects_empty_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "stream",
+        lambda *_args, **_kwargs: _TextStreamResponse(
+            [
+                'data: {"model":"text-model","choices":[{"delta":{"content":"第一段"}}]}',
+                'data: {"choices":[{"delta":{"content":"第二段"}}]}',
+                "data: [DONE]",
+            ]
+        ),
+    )
+    provider = OpenAICompatibleTextProvider(
+        base_url="https://models.example/v1",
+        api_key="not-a-real-secret",
+        default_model="text-model",
+    )
+    deltas: list[str] = []
+
+    response = provider.generate_stream(
+        TextGenerationRequest(purpose="draft", prompt="write"),
+        deltas.append,
+    )
+
+    assert deltas == ["第一段", "第二段"]
+    assert response.text == "第一段第二段"
+
+    monkeypatch.setattr(
+        httpx,
+        "stream",
+        lambda *_args, **_kwargs: _TextStreamResponse(["data: [DONE]"]),
+    )
+    with pytest.raises(RuntimeError, match="without article content"):
+        provider.generate_stream(
+            TextGenerationRequest(purpose="draft", prompt="write"),
+            lambda _: None,
         )
 
 

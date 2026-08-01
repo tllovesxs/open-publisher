@@ -312,11 +312,20 @@ class OpenAICompatibleTextProvider:
                 choices = payload.get("choices")
                 if not isinstance(choices, list) or not choices:
                     continue
-                delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                choice = choices[0] if isinstance(choices[0], dict) else {}
+                delta = choice.get("delta")
                 content = delta.get("content") if isinstance(delta, dict) else None
+                if not isinstance(content, str):
+                    # Some compatible providers send a complete message even
+                    # when the request asked for a stream. Treat it as one
+                    # visible block instead of leaving the editor empty.
+                    message = choice.get("message")
+                    content = message.get("content") if isinstance(message, dict) else None
                 if isinstance(content, str) and content:
                     text_parts.append(content)
                     on_delta(content)
+        if not text_parts:
+            raise RuntimeError("model stream completed without article content")
         return TextGenerationResponse(
             text="".join(text_parts),
             provider=self.name,

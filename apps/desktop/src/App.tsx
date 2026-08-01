@@ -89,6 +89,7 @@ const SELECTED_MEDIA_STORAGE_KEY = "open-publisher-studio-selected-media";
 const EDITOR_MODE_STORAGE_KEY = "open-publisher-studio-editor-mode";
 const WORKFLOW_NODES_STORAGE_KEY = "open-publisher-studio-workflow-nodes";
 const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
+const WORKFLOW_ACTIVITY_TIMEOUT_MS = 120_000;
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
 const INLINE_DATA_IMAGE_PATTERN =
   /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
@@ -680,6 +681,20 @@ export default function App() {
   const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
   const [articleProgress, setArticleProgress] = useState<ArticleProgress | null>(null);
   const [articleContentReplacing, setArticleContentReplacing] = useState(false);
+  const dismissedWorkflowProgressArticleIds = useRef(new Set<string>());
+  const lastWorkflowActivityAt = useRef(Date.now());
+
+  const showArticleProgress = (progress: ArticleProgress) => {
+    if (dismissedWorkflowProgressArticleIds.current.has(progress.articleId)) return;
+    setArticleProgress(progress);
+  };
+
+  const dismissArticleProgress = () => {
+    if (articleProgress) {
+      dismissedWorkflowProgressArticleIds.current.add(articleProgress.articleId);
+    }
+    setArticleProgress(null);
+  };
 
   const studioSkills = useMemo(
     () => [...availableSkills, ...customSkills],
@@ -976,15 +991,28 @@ export default function App() {
       event.nodeId === "draft" &&
       event.draftDelta
     ) {
+      lastWorkflowActivityAt.current = Date.now();
       const markdown = `${writerStreamRef.current[articleId] ?? ""}${event.draftDelta}`;
       writerStreamRef.current[articleId] = markdown;
       replaceArticleContent(articleId, markdown, false);
+      showArticleProgress({
+        articleId,
+        title: "写作 Agent 正在输出正文",
+        detail: `已流式写入 ${markdown.replace(/\s/g, "").length} 字。`,
+        value: null,
+      });
       return;
     }
+    lastWorkflowActivityAt.current = Date.now();
     if (event.eventType === "run.node_started" && event.nodeId === "draft") {
       writerStreamRef.current[articleId] = "";
       setWriterStreamingArticleId(articleId);
-      setArticleProgress(null);
+      showArticleProgress({
+        articleId,
+        title: "写作 Agent 正在生成正文",
+        detail: "正在等待模型返回第一段文本。",
+        value: null,
+      });
       replaceArticleContent(articleId, "", false);
       return;
     }
@@ -994,7 +1022,7 @@ export default function App() {
     }
     if (event.eventType === "run.node_started" && event.nodeId) {
       setWriterStreamingArticleId((current) => (current === articleId ? null : current));
-      setArticleProgress({
+      showArticleProgress({
         articleId,
         title: `${agent} 正在处理文章`,
         detail: "完成后会用新的内容平滑替换当前正文。",
@@ -1009,6 +1037,8 @@ export default function App() {
   ) => {
     let stopped = false;
     let polling = false;
+    let failedReads = 0;
+    lastWorkflowActivityAt.current = Date.now();
     const seenEventIds = new Set(creationActivity?.logs.map((entry) => entry.id) ?? []);
     const collect = async () => {
       if (stopped || polling) return;
@@ -1016,8 +1046,10 @@ export default function App() {
       try {
         const activity = await desktopBridge.getWorkflowActivity(articleId);
         if (!activity || stopped) return;
+        failedReads = 0;
         const unseen = activity.events.filter((event) => !seenEventIds.has(event.id));
         unseen.forEach((event) => seenEventIds.add(event.id));
+        if (unseen.length > 0) lastWorkflowActivityAt.current = Date.now();
         unseen.forEach((event) => receiveWorkflowActivity(articleId, event, agents));
         setCreationActivity((current) => {
           if (!current || current.status !== "running") return current;
@@ -1043,8 +1075,15 @@ export default function App() {
           };
         });
       } catch {
-        // The workflow request remains authoritative; a transient progress read
-        // must not be reported as an Agent failure.
+        failedReads += 1;
+        if (failedReads >= 3) {
+          showArticleProgress({
+            articleId,
+            title: "暂时无法读取本地运行时进度",
+            detail: "仍在尝试恢复连接；若长时间无更新会自动提示重试。",
+            value: null,
+          });
+        }
       } finally {
         polling = false;
       }
@@ -1056,6 +1095,44 @@ export default function App() {
       window.clearInterval(interval);
     };
   };
+
+  const awaitWorkflowWithActivityTimeout = <Result,>(
+    workflowPromise: Promise<Result>,
+    articleId: string,
+  ) =>
+    new Promise<Result>((resolve, reject) => {
+      let settled = false;
+      const finish = (callback: (value: Result) => void, value: Result) => {
+        if (settled) return;
+        settled = true;
+        window.clearInterval(timeout);
+        callback(value);
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearInterval(timeout);
+        reject(error);
+      };
+      const timeout = window.setInterval(() => {
+        if (Date.now() - lastWorkflowActivityAt.current < WORKFLOW_ACTIVITY_TIMEOUT_MS) return;
+        showArticleProgress({
+          articleId,
+          title: "本地 Agent 已停止返回进度",
+          detail: "等待已结束，请重试本次生成。",
+          value: null,
+        });
+        fail(
+          new Error(
+            "本地 Agent 连续 2 分钟没有返回新的进度，可能已停止或网络请求卡住。请重试本次生成。",
+          ),
+        );
+      }, 5_000);
+      workflowPromise.then(
+        (result) => finish(resolve, result),
+        (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))),
+      );
+    });
 
   useEffect(() => {
     if (!selectedArticle) return;
@@ -1311,7 +1388,7 @@ export default function App() {
     let completedCount = 0;
     const updateVisualProgress = (detail: string) => {
       completedCount += 1;
-      setArticleProgress({
+      showArticleProgress({
         articleId: article.id,
         title: generatedCount > 0 ? "正在并发生成正文配图" : "正在插入素材库图片",
         detail,
@@ -1319,7 +1396,7 @@ export default function App() {
       });
     };
     if (plan.targetCount > 0) {
-      setArticleProgress({
+      showArticleProgress({
         articleId: article.id,
         title: generatedCount > 0 ? "正在并发生成正文配图" : "正在插入素材库图片",
         detail: generatedCount > 0
@@ -1378,7 +1455,7 @@ export default function App() {
 
     const outputMarkdown = summary.outputMarkdown;
     const markdown = insertVisualMarkdown(outputMarkdown, placements);
-    setArticleProgress({
+    showArticleProgress({
       articleId: article.id,
       title: "正在插入正文配图",
       detail: "正在保存新的文章修订。",
@@ -1466,6 +1543,8 @@ export default function App() {
     agentInstructions = buildWorkflowAgentInstructions(studioAgents, studioSkills),
   ) => {
     const revisionId = await ensureRevision(article.id, markdown);
+    dismissedWorkflowProgressArticleIds.current.delete(article.id);
+    lastWorkflowActivityAt.current = Date.now();
     const workflowPromise = desktopBridge.runWorkflow({
       articleId: article.id,
       revisionId,
@@ -1476,7 +1555,7 @@ export default function App() {
     const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
     let summary: RunWorkflowSummary;
     try {
-      summary = await workflowPromise;
+      summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
     } finally {
       stopActivityPolling();
     }
@@ -1501,7 +1580,9 @@ export default function App() {
       request.agentInstructions ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
     setCreatingArticle(true);
     setWorkflowRunning(true);
-    setArticleProgress({
+    dismissedWorkflowProgressArticleIds.current.delete(article.id);
+    lastWorkflowActivityAt.current = Date.now();
+    showArticleProgress({
       articleId: article.id,
       title: "正在准备创作",
       detail: "创作要求已保存后，会自动开始撰写正文。",
@@ -1562,7 +1643,7 @@ export default function App() {
       const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
       let summary: RunWorkflowSummary;
       try {
-        summary = await workflowPromise;
+        summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
       } finally {
         stopActivityPolling();
       }
@@ -2010,6 +2091,7 @@ export default function App() {
             markdown={currentMarkdown}
             mediaAssets={mediaAssets}
             onCreate={createBlankArticle}
+            onDismissWorkflowProgress={dismissArticleProgress}
             onEditorModeChange={setEditorMode}
             onGenerateImage={() => void generateImage()}
             onImageFileDrop={importImageIntoArticle}

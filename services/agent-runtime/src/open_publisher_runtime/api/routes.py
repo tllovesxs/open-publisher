@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import logging
 import sys
+from datetime import UTC
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -85,6 +87,15 @@ SessionDep = Annotated[Session, Depends(get_session)]
 ContainerDep = Annotated[RuntimeContainer, Depends(get_container)]
 
 router = APIRouter(prefix="/api/v1")
+logger = logging.getLogger(__name__)
+
+
+def _workflow_event_sort_key(event: RuntimeEvent) -> tuple[object, str]:
+    created_at = event.created_at
+    if created_at.tzinfo is None:
+        # SQLite returns the UTC timestamps it stored as naive values.
+        created_at = created_at.replace(tzinfo=UTC)
+    return created_at, event.id
 
 
 def _services(
@@ -108,23 +119,30 @@ def _services(
         phase: str,
         payload: dict[str, object] | None = None,
     ) -> None:
-        """Persist progress from LangGraph worker threads using an isolated session."""
+        """Make node activity available before the SQLite audit write completes."""
+
+        event = RuntimeEvent(
+            run_id=run_id,
+            aggregate_type="workflow_run",
+            aggregate_id=run_id,
+            event_type=f"run.node_{phase}",
+            payload_json={"node_id": node_id, **(payload or {})},
+        )
+        container.live_workflow_activity.append(event)
 
         try:
             with container.database.session() as progress_session:
                 progress_repository = SqlAlchemyRuntimeRepository(progress_session)
-                progress_repository.add_event(
-                    RuntimeEvent(
-                        run_id=run_id,
-                        aggregate_type="workflow_run",
-                        aggregate_id=run_id,
-                        event_type=f"run.node_{phase}",
-                        payload_json={"node_id": node_id, **(payload or {})},
-                    )
-                )
-        except Exception:
-            # Progress reporting must not turn a completed model call into a failed run.
-            return
+                progress_repository.add_event(event)
+        except Exception as error:
+            # The UI reads the in-memory entry above. Keep a diagnostic without
+            # writing prompts, model output, or credentials to the sidecar log.
+            logger.warning(
+                "Could not persist live workflow event run=%s phase=%s error=%s",
+                run_id,
+                phase,
+                type(error).__name__,
+            )
 
     controller = RunController(
         repository=repository,
@@ -368,12 +386,21 @@ def start_run(
 
 
 @router.get("/runs/active", response_model=RunDetail | None)
-def get_active_run(article_id: str, session: SessionDep) -> RunDetail | None:
+def get_active_run(
+    article_id: str,
+    session: SessionDep,
+    container: ContainerDep,
+) -> RunDetail | None:
     repository = SqlAlchemyRuntimeRepository(session)
     run = repository.find_active_run(article_id)
     if run is None or run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
         return None
-    return RunDetail(run=run, events=list(repository.list_events(run.id)))
+    persisted = list(repository.list_events(run.id))
+    live = container.live_workflow_activity.snapshot(run.id)
+    events_by_id = {event.id: event for event in persisted}
+    events_by_id.update({event.id: event for event in live})
+    events = sorted(events_by_id.values(), key=_workflow_event_sort_key)
+    return RunDetail(run=run, events=events)
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)

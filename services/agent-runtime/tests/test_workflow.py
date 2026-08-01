@@ -1,5 +1,6 @@
 import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import select
@@ -8,6 +9,7 @@ import open_publisher_runtime.application.harness as harness_module
 import open_publisher_runtime.workflows.preset as preset_module
 from open_publisher_runtime.application.artifacts import ArtifactService
 from open_publisher_runtime.application.harness import WORKFLOW_ARTIFACT_STATE_KEYS
+from open_publisher_runtime.application.model_access import TextGenerationResponse
 from open_publisher_runtime.domain.entities import RuntimeEvent, Workflow, WorkflowRun
 from open_publisher_runtime.domain.enums import RunStatus
 from open_publisher_runtime.infrastructure.orm import ArtifactORM, WorkflowRunORM
@@ -56,6 +58,26 @@ class RecordingTextProvider(MockTextProvider):
     def generate(self, request):
         self.requests.append(request)
         return super().generate(request)
+
+
+class BlockingStreamingDraftProvider(MockTextProvider):
+    def __init__(self) -> None:
+        self.draft_delta_emitted = threading.Event()
+        self.release_draft = threading.Event()
+
+    def generate_stream(self, request, on_delta):
+        assert request.purpose == "draft"
+        first_delta = "# 流式正文\n\n" + "第一段内容。" * 48
+        second_delta = "\n\n第二段内容。"
+        on_delta(first_delta)
+        self.draft_delta_emitted.set()
+        assert self.release_draft.wait(timeout=5)
+        on_delta(second_delta)
+        return TextGenerationResponse(
+            text=f"{first_delta}{second_delta}",
+            provider="test-stream",
+            model="test-stream",
+        )
 
 
 def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -> None:
@@ -194,6 +216,53 @@ def test_active_run_endpoint_exposes_durable_node_activity(client, article_paylo
     assert len(payload["events"]) == 1
     assert payload["events"][0]["event_type"] == "run.node_started"
     assert payload["events"][0]["payload_json"] == {"node_id": "draft"}
+
+
+def test_active_run_endpoint_exposes_live_draft_output_when_audit_write_is_unavailable(
+    client, article_payload, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+    provider = BlockingStreamingDraftProvider()
+    client.app.state.container.model_access.text_provider = provider
+
+    @contextmanager
+    def unavailable_progress_session():
+        raise RuntimeError("simulated audit database lock")
+        yield
+
+    monkeypatch.setattr(
+        client.app.state.container.database,
+        "session",
+        unavailable_progress_session,
+    )
+    response_box: dict[str, object] = {}
+
+    def start_run() -> None:
+        response_box["response"] = client.post(
+            "/api/v1/runs",
+            json={
+                "workflow_id": workflow["id"],
+                "article_id": article["article"]["id"],
+                "revision_id": article["revision"]["id"],
+            },
+        )
+
+    worker = threading.Thread(target=start_run)
+    worker.start()
+    assert provider.draft_delta_emitted.wait(timeout=5)
+
+    active = client.get("/api/v1/runs/active", params={"article_id": article["article"]["id"]})
+
+    assert active.status_code == 200, active.text
+    events = active.json()["events"]
+    assert any(event["event_type"] == "run.node_output_delta" for event in events)
+    provider.release_draft.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    response = response_box.get("response")
+    assert response is not None
+    assert response.status_code == 201
 
 
 def test_visual_agent_receives_selected_asset_text_metadata_only(

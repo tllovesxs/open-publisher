@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from open_publisher_runtime import __version__
 from open_publisher_runtime.api.dependencies import RuntimeContainer, require_sidecar_token
+from open_publisher_runtime.api.live_activity import LiveWorkflowActivityStore
 from open_publisher_runtime.api.routes import router
 from open_publisher_runtime.api.schemas import HealthResponse
 from open_publisher_runtime.application.articles import ArticleService
@@ -185,6 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             model_access=model_access,
             workflow_runner=PresetArticleWorkflow(model_access),
             dry_run_publisher=DeterministicDryRunPublisher(),
+            live_workflow_activity=LiveWorkflowActivityStore(),
         )
         app.state.container = container
         with database.session() as session:
