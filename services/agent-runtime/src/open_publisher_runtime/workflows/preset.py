@@ -49,6 +49,10 @@ OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
 )
 REQUIRED_NODE_IDS = ("draft",)
 NodeEventCallback = Callable[[str, str, dict[str, object] | None], None]
+# The provider default deliberately keeps short utility calls inexpensive. The
+# writer is different: the UI offers a 5,500-7,000 character long-form preset,
+# which cannot fit inside the general 1,400-token ceiling.
+DRAFT_MAX_OUTPUT_TOKENS = 8_192
 
 
 class PresetWorkflowInput(BaseModel):
@@ -305,6 +309,7 @@ class PresetArticleWorkflow:
                 prompt=(
                     f"为《{state['title']}》直接生成完整的 Markdown 正文。"
                     "请自行规划清晰的标题层级和叙述节奏，不输出写作过程、元说明或代码围栏。"
+                    "创作要求中的篇幅是交付约束：必须完成结尾，不能在段落、列表或小节中途停止。"
                     f"\n\n主题：\n{state['topic']}\n\n"
                     f"作者素材、模板或参考资料：\n{state['source_markdown']}"
                     f"{search_instruction}{self._agent_guidance(state, 'draft')}"
@@ -316,6 +321,7 @@ class PresetArticleWorkflow:
                     "research_report": state["research_report"],
                     "outline": state["outline"],
                 },
+                max_output_tokens=DRAFT_MAX_OUTPUT_TOKENS,
             ),
             tools=tools,
             execute_tool=execute_tool,
@@ -340,6 +346,13 @@ class PresetArticleWorkflow:
                     "source_markdown": state["raw_draft"],
                     "raw_draft": state["raw_draft"],
                 },
+                # A rewrite must have room for the entire draft. Otherwise an
+                # optional polish step could turn a complete long article into
+                # a successful-but-truncated final revision.
+                max_output_tokens=max(
+                    1_600,
+                    min(DRAFT_MAX_OUTPUT_TOKENS, len(state["raw_draft"]) + 800),
+                ),
             )
         )
         return {"canonical_markdown": response.text}

@@ -627,6 +627,37 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
     assert article_detail["latest_revision"]["markdown"] == raw_draft
 
 
+def test_writer_uses_long_form_output_budget(client, article_payload) -> None:
+    provider = RecordingTextProvider()
+    client.app.state.container.model_access.text_provider = provider
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ],
+                "max_model_calls": 1,
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(provider.requests) == 1
+    assert provider.requests[0].purpose == "draft"
+    assert provider.requests[0].max_output_tokens == 8_192
+
+
 def test_customized_budget_still_rejects_less_than_enabled_call_count(
     client, article_payload
 ) -> None:
