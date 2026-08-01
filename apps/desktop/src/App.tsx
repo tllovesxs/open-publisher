@@ -26,10 +26,8 @@ import {
 import { platforms } from "./data/mock";
 import {
   desktopBridge,
-  type BatchTopicCandidate,
   type ConfigureModelRequest,
   type DisabledOptionalNodeId,
-  type GenerationBatchDetail,
   type ModelConfigurationSummary,
   type ModelConnectionTestSummary,
   type PublishPlanSummary,
@@ -676,8 +674,6 @@ export default function App() {
   const [modelTest, setModelTest] = useState<ModelConnectionTestSummary | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [configuringModel, setConfiguringModel] = useState(false);
-  const [generationBatches, setGenerationBatches] = useState<GenerationBatchDetail[]>([]);
-  const [batchPlanning, setBatchPlanning] = useState(false);
   const [wechatSyncStatus, setWechatSyncStatus] =
     useState<WechatSyncBridgeStatus | null>(null);
   const [refreshingWechatSync, setRefreshingWechatSync] = useState(false);
@@ -796,12 +792,6 @@ export default function App() {
     return true;
   };
 
-  const refreshGenerationBatches = async () => {
-    if (runtime?.bridgeMode !== "python_sidecar") return;
-    const batches = await desktopBridge.listGenerationBatches();
-    setGenerationBatches(batches);
-  };
-
   const refreshWechatSyncStatus = async () => {
     if (runtime?.bridgeMode !== "python_sidecar") return;
     setRefreshingWechatSync(true);
@@ -810,79 +800,6 @@ export default function App() {
     } finally {
       setRefreshingWechatSync(false);
     }
-  };
-
-  const planGenerationBatch = async (input: {
-    prompt: string;
-    count: number;
-    references: string;
-  }): Promise<BatchTopicCandidate[]> => {
-    if (!requireTextModel()) throw new Error("请先完成文本模型连接");
-    setBatchPlanning(true);
-    try {
-      const plan = await desktopBridge.planGenerationBatch({
-        prompt: input.prompt,
-        count: input.count,
-        references: input.references,
-        manualTopics: [],
-      });
-      return plan.candidates;
-    } finally {
-      setBatchPlanning(false);
-    }
-  };
-
-  const createGenerationBatch = async (request: {
-    creation: CreationRequest;
-    candidates: BatchTopicCandidate[];
-    writerConcurrency: number;
-  }) => {
-    if (!requireTextModel()) throw new Error("请先完成文本模型连接");
-    const agentDisabledNodes = disabledOptionalNodesFor(studioAgents);
-    const creation: CreationRequest = {
-      ...request.creation,
-      disabledNodeIds: [
-        ...new Set<DisabledOptionalNodeId>([
-          ...request.creation.disabledNodeIds,
-          ...agentDisabledNodes,
-          "visual",
-        ]),
-      ],
-      agentInstructions: buildWorkflowAgentInstructions(studioAgents, studioSkills),
-    };
-    const detail = await desktopBridge.createGenerationBatch({
-      prompt: creation.topic,
-      candidates: request.candidates,
-      sourceMarkdown: buildCreationSeed(creation),
-      disabledOptionalNodeIds: creation.disabledNodeIds,
-      agentInstructions: creation.agentInstructions ?? [],
-      webSearchMode: creation.webSearchMode,
-      maxWebSearchCalls: creation.webSearchMode === "off" ? 0 : 2,
-      writerConcurrency: request.writerConcurrency,
-    });
-    setGenerationBatches((current) => [
-      detail,
-      ...current.filter((batch) => batch.batch.id !== detail.batch.id),
-    ]);
-    setToast(`已加入批量队列 · ${detail.items.length} 篇文章`);
-  };
-
-  const cancelGenerationBatch = async (batchId: string) => {
-    const detail = await desktopBridge.cancelGenerationBatch({ batchId });
-    setGenerationBatches((current) =>
-      current.map((batch) =>
-        batch.batch.id === detail.batch.id ? detail : batch,
-      ),
-    );
-  };
-
-  const retryGenerationItem = async (itemId: string) => {
-    const detail = await desktopBridge.retryGenerationItem({ itemId });
-    setGenerationBatches((current) =>
-      current.map((batch) =>
-        batch.batch.id === detail.batch.id ? detail : batch,
-      ),
-    );
   };
 
   const lifecycleStep = useMemo(() => {
@@ -934,12 +851,8 @@ export default function App() {
         const readySnapshot = await desktopBridge.runtimeSnapshot();
         if (!cancelled) setRuntime(readySnapshot);
         if (readySnapshot.bridgeMode === "python_sidecar") {
-          const [batches, publisherStatus] = await Promise.all([
-            desktopBridge.listGenerationBatches(),
-            desktopBridge.wechatSyncStatus(),
-          ]);
+          const publisherStatus = await desktopBridge.wechatSyncStatus();
           if (!cancelled) {
-            setGenerationBatches(batches);
             setWechatSyncStatus(publisherStatus);
           }
         }
@@ -2284,16 +2197,9 @@ export default function App() {
       case "create":
         return (
           <CreatePage
-            batchPlanning={batchPlanning}
-            batches={generationBatches}
             generating={creatingArticle}
             modelLabel={modelConfiguration?.textModel ?? "配置模型"}
             onCreate={(request) => void createFromBrief(request)}
-            onCreateBatch={createGenerationBatch}
-            onPlanBatch={planGenerationBatch}
-            onRefreshBatches={refreshGenerationBatches}
-            onCancelBatch={cancelGenerationBatch}
-            onRetryBatchItem={retryGenerationItem}
             onOpenSettings={() => navigate("settings")}
             agents={studioAgents}
             mediaAssets={mediaAssets}

@@ -99,6 +99,7 @@ describe("desktop product flow", () => {
     expect(within(navigation).queryByRole("button", { name: "发布" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "工作流" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "Skill" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "批量" })).toBeNull();
 
     fireEvent.click(within(navigation).getByRole("button", { name: "文章" }));
     expect(await screen.findByRole("heading", { name: "还没有文章" })).toBeVisible();
@@ -159,84 +160,6 @@ describe("desktop product flow", () => {
         markdown: expect.stringContaining("- 篇幅：约 6,200 字"),
       }),
     );
-  });
-
-  it("plans topics and creates a confirmed batch through the desktop bridge", async () => {
-    const candidates = [
-      {
-        title: "功能拆解：导入能力",
-        topic: "拆解产品的导入能力",
-        angle: "从用户的第一步操作切入。",
-        keyPoints: ["适用场景", "实现步骤", "常见误区"],
-      },
-      {
-        title: "功能拆解：本地存储",
-        topic: "拆解产品的本地存储能力",
-        angle: "从数据可靠性切入。",
-        keyPoints: ["数据边界", "存储策略", "恢复方式"],
-      },
-    ];
-    const planGenerationBatch = vi.fn(async () => ({
-      candidates,
-      plannedBy: "model" as const,
-    }));
-    const createGenerationBatch = vi.fn<DesktopBridge["createGenerationBatch"]>(async (request) => ({
-      batch: {
-        id: "batch-confirmed",
-        prompt: request.prompt,
-        status: "queued" as const,
-        writerConcurrency: request.writerConcurrency,
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-01T00:00:00.000Z",
-      },
-      items: request.candidates.map((candidate, index) => ({
-        id: `batch-confirmed-item-${index + 1}`,
-        batchId: "batch-confirmed",
-        position: index + 1,
-        title: candidate.title,
-        topic: candidate.topic,
-        status: "queued" as const,
-        articleId: null,
-        runId: null,
-        error: null,
-        retryCount: 0,
-        createdAt: "2026-08-01T00:00:00.000Z",
-        startedAt: null,
-        completedAt: null,
-      })),
-    }));
-    setDesktopBridgeForTests({
-      ...nativeTestBridge,
-      createGenerationBatch,
-      listGenerationBatches: async () => [],
-      planGenerationBatch,
-    });
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.click(screen.getByRole("tab", { name: "批量" }));
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "拆解这个产品功能，每一个主题一个功能，产生多篇文章" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "生成选题" }));
-
-    expect(await screen.findByText("功能拆解：导入能力")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "生成 2 篇" }));
-
-    await waitFor(() => expect(createGenerationBatch).toHaveBeenCalledTimes(1));
-    expect(planGenerationBatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        count: 3,
-        prompt: "拆解这个产品功能，每一个主题一个功能，产生多篇文章",
-      }),
-    );
-    expect(createGenerationBatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        candidates,
-        writerConcurrency: 2,
-      }),
-    );
-    expect(await screen.findByText("已加入批量队列 · 2 篇文章")).toBeVisible();
   });
 
   it("opens the article immediately and streams the writing Agent output", async () => {
