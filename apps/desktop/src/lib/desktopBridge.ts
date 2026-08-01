@@ -36,7 +36,94 @@ export interface RunWorkflowRequest {
   topic: string;
   disabledOptionalNodeIds: DisabledOptionalNodeId[];
   agentInstructions: WorkflowAgentInstruction[];
+  webSearchMode?: WebSearchMode;
+  maxWebSearchCalls?: number;
   visualComposition?: VisualCompositionRequest;
+}
+
+export type WebSearchMode = "off" | "auto" | "required";
+
+export interface BatchTopicCandidate {
+  title: string;
+  topic: string;
+  angle: string;
+  keyPoints: string[];
+}
+
+export interface BatchTopicPlanRequest {
+  prompt: string;
+  count: number;
+  references: string;
+  manualTopics: string[];
+}
+
+export interface BatchTopicPlanSummary {
+  candidates: BatchTopicCandidate[];
+  plannedBy: "model" | "manual";
+}
+
+export interface CreateGenerationBatchRequest {
+  prompt: string;
+  candidates: BatchTopicCandidate[];
+  sourceMarkdown: string;
+  disabledOptionalNodeIds: DisabledOptionalNodeId[];
+  agentInstructions: WorkflowAgentInstruction[];
+  webSearchMode: WebSearchMode;
+  maxWebSearchCalls: number;
+  writerConcurrency: number;
+}
+
+export interface GenerationBatchRequest {
+  batchId: string;
+}
+
+export interface GenerationItemRequest {
+  itemId: string;
+}
+
+export type GenerationBatchStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "needs_attention"
+  | "cancelled";
+
+export type GenerationItemStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface GenerationBatchSummary {
+  id: string;
+  prompt: string;
+  status: GenerationBatchStatus;
+  writerConcurrency: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GenerationItemSummary {
+  id: string;
+  batchId: string;
+  position: number;
+  title: string;
+  topic: string;
+  status: GenerationItemStatus;
+  articleId: string | null;
+  runId: string | null;
+  error: string | null;
+  retryCount: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface GenerationBatchDetail {
+  batch: GenerationBatchSummary;
+  items: GenerationItemSummary[];
 }
 
 export type DisabledOptionalNodeId =
@@ -275,6 +362,7 @@ export interface ConfigureModelRequest {
   imageBaseUrl: string | null;
   imageModel: string | null;
   imageTrustedHosts: string[];
+  tavilyApiKey: string;
   timeoutSeconds: number;
 }
 
@@ -287,6 +375,7 @@ export interface ModelConfigurationSummary {
   imageTrustedHosts: string[];
   timeoutSeconds: number;
   secretConfigured: boolean;
+  webSearchConfigured: boolean;
   persistence: "session";
 }
 
@@ -296,6 +385,17 @@ export interface ModelConnectionTestSummary {
   mocked: boolean;
 }
 
+/** Public-only status from a locally running WechatSync bridge. */
+export interface WechatSyncBridgeStatus {
+  available: boolean;
+  connected: boolean;
+  detail: string;
+  platforms: Array<{
+    id: "wechat" | "csdn" | "toutiao";
+    authenticated: boolean;
+  }>;
+}
+
 export interface DesktopBridge {
   runtimeSnapshot(): Promise<RuntimeSnapshot>;
   ensureAgentRuntime(): Promise<RuntimeSnapshot>;
@@ -303,6 +403,12 @@ export interface DesktopBridge {
   listArticles(): Promise<StoredArticleSummary[]>;
   saveDraft(request: SaveDraftRequest): Promise<SaveDraftReceipt>;
   runWorkflow(request: RunWorkflowRequest): Promise<RunWorkflowSummary>;
+  planGenerationBatch(request: BatchTopicPlanRequest): Promise<BatchTopicPlanSummary>;
+  createGenerationBatch(request: CreateGenerationBatchRequest): Promise<GenerationBatchDetail>;
+  listGenerationBatches(): Promise<GenerationBatchDetail[]>;
+  getGenerationBatch(request: GenerationBatchRequest): Promise<GenerationBatchDetail>;
+  cancelGenerationBatch(request: GenerationBatchRequest): Promise<GenerationBatchDetail>;
+  retryGenerationItem(request: GenerationItemRequest): Promise<GenerationBatchDetail>;
   getWorkflowActivity(articleId: string): Promise<WorkflowActivitySummary | null>;
   createPublishPlan(request: CreatePublishPlanRequest): Promise<PublishPlanSummary>;
   getPublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
@@ -318,6 +424,7 @@ export interface DesktopBridge {
   configureModel(request: ConfigureModelRequest): Promise<ModelConfigurationSummary>;
   modelConfiguration(): Promise<ModelConfigurationSummary | null>;
   testModelConnection(): Promise<ModelConnectionTestSummary>;
+  wechatSyncStatus(): Promise<WechatSyncBridgeStatus>;
 }
 
 const isTauriHost = () => typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -340,6 +447,7 @@ interface MockArticleState {
 const mockArticles = new Map<string, MockArticleState>();
 const mockPublishPlans = new Map<string, PublishPlanSummary>();
 const mockPublishReceipts = new Map<string, PublishReceiptSummary>();
+const mockGenerationBatches = new Map<string, GenerationBatchDetail>();
 let mockModelConfiguration: ModelConfigurationSummary | null = null;
 
 const nextMockId = (prefix: string) => `${prefix}-${++mockSequence}`;
@@ -548,6 +656,81 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       persistence: "memory",
     };
   },
+  async planGenerationBatch(request) {
+    await pause(80);
+    const topics = request.manualTopics.length > 0
+      ? request.manualTopics
+      : Array.from({ length: request.count }, (_, index) =>
+          `${request.prompt.trim()}（切入点 ${index + 1}）`);
+    return {
+      plannedBy: request.manualTopics.length > 0 ? "manual" : "model",
+      candidates: topics.map((topic, index) => ({
+        title: topic.slice(0, 180),
+        topic,
+        angle: `围绕第 ${index + 1} 个独立功能切入。`,
+        keyPoints: ["问题与受众", "具体做法", "边界与下一步"],
+      })),
+    };
+  },
+  async createGenerationBatch(request) {
+    await pause(80);
+    const id = nextMockId("generation-batch");
+    const now = new Date().toISOString();
+    const detail: GenerationBatchDetail = {
+      batch: {
+        id,
+        prompt: request.prompt,
+        status: "completed",
+        writerConcurrency: request.writerConcurrency,
+        createdAt: now,
+        updatedAt: now,
+      },
+      items: request.candidates.map((candidate, index) => ({
+        id: `${id}-item-${index + 1}`,
+        batchId: id,
+        position: index + 1,
+        title: candidate.title,
+        topic: candidate.topic,
+        status: "completed",
+        articleId: null,
+        runId: null,
+        error: null,
+        retryCount: 0,
+        createdAt: now,
+        startedAt: now,
+        completedAt: now,
+      })),
+    };
+    mockGenerationBatches.set(id, detail);
+    return structuredClone(detail);
+  },
+  async listGenerationBatches() {
+    return [...mockGenerationBatches.values()].map((detail) => structuredClone(detail));
+  },
+  async getGenerationBatch(request) {
+    const detail = mockGenerationBatches.get(request.batchId);
+    if (!detail) throw new Error(`generation batch ${request.batchId} not found`);
+    return structuredClone(detail);
+  },
+  async cancelGenerationBatch(request) {
+    const detail = mockGenerationBatches.get(request.batchId);
+    if (!detail) throw new Error(`generation batch ${request.batchId} not found`);
+    detail.batch.status = "cancelled";
+    detail.batch.updatedAt = new Date().toISOString();
+    detail.items = detail.items.map((item) =>
+      item.status === "queued"
+        ? { ...item, status: "cancelled", completedAt: detail.batch.updatedAt }
+        : item,
+    );
+    return structuredClone(detail);
+  },
+  async retryGenerationItem(request) {
+    const detail = [...mockGenerationBatches.values()].find((candidate) =>
+      candidate.items.some((item) => item.id === request.itemId),
+    );
+    if (!detail) throw new Error(`generation item ${request.itemId} not found`);
+    return structuredClone(detail);
+  },
   async getWorkflowActivity() {
     return null;
   },
@@ -716,6 +899,7 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       imageTrustedHosts: request.imageTrustedHosts,
       timeoutSeconds: request.timeoutSeconds,
       secretConfigured: Boolean(request.apiKey.trim()),
+      webSearchConfigured: Boolean(request.tavilyApiKey.trim()),
       persistence: "session",
     };
     return { ...mockModelConfiguration };
@@ -731,6 +915,18 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       mocked: true,
     };
   },
+  async wechatSyncStatus() {
+    return {
+      available: false,
+      connected: false,
+      detail: "浏览器预览不会连接 WechatSync。",
+      platforms: [
+        { id: "wechat", authenticated: false },
+        { id: "csdn", authenticated: false },
+        { id: "toutiao", authenticated: false },
+      ],
+    };
+  },
 };
 
 const tauriBridge: DesktopBridge = {
@@ -740,6 +936,18 @@ const tauriBridge: DesktopBridge = {
   listArticles: () => invoke<StoredArticleSummary[]>("list_articles"),
   saveDraft: (request) => invoke<SaveDraftReceipt>("save_draft", { request }),
   runWorkflow: (request) => invoke<RunWorkflowSummary>("run_workflow", { request }),
+  planGenerationBatch: (request) =>
+    invoke<BatchTopicPlanSummary>("plan_generation_batch", { request }),
+  createGenerationBatch: (request) =>
+    invoke<GenerationBatchDetail>("create_generation_batch", { request }),
+  listGenerationBatches: () =>
+    invoke<GenerationBatchDetail[]>("list_generation_batches"),
+  getGenerationBatch: (request) =>
+    invoke<GenerationBatchDetail>("get_generation_batch", { request }),
+  cancelGenerationBatch: (request) =>
+    invoke<GenerationBatchDetail>("cancel_generation_batch", { request }),
+  retryGenerationItem: (request) =>
+    invoke<GenerationBatchDetail>("retry_generation_item", { request }),
   getWorkflowActivity: (articleId) =>
     invoke<WorkflowActivitySummary | null>("workflow_activity", { articleId }),
   createPublishPlan: (request) =>
@@ -766,6 +974,7 @@ const tauriBridge: DesktopBridge = {
     invoke<ModelConfigurationSummary | null>("model_configuration"),
   testModelConnection: () =>
     invoke<ModelConnectionTestSummary>("test_model_connection"),
+  wechatSyncStatus: () => invoke<WechatSyncBridgeStatus>("wechat_sync_status"),
 };
 
 const DESKTOP_HOST_REQUIRED =
@@ -787,6 +996,12 @@ const browserPreviewBridge: DesktopBridge = {
   listArticles: async () => [],
   saveDraft: desktopHostRequired,
   runWorkflow: desktopHostRequired,
+  planGenerationBatch: desktopHostRequired,
+  createGenerationBatch: desktopHostRequired,
+  listGenerationBatches: desktopHostRequired,
+  getGenerationBatch: desktopHostRequired,
+  cancelGenerationBatch: desktopHostRequired,
+  retryGenerationItem: desktopHostRequired,
   getWorkflowActivity: desktopHostRequired,
   createPublishPlan: desktopHostRequired,
   getPublishPlan: desktopHostRequired,
@@ -800,6 +1015,7 @@ const browserPreviewBridge: DesktopBridge = {
   configureModel: desktopHostRequired,
   modelConfiguration: async () => null,
   testModelConnection: desktopHostRequired,
+  wechatSyncStatus: desktopHostRequired,
 };
 
 let testBridgeOverride: DesktopBridge | null = null;
@@ -823,6 +1039,12 @@ export const desktopBridge: DesktopBridge = {
   listArticles: () => activeBridge().listArticles(),
   saveDraft: (request) => activeBridge().saveDraft(request),
   runWorkflow: (request) => activeBridge().runWorkflow(request),
+  planGenerationBatch: (request) => activeBridge().planGenerationBatch(request),
+  createGenerationBatch: (request) => activeBridge().createGenerationBatch(request),
+  listGenerationBatches: () => activeBridge().listGenerationBatches(),
+  getGenerationBatch: (request) => activeBridge().getGenerationBatch(request),
+  cancelGenerationBatch: (request) => activeBridge().cancelGenerationBatch(request),
+  retryGenerationItem: (request) => activeBridge().retryGenerationItem(request),
   getWorkflowActivity: (articleId) => activeBridge().getWorkflowActivity(articleId),
   createPublishPlan: (request) => activeBridge().createPublishPlan(request),
   getPublishPlan: (request) => activeBridge().getPublishPlan(request),
@@ -836,4 +1058,5 @@ export const desktopBridge: DesktopBridge = {
   configureModel: (request) => activeBridge().configureModel(request),
   modelConfiguration: () => activeBridge().modelConfiguration(),
   testModelConnection: () => activeBridge().testModelConnection(),
+  wechatSyncStatus: () => activeBridge().wechatSyncStatus(),
 };

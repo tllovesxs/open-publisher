@@ -8,7 +8,6 @@ from sqlalchemy import select
 import open_publisher_runtime.application.harness as harness_module
 import open_publisher_runtime.workflows.preset as preset_module
 from open_publisher_runtime.application.artifacts import ArtifactService
-from open_publisher_runtime.application.harness import WORKFLOW_ARTIFACT_STATE_KEYS
 from open_publisher_runtime.application.model_access import TextGenerationResponse
 from open_publisher_runtime.domain.entities import RuntimeEvent, Workflow, WorkflowRun
 from open_publisher_runtime.domain.enums import RunStatus
@@ -101,41 +100,32 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
     run = run_response.json()
     assert run["status"] == "completed"
     assert run["output_revision_id"]
-    assert run["state_json"]["engine"] in {"langgraph", "sequential-fallback"}
-    assert all(run["state_json"][key] for key in WORKFLOW_ARTIFACT_STATE_KEYS)
+    assert run["state_json"]["engine"] in {
+        "langgraph-customized",
+        "sequential-customized",
+    }
+    assert run["state_json"]["enabled_node_ids"] == ["draft"]
     with client.app.state.container.database.session() as session:
         repository = SqlAlchemyRuntimeRepository(session)
         artifacts = ArtifactService(repository, client.app.state.container.blob_store)
         persisted = [
             repository.get_artifact(run["state_json"][key])
-            for key in WORKFLOW_ARTIFACT_STATE_KEYS
+            for key in ("raw_draft_artifact_id", "risk_artifact_id")
         ]
         assert all(artifact is not None for artifact in persisted)
         assert {artifact.kind for artifact in persisted if artifact is not None} == {
-            "workflow.research",
-            "workflow.outline",
             "workflow.raw-draft",
-            "workflow.natural-style-patch",
-            "workflow.canonical-draft",
-            "workflow.review-report",
             "workflow.risk-report",
-            "workflow.visual-plan",
         }
-        patch = artifacts.read_text(run["state_json"]["natural_style_patch_artifact_id"])
-        assert patch.startswith("--- raw-draft.md\n+++ canonical-draft.md")
         raw_draft = artifacts.read_text(run["state_json"]["raw_draft_artifact_id"])
-        canonical = artifacts.read_text(run["state_json"]["canonical_draft_artifact_id"])
-        assert raw_draft != canonical
+        assert raw_draft
 
     detail = client.get(f"/api/v1/runs/{run['id']}")
     assert detail.status_code == 200
     events = detail.json()["events"]
     event_types = [event["event_type"] for event in events]
-    assert event_types[:3] == [
-        "run.queued",
-        "run.started",
-        "run.budget_reserved",
-    ]
+    assert event_types[:2] == ["run.queued", "run.started"]
+    assert "run.budget_reserved" in event_types
     assert event_types[-1] == "run.completed"
     node_events = [
         (event["event_type"], event["payload_json"].get("node_id"))
@@ -152,15 +142,7 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         for event_type, node_id in node_events
         if event_type == "run.node_completed"
     }
-    assert started_nodes == {
-        "research",
-        "outline",
-        "draft",
-        "natural-style",
-        "review",
-        "risk",
-        "visual",
-    }
+    assert started_nodes == {"draft", "risk"}
     assert completed_nodes == started_nodes
     assert all(event_type != "run.node_failed" for event_type, _ in node_events)
     draft_deltas = [
@@ -173,8 +155,8 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
     assert all(event["payload_json"]["delta"] for event in draft_deltas)
     assert run["state_json"]["budget"] == {
         "model_calls_limit": 8,
-        "model_calls_reserved": 7,
-        "model_calls_used": 7,
+        "model_calls_reserved": 1,
+        "model_calls_used": 1,
         "max_parallel": 4,
         "max_wall_clock_seconds": 300,
     }
@@ -280,6 +262,12 @@ def test_visual_agent_receives_selected_asset_text_metadata_only(
             "article_id": article["article"]["id"],
             "revision_id": article["revision"]["id"],
             "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                ],
                 "visual_composition": {
                     "mode": "fixed",
                     "target_count": 1,
@@ -356,7 +344,12 @@ def test_run_policy_rejects_insufficient_model_budget_before_first_call(
             "workflow_id": workflow["id"],
             "article_id": article["article"]["id"],
             "revision_id": article["revision"]["id"],
-            "policy": {"max_model_calls": 1},
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research", "outline", "natural-style", "review",
+                ],
+                "max_model_calls": 1,
+            },
         },
     )
     assert response.status_code == 201
@@ -386,14 +379,14 @@ def test_running_claim_is_committed_before_model_io(client, article_payload) -> 
             "workflow_id": workflow["id"],
             "article_id": article["article"]["id"],
             "revision_id": article["revision"]["id"],
-            "policy": {"max_model_calls": 7},
+            "policy": {"max_model_calls": 1},
         },
     )
     assert response.status_code == 201, response.text
     assert response.json()["status"] == "completed"
-    assert provider.calls == 7
-    assert observed_states == ["running"] * 7
-    assert all(budget["model_calls_reserved"] == 7 for budget in observed_budgets)
+    assert provider.calls == 1
+    assert observed_states == ["running"]
+    assert all(budget["model_calls_reserved"] == 1 for budget in observed_budgets)
     assert all(budget["model_calls_used"] == 0 for budget in observed_budgets)
 
 
@@ -410,7 +403,11 @@ def test_langgraph_fanout_respects_max_parallel(client, article_payload) -> None
             "workflow_id": workflow["id"],
             "article_id": article["article"]["id"],
             "revision_id": article["revision"]["id"],
-            "policy": {"max_model_calls": 7, "max_parallel": 2},
+            "policy": {
+                "disabled_optional_node_ids": [],
+                "max_model_calls": 6,
+                "max_parallel": 2,
+            },
         },
     )
 
@@ -439,7 +436,7 @@ def test_wall_clock_budget_fails_after_preserving_consumed_call_claim(
             "article_id": article["article"]["id"],
             "revision_id": article["revision"]["id"],
             "policy": {
-                "max_model_calls": 7,
+                "max_model_calls": 1,
                 "max_wall_clock_seconds": 1,
             },
         },
@@ -450,30 +447,23 @@ def test_wall_clock_budget_fails_after_preserving_consumed_call_claim(
     assert run["status"] == "failed"
     assert run["output_revision_id"] is None
     assert "wall-clock budget" in run["error"]
-    assert run["state_json"]["budget"]["model_calls_reserved"] == 7
-    assert run["state_json"]["budget"]["model_calls_used"] == 7
+    assert run["state_json"]["budget"]["model_calls_reserved"] == 1
+    assert run["state_json"]["budget"]["model_calls_used"] == 1
 
 
 def test_preset_definition_matches_required_chain_and_fanout(client) -> None:
     current = client.get("/api/v1/workflows").json()[0]
-    assert current["version"] == "1.1.0"
+    assert current["version"] == "1.2.0"
     workflow = current["definition_json"]
     nodes = {node["id"]: node for node in workflow["nodes"]}
-    assert workflow["required_model_calls"] == 7
-    for node_id in (
-        "research",
-        "outline",
-        "draft",
-        "natural-style",
-        "review",
-        "risk",
-        "visual",
-    ):
-        assert nodes[node_id]["default_enabled"] is True
-    for node_id in ("draft", "risk"):
-        assert nodes[node_id]["required"] is True
-        assert nodes[node_id]["skippable"] is False
+    assert workflow["required_model_calls"] == 6
+    assert nodes["draft"]["default_enabled"] is True
+    assert nodes["draft"]["required"] is True
+    assert nodes["draft"]["skippable"] is False
+    assert nodes["risk"]["default_enabled"] is True
+    assert nodes["risk"]["type"] == "rule_check"
     for node_id in ("research", "outline", "natural-style", "review", "visual"):
+        assert nodes[node_id]["default_enabled"] is False
         assert nodes[node_id]["required"] is False
         assert nodes[node_id]["skippable"] is True
     assert nodes["review"]["mode"] == "read_only"
@@ -503,13 +493,13 @@ def test_demo_uses_current_preset_when_a_legacy_definition_exists(client) -> Non
         )
 
     workflows = client.get("/api/v1/workflows").json()
-    assert [workflow["version"] for workflow in workflows[:2]] == ["1.1.0", "1.0.0"]
+    assert [workflow["version"] for workflow in workflows[:2]] == ["1.2.0", "1.0.0"]
     response = client.post(
         "/api/v1/demo/complete",
         json={"platforms": ["csdn"]},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["run"]["workflow_snapshot_json"]["version"] == "1.1.0"
+    assert response.json()["run"]["workflow_snapshot_json"]["version"] == "1.2.0"
 
 
 def test_workflow_has_deterministic_sequential_fallback(
@@ -524,14 +514,15 @@ def test_workflow_has_deterministic_sequential_fallback(
             "workflow_id": workflow["id"],
             "article_id": article["article"]["id"],
             "revision_id": article["revision"]["id"],
-            "policy": {"max_model_calls": 7},
+            "policy": {"max_model_calls": 1},
         },
     )
     assert response.status_code == 201, response.text
     run = response.json()
     assert run["status"] == "completed"
-    assert run["state_json"]["engine"] == "sequential-fallback"
-    assert all(run["state_json"][key] for key in WORKFLOW_ARTIFACT_STATE_KEYS)
+    assert run["state_json"]["engine"] == "sequential-customized"
+    assert run["state_json"]["raw_draft_artifact_id"]
+    assert run["state_json"]["risk_artifact_id"]
 
 
 def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
@@ -551,7 +542,7 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
             "revision_id": article["revision"]["id"],
             "policy": {
                 "disabled_optional_node_ids": disabled,
-                "max_model_calls": 2,
+                "max_model_calls": 1,
             },
         },
     )
@@ -559,19 +550,19 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
     assert response.status_code == 201, response.text
     run = response.json()
     assert run["status"] == "completed"
-    assert provider.calls == 2
-    assert provider.purposes == ["draft", "risk"]
+    assert provider.calls == 1
+    assert provider.purposes == ["draft"]
     assert run["state_json"]["engine"] in {
         "langgraph-customized",
         "sequential-customized",
     }
-    assert run["state_json"]["enabled_node_ids"] == ["draft", "risk"]
+    assert run["state_json"]["enabled_node_ids"] == ["draft"]
     assert run["state_json"]["disabled_optional_node_ids"] == disabled
-    assert run["state_json"]["required_model_calls"] == 2
+    assert run["state_json"]["required_model_calls"] == 1
     assert run["state_json"]["budget"] == {
-        "model_calls_limit": 2,
-        "model_calls_reserved": 2,
-        "model_calls_used": 2,
+        "model_calls_limit": 1,
+        "model_calls_reserved": 1,
+        "model_calls_used": 1,
         "max_parallel": 4,
         "max_wall_clock_seconds": 300,
     }
@@ -591,9 +582,9 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
 
     selection = run["workflow_snapshot_json"]["node_selection"]
     assert selection == {
-        "enabled_node_ids": ["draft", "risk"],
+        "enabled_node_ids": ["draft"],
         "disabled_optional_node_ids": disabled,
-        "required_model_calls": 2,
+        "required_model_calls": 1,
     }
     assert run["workflow_snapshot_json"]["policy"][
         "disabled_optional_node_ids"
@@ -657,7 +648,7 @@ def test_customized_budget_still_rejects_less_than_enabled_call_count(
                     "natural-style",
                     "review",
                 ],
-                "max_model_calls": 2,
+                "max_model_calls": 1,
             },
         },
     )
@@ -666,9 +657,9 @@ def test_customized_budget_still_rejects_less_than_enabled_call_count(
     run = response.json()
     assert run["status"] == "failed"
     assert "model-call budget" in run["error"]
-    assert "(2 < 3)" in run["error"]
+    assert "(1 < 2)" in run["error"]
     assert provider.calls == 0
-    assert run["workflow_snapshot_json"]["node_selection"]["required_model_calls"] == 3
+    assert run["workflow_snapshot_json"]["node_selection"]["required_model_calls"] == 2
     assert run["state_json"]["budget"]["model_calls_reserved"] == 0
 
 
@@ -752,7 +743,7 @@ def test_content_approval_policy_still_controls_customized_run(
                     "review",
                     "visual",
                 ],
-                "max_model_calls": 2,
+                "max_model_calls": 1,
                 "require_content_approval": True,
             },
         },
@@ -768,7 +759,7 @@ def test_content_approval_policy_still_controls_customized_run(
     assert waiting["interrupt_json"]["risk_artifact_id"]
     assert "review_artifact_id" not in waiting["interrupt_json"]
     assert "visual_plan_artifact_id" not in waiting["interrupt_json"]
-    assert provider.calls == 2
+    assert provider.calls == 1
 
     resumed = client.post(
         f"/api/v1/runs/{waiting['id']}/resume",
@@ -776,4 +767,4 @@ def test_content_approval_policy_still_controls_customized_run(
     )
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["status"] == "completed"
-    assert provider.calls == 2
+    assert provider.calls == 1

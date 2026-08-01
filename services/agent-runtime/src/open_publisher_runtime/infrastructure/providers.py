@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
@@ -113,6 +113,21 @@ class MockTextProvider:
                 ).strip(),
             }
             text = json.dumps(template, ensure_ascii=False)
+        elif request.purpose == "batch-topic-plan":
+            count = int(request.context.get("count") or 3)
+            prompt = str(request.context.get("prompt") or topic)
+            text = json.dumps(
+                [
+                    {
+                        "title": f"{prompt[:48]}：第 {index} 个切入点",
+                        "topic": f"{prompt}（切入点 {index}）",
+                        "angle": "以一个明确功能或实践问题为中心展开。",
+                        "key_points": ["问题与受众", "可执行做法", "边界与下一步"],
+                    }
+                    for index in range(1, count + 1)
+                ],
+                ensure_ascii=False,
+            )
         elif request.purpose == "research":
             text = (
                 "## 研究卡片\n\n"
@@ -269,9 +284,114 @@ class OpenAICompatibleTextProvider:
     ) -> TextGenerationResponse:
         """Read the OpenAI-compatible SSE response without exposing it to the UI."""
 
+        return self._stream_messages(
+            request,
+            messages=[{"role": "user", "content": request.prompt}],
+            on_delta=on_delta,
+        )
+
+    def generate_with_tools_stream(
+        self,
+        request: TextGenerationRequest,
+        *,
+        tools: Sequence[dict[str, object]],
+        execute_tool: Callable[[str, dict[str, Any]], str],
+        on_delta: Callable[[str], None],
+        max_tool_calls: int,
+    ) -> TextGenerationResponse:
+        """Run one bounded tool round, then stream the final writer response."""
+
+        if not tools or max_tool_calls < 1:
+            return self.generate_stream(request, on_delta)
+        messages: list[dict[str, Any]] = [{"role": "user", "content": request.prompt}]
+        request_payload: dict[str, Any] = {
+            "model": request.model or self.default_model,
+            "messages": messages,
+            "temperature": request.temperature,
+            "tools": list(tools),
+            "tool_choice": "auto",
+            **self.extra_request_fields,
+        }
+        output_limit = request.max_output_tokens or self.max_output_tokens
+        if output_limit is not None:
+            request_payload["max_tokens"] = output_limit
+        response = httpx.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=request_payload,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        choices = payload.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else {}
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if not isinstance(message, dict):
+            return self._stream_messages(request, messages=messages, on_delta=on_delta)
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                on_delta(content)
+                usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+                return TextGenerationResponse(
+                    text=content,
+                    provider=self.name,
+                    model=str(payload.get("model") or request.model or self.default_model),
+                    usage={
+                        "input_tokens": int(usage.get("prompt_tokens", 0)),
+                        "output_tokens": int(usage.get("completion_tokens", 0)),
+                    },
+                )
+            return self._stream_messages(request, messages=messages, on_delta=on_delta)
+        if len(tool_calls) > max_tool_calls:
+            raise RuntimeError(f"writer requested more than {max_tool_calls} web tool calls")
+
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": message.get("content"),
+            "tool_calls": tool_calls,
+        }
+        messages.append(assistant_message)
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                raise RuntimeError("writer returned an invalid web tool call")
+            call_id = call.get("id")
+            function = call.get("function")
+            if not isinstance(call_id, str) or not isinstance(function, dict):
+                raise RuntimeError("writer returned an invalid web tool call")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if not isinstance(name, str) or not isinstance(arguments, str):
+                raise RuntimeError("writer returned an invalid web tool call")
+            try:
+                parsed_arguments = json.loads(arguments)
+            except json.JSONDecodeError as error:
+                raise RuntimeError("writer returned invalid JSON tool arguments") from error
+            if not isinstance(parsed_arguments, dict):
+                raise RuntimeError("writer returned invalid JSON tool arguments")
+            result = execute_tool(name, parsed_arguments)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": result[:24_000],
+                }
+            )
+        return self._stream_messages(request, messages=messages, on_delta=on_delta)
+
+    def _stream_messages(
+        self,
+        request: TextGenerationRequest,
+        *,
+        messages: list[dict[str, Any]],
+        on_delta: Callable[[str], None],
+    ) -> TextGenerationResponse:
+        """Read an SSE completion for either a direct or tool-assisted writer turn."""
+
         request_payload = {
             "model": request.model or self.default_model,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": messages,
             "temperature": request.temperature,
             "stream": True,
             **self.extra_request_fields,

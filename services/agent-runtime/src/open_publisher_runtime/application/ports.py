@@ -8,6 +8,8 @@ from open_publisher_runtime.domain.entities import (
     ArticleRevision,
     Artifact,
     ConnectionProfile,
+    GenerationBatch,
+    GenerationItem,
     PlatformVariant,
     PublishAttempt,
     PublishJob,
@@ -17,7 +19,11 @@ from open_publisher_runtime.domain.entities import (
     Workflow,
     WorkflowRun,
 )
-from open_publisher_runtime.domain.enums import PublishJobState, RunStatus
+from open_publisher_runtime.domain.enums import (
+    GenerationItemStatus,
+    PublishJobState,
+    RunStatus,
+)
 
 
 class ArtifactBlobStore(Protocol):
@@ -50,6 +56,26 @@ class RuntimeRepository(Protocol):
     def add_artifact(self, artifact: Artifact) -> Artifact: ...
 
     def get_artifact(self, artifact_id: str) -> Artifact | None: ...
+
+    def add_generation_batch(self, batch: GenerationBatch) -> GenerationBatch: ...
+
+    def update_generation_batch(self, batch: GenerationBatch) -> GenerationBatch: ...
+
+    def get_generation_batch(self, batch_id: str) -> GenerationBatch | None: ...
+
+    def list_generation_batches(self, *, limit: int = 30) -> Sequence[GenerationBatch]: ...
+
+    def add_generation_item(self, item: GenerationItem) -> GenerationItem: ...
+
+    def update_generation_item(self, item: GenerationItem) -> GenerationItem: ...
+
+    def get_generation_item(self, item_id: str) -> GenerationItem | None: ...
+
+    def list_generation_items(self, batch_id: str) -> Sequence[GenerationItem]: ...
+
+    def list_generation_items_by_statuses(
+        self, statuses: Sequence[GenerationItemStatus]
+    ) -> Sequence[GenerationItem]: ...
 
     def add_workflow(self, workflow: Workflow) -> Workflow: ...
 

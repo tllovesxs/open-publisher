@@ -63,7 +63,7 @@ NodeEventRecorder = Callable[[str, str, str, dict[str, object] | None], None]
 
 class WorkflowService:
     PRESET_NAME = "mock-article"
-    PRESET_VERSION = "1.1.0"
+    PRESET_VERSION = "1.2.0"
 
     def __init__(self, repository: RuntimeRepository) -> None:
         self.repository = repository
@@ -272,6 +272,8 @@ class RunController:
                     topic=(topic or article.title).strip(),
                     source_markdown=revision.markdown,
                     agent_instructions=policy.agent_instructions,
+                    web_search_mode=policy.web_search_mode,
+                    max_web_search_calls=policy.max_web_search_calls,
                     visual_composition=policy.visual_composition,
                 ),
                 disabled_optional_node_ids=disabled_optional_node_ids,
@@ -331,6 +333,19 @@ class RunController:
                 metadata=artifact_metadata,
             )
             state_json["raw_draft_artifact_id"] = raw_draft_artifact.id
+            if output.source_evidence:
+                source_artifact = self.artifact_service.put_json(
+                    kind="workflow.web-sources",
+                    value={
+                        "sources": [
+                            source.model_dump(mode="json")
+                            for source in output.source_evidence
+                        ]
+                    },
+                    metadata=artifact_metadata,
+                )
+                state_json["web_sources_artifact_id"] = source_artifact.id
+                state_json["web_source_count"] = len(output.source_evidence)
             pending_draft_artifact_id = raw_draft_artifact.id
             if "natural-style" in enabled_node_ids:
                 natural_style_patch_artifact = self.artifact_service.put_text(

@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from open_publisher_runtime.application.batch_generation import BatchTopicCandidate
 from open_publisher_runtime.application.platform_adapters import (
     CapabilityReport,
     PlatformName,
@@ -16,6 +17,8 @@ from open_publisher_runtime.domain.entities import (
     ArticleRevision,
     Artifact,
     ConnectionProfile,
+    GenerationBatch,
+    GenerationItem,
     PlatformVariant,
     PublishJob,
     PublishPlan,
@@ -107,6 +110,39 @@ class CreateRunRequest(ApiModel):
     revision_id: str
     topic: str | None = None
     policy: RunPolicy = Field(default_factory=RunPolicy)
+
+
+class BatchTopicPlanRequest(ApiModel):
+    prompt: str = Field(min_length=1, max_length=6_000)
+    count: int = Field(default=3, ge=1, le=10)
+    references: str = Field(default="", max_length=60_000)
+    manual_topics: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("manual_topics")
+    @classmethod
+    def validate_manual_topics(cls, value: list[str]) -> list[str]:
+        normalized = [topic.strip() for topic in value if topic.strip()]
+        if len(normalized) != len(value) or len(set(normalized)) != len(normalized):
+            raise ValueError("manual_topics must be non-blank and unique")
+        return normalized
+
+
+class BatchTopicPlanResponse(ApiModel):
+    candidates: list[BatchTopicCandidate]
+    planned_by: Literal["model", "manual"]
+
+
+class CreateGenerationBatchRequest(ApiModel):
+    prompt: str = Field(min_length=1, max_length=6_000)
+    candidates: list[BatchTopicCandidate] = Field(min_length=1, max_length=10)
+    source_markdown: str = Field(default="", max_length=80_000)
+    policy: RunPolicy = Field(default_factory=RunPolicy)
+    writer_concurrency: int = Field(default=2, ge=1, le=4)
+
+
+class GenerationBatchDetail(ApiModel):
+    batch: GenerationBatch
+    items: list[GenerationItem]
 
 
 class ResumeRunRequest(ApiModel):

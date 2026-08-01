@@ -32,6 +32,7 @@ const nativeTestBridge: DesktopBridge = {
     imageTrustedHosts: [],
     timeoutSeconds: 30,
     secretConfigured: true,
+    webSearchConfigured: false,
     persistence: "session",
   }),
   testModelConnection: async () => ({
@@ -57,7 +58,7 @@ describe("desktop product flow", () => {
   it("exposes the focused content-production areas", async () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "从一个主题开始" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "开始创作" })).toBeVisible();
     const navigation = screen.getByRole("navigation", { name: "主导航" });
     expect(within(navigation).getAllByRole("button")).toHaveLength(6);
     expect(within(navigation).getByRole("button", { name: "创作" })).toBeVisible();
@@ -111,11 +112,11 @@ describe("desktop product flow", () => {
     render(<App />);
     await waitForNativeRuntime();
 
-    expect(screen.getByRole("option", { name: "短篇（约 1,500–2,000 字）" })).toBeVisible();
-    expect(screen.getByRole("option", { name: "中篇（约 3,000–4,000 字）" })).toBeVisible();
-    expect(screen.getByRole("option", { name: "长篇（约 5,500–7,000 字）" })).toBeVisible();
-    fireEvent.change(screen.getByLabelText("文章篇幅"), { target: { value: "custom" } });
-    fireEvent.change(screen.getByLabelText("自定义约多少字"), {
+    expect(screen.getByRole("option", { name: "短篇" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "中篇" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "长篇" })).toBeVisible();
+    fireEvent.change(screen.getByLabelText("篇幅"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("目标字数"), {
       target: { value: "6200" },
     });
     fireEvent.change(screen.getByLabelText("文章主题"), {
@@ -126,9 +127,87 @@ describe("desktop product flow", () => {
     await screen.findByLabelText("Markdown 正文");
     expect(saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({
-        markdown: expect.stringContaining("- 篇幅：自定义（约 6,200 字）"),
+        markdown: expect.stringContaining("- 篇幅：约 6,200 字"),
       }),
     );
+  });
+
+  it("plans topics and creates a confirmed batch through the desktop bridge", async () => {
+    const candidates = [
+      {
+        title: "功能拆解：导入能力",
+        topic: "拆解产品的导入能力",
+        angle: "从用户的第一步操作切入。",
+        keyPoints: ["适用场景", "实现步骤", "常见误区"],
+      },
+      {
+        title: "功能拆解：本地存储",
+        topic: "拆解产品的本地存储能力",
+        angle: "从数据可靠性切入。",
+        keyPoints: ["数据边界", "存储策略", "恢复方式"],
+      },
+    ];
+    const planGenerationBatch = vi.fn(async () => ({
+      candidates,
+      plannedBy: "model" as const,
+    }));
+    const createGenerationBatch = vi.fn<DesktopBridge["createGenerationBatch"]>(async (request) => ({
+      batch: {
+        id: "batch-confirmed",
+        prompt: request.prompt,
+        status: "queued" as const,
+        writerConcurrency: request.writerConcurrency,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      },
+      items: request.candidates.map((candidate, index) => ({
+        id: `batch-confirmed-item-${index + 1}`,
+        batchId: "batch-confirmed",
+        position: index + 1,
+        title: candidate.title,
+        topic: candidate.topic,
+        status: "queued" as const,
+        articleId: null,
+        runId: null,
+        error: null,
+        retryCount: 0,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        startedAt: null,
+        completedAt: null,
+      })),
+    }));
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      createGenerationBatch,
+      listGenerationBatches: async () => [],
+      planGenerationBatch,
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.click(screen.getByRole("tab", { name: "批量" }));
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "拆解这个产品功能，每一个主题一个功能，产生多篇文章" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成选题" }));
+
+    expect(await screen.findByText("功能拆解：导入能力")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "生成 2 篇" }));
+
+    await waitFor(() => expect(createGenerationBatch).toHaveBeenCalledTimes(1));
+    expect(planGenerationBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        count: 3,
+        prompt: "拆解这个产品功能，每一个主题一个功能，产生多篇文章",
+      }),
+    );
+    expect(createGenerationBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidates,
+        writerConcurrency: 2,
+      }),
+    );
+    expect(await screen.findByText("已加入批量队列 · 2 篇文章")).toBeVisible();
   });
 
   it("opens the article immediately and streams the writing Agent output", async () => {
@@ -344,8 +423,8 @@ describe("desktop product flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "素材库" }));
     fireEvent.click(await screen.findByRole("button", { name: "选择产品架构图" }));
     fireEvent.click(screen.getByRole("button", { name: "带入创作" }));
-    await screen.findByRole("heading", { name: "从一个主题开始" });
-    fireEvent.change(screen.getByLabelText("配图数量"), { target: { value: "1" } });
+    await screen.findByRole("heading", { name: "开始创作" });
+    fireEvent.change(screen.getByLabelText("配图"), { target: { value: "1" } });
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "已有素材的自动插入" },
     });
@@ -380,7 +459,7 @@ describe("desktop product flow", () => {
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==";
     render(<App />);
     await waitForNativeRuntime();
-    fireEvent.change(screen.getByLabelText("配图数量"), { target: { value: "none" } });
+    fireEvent.change(screen.getByLabelText("配图"), { target: { value: "none" } });
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "内嵌图片迁移" },
     });

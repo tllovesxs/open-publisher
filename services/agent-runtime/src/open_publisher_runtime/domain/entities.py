@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from open_publisher_runtime.domain.enums import (
     ApprovalStatus,
+    GenerationBatchStatus,
+    GenerationItemStatus,
     PublishAttemptState,
     PublishJobState,
     PublishOperation,
@@ -168,3 +170,29 @@ class PublishReceipt(DomainModel):
     details_json: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
 
+
+class GenerationBatch(DomainModel):
+    id: str = Field(default_factory=new_id)
+    prompt: str
+    policy_json: dict[str, Any] = Field(default_factory=dict)
+    status: GenerationBatchStatus = GenerationBatchStatus.QUEUED
+    writer_concurrency: int = 2
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class GenerationItem(DomainModel):
+    id: str = Field(default_factory=new_id)
+    batch_id: str
+    position: int
+    title: str
+    topic: str
+    input_json: dict[str, Any] = Field(default_factory=dict)
+    status: GenerationItemStatus = GenerationItemStatus.QUEUED
+    article_id: str | None = None
+    run_id: str | None = None
+    error: str | None = None
+    retry_count: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None

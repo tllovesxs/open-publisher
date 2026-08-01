@@ -61,6 +61,8 @@
       "disabled_optional_node_ids": [
         "research"
       ],
+      "web_search_mode": "auto",
+      "max_web_search_calls": 2,
       "visual_composition": {
         "mode": "none",
         "target_count": 0,

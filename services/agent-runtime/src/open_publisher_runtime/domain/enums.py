@@ -49,3 +49,19 @@ class PublishOperation(StrEnum):
     DRY_RUN = "dry_run"
     RECONCILE = "reconcile"
 
+
+class GenerationBatchStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    NEEDS_ATTENTION = "needs_attention"
+    CANCELLED = "cancelled"
+
+
+class GenerationItemStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"

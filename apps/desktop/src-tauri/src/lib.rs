@@ -3,12 +3,15 @@ mod supervisor;
 use std::sync::Arc;
 
 use supervisor::{
-    ConfigureModelRequest, ConnectionProfilePublic, CreateConnectionProfileRequest,
-    CreatePublishPlanRequest, ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary,
-    ModelConfigurationSummary, ModelConnectionTestSummary, ProcessPublishJobRequest,
-    ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor,
-    RunWorkflowRequest, RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest,
-    SidecarSupervisor, StoredArticleSummary, TemplateExtractionSummary, WorkflowActivitySummary,
+    BatchTopicPlanRequest, BatchTopicPlanSummary, ConfigureModelRequest, ConnectionProfilePublic,
+    CreateConnectionProfileRequest, CreateGenerationBatchRequest, CreatePublishPlanRequest,
+    ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary, GenerationBatchDetail,
+    GenerationBatchRequest, GenerationItemRequest, ModelConfigurationSummary,
+    ModelConnectionTestSummary, ProcessPublishJobRequest, ProcessPublishJobSummary,
+    PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor, RunWorkflowRequest,
+    RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor,
+    StoredArticleSummary, TemplateExtractionSummary, WechatSyncBridgeStatus,
+    WorkflowActivitySummary,
 };
 use tauri::Manager;
 
@@ -71,6 +74,71 @@ async fn run_workflow(
     tauri::async_runtime::spawn_blocking(move || supervisor.run_workflow(request))
         .await
         .map_err(|_| "workflow task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn plan_generation_batch(
+    request: BatchTopicPlanRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BatchTopicPlanSummary, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.plan_generation_batch(request))
+        .await
+        .map_err(|_| "batch topic planning task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn create_generation_batch(
+    request: CreateGenerationBatchRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GenerationBatchDetail, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.create_generation_batch(request))
+        .await
+        .map_err(|_| "batch creation task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn list_generation_batches(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<GenerationBatchDetail>, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.list_generation_batches())
+        .await
+        .map_err(|_| "batch listing task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn get_generation_batch(
+    request: GenerationBatchRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GenerationBatchDetail, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.get_generation_batch(request))
+        .await
+        .map_err(|_| "batch refresh task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn cancel_generation_batch(
+    request: GenerationBatchRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GenerationBatchDetail, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.cancel_generation_batch(request))
+        .await
+        .map_err(|_| "batch cancellation task was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn retry_generation_item(
+    request: GenerationItemRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GenerationBatchDetail, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.retry_generation_item(request))
+        .await
+        .map_err(|_| "batch item retry task was cancelled".to_owned())?
 }
 
 #[tauri::command]
@@ -213,6 +281,16 @@ async fn test_model_connection(
         .map_err(|_| "model connection test was cancelled".to_owned())?
 }
 
+#[tauri::command]
+async fn wechat_sync_status(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<WechatSyncBridgeStatus, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.wechat_sync_status())
+        .await
+        .map_err(|_| "WechatSync status lookup was cancelled".to_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -232,6 +310,12 @@ pub fn run() {
             list_articles,
             save_draft,
             run_workflow,
+            plan_generation_batch,
+            create_generation_batch,
+            list_generation_batches,
+            get_generation_batch,
+            cancel_generation_batch,
+            retry_generation_item,
             workflow_activity,
             create_publish_plan,
             get_publish_plan,
@@ -244,7 +328,8 @@ pub fn run() {
             create_connection_profile,
             configure_model,
             model_configuration,
-            test_model_connection
+            test_model_connection,
+            wechat_sync_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running Open Publisher");

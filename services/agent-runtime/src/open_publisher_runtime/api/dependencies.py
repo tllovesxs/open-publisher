@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from open_publisher_runtime.api.live_activity import LiveWorkflowActivityStore
+from open_publisher_runtime.application.batch_generation import BatchGenerationService
 from open_publisher_runtime.application.model_access import ModelAccessLayer
 from open_publisher_runtime.application.publishing import DeterministicDryRunPublisher
 from open_publisher_runtime.infrastructure.artifact_store import FileSystemArtifactStore
@@ -26,6 +27,7 @@ class RuntimeContainer:
     workflow_runner: PresetArticleWorkflow
     dry_run_publisher: DeterministicDryRunPublisher
     live_workflow_activity: LiveWorkflowActivityStore
+    batch_generation: BatchGenerationService
 
 
 bearer_scheme = HTTPBearer(auto_error=False)

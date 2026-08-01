@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from collections.abc import Callable, Sequence
 from itertools import pairwise
 from typing import Any, TypedDict
@@ -11,9 +12,11 @@ from open_publisher_runtime.application.model_access import (
     ModelAccessLayer,
     TextGenerationRequest,
 )
+from open_publisher_runtime.application.web_search import SourceEvidence, TavilySearchTool
 from open_publisher_runtime.domain.policies import (
     OptionalWorkflowNodeId,
     VisualCompositionRequest,
+    WebSearchMode,
     WorkflowAgentInstruction,
     WorkflowNodeId,
 )
@@ -35,7 +38,6 @@ MODEL_NODE_IDS = (
     "draft",
     "natural-style",
     "review",
-    "risk",
     "visual",
 )
 OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
@@ -45,8 +47,8 @@ OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
     "review",
     "visual",
 )
-REQUIRED_NODE_IDS = ("draft", "risk")
-NodeEventCallback = Callable[[str, str, dict[str, str] | None], None]
+REQUIRED_NODE_IDS = ("draft",)
+NodeEventCallback = Callable[[str, str, dict[str, object] | None], None]
 
 
 class PresetWorkflowInput(BaseModel):
@@ -56,6 +58,8 @@ class PresetWorkflowInput(BaseModel):
     topic: str
     source_markdown: str
     agent_instructions: list[WorkflowAgentInstruction] = Field(default_factory=list)
+    web_search_mode: WebSearchMode = "auto"
+    max_web_search_calls: int = Field(default=2, ge=0, le=3)
     visual_composition: VisualCompositionRequest = Field(
         default_factory=VisualCompositionRequest,
     )
@@ -72,6 +76,7 @@ class PresetWorkflowOutput(BaseModel):
     review_report: str
     risk_report: str
     visual_plan: VisualCompositionPlan
+    source_evidence: list[SourceEvidence] = Field(default_factory=list)
     engine: str
 
 
@@ -80,6 +85,9 @@ class WorkflowState(TypedDict):
     topic: str
     source_markdown: str
     agent_instructions: list[WorkflowAgentInstruction]
+    web_search_mode: WebSearchMode
+    max_web_search_calls: int
+    source_evidence: list[SourceEvidence]
     research_report: str
     outline: str
     raw_draft: str
@@ -93,8 +101,14 @@ class WorkflowState(TypedDict):
 class PresetArticleWorkflow:
     required_model_calls = len(MODEL_NODE_IDS)
 
-    def __init__(self, model_access: ModelAccessLayer) -> None:
+    def __init__(
+        self,
+        model_access: ModelAccessLayer,
+        *,
+        web_search_tool: TavilySearchTool | None = None,
+    ) -> None:
         self.model_access = model_access
+        self.web_search_tool = web_search_tool
 
     @staticmethod
     def _run_node(
@@ -244,13 +258,56 @@ class PresetArticleWorkflow:
             buffered += delta
             emit_buffer(force=False)
 
-        response = self.model_access.generate_text_stream(
+        tools: list[dict[str, object]] = []
+        source_evidence: list[SourceEvidence] = []
+        if state["web_search_mode"] != "off" and self.web_search_tool is not None:
+            tools.append(self.web_search_tool.definition())
+
+        def execute_tool(name: str, arguments: dict[str, object]) -> str:
+            if self.web_search_tool is None or name != self.web_search_tool.name:
+                raise ValueError("writer requested a tool that is not available")
+            query = arguments.get("query")
+            if not isinstance(query, str):
+                raise ValueError("web_search requires a text query")
+            requested_count = arguments.get("max_results")
+            max_results = requested_count if isinstance(requested_count, int) else None
+            sources = self.web_search_tool.search(query, max_results=max_results)
+            known_urls = {str(source.url) for source in source_evidence}
+            source_evidence.extend(
+                source
+                for source in sources
+                if str(source.url) not in known_urls
+            )
+            if on_node_event is not None:
+                on_node_event(
+                    "draft",
+                    "tool_called",
+                    {
+                        "tool": name,
+                        "query": " ".join(query.split())[:500],
+                        "source_count": len(sources),
+                    },
+                )
+            return self.web_search_tool.tool_result(sources)
+
+        search_instruction = ""
+        if tools:
+            search_instruction = (
+                "\n\n你可以调用 web_search 获取公开网页来源。仅在文章需要最新、"
+                "可验证或用户未提供的事实时调用；观点、创意和充分的用户资料不搜索。"
+                "如果调用，使用返回来源卡中的 [source-N] 紧跟相应事实，不能编造来源。"
+            )
+            if state["web_search_mode"] == "required":
+                search_instruction += "本次要求至少检索一次，再开始写作。"
+        response = self.model_access.generate_agent_text_stream(
             TextGenerationRequest(
                 purpose="draft",
                 prompt=(
-                    f"根据大纲生成 Markdown 正文。\n\n大纲：\n{state['outline']}\n\n"
-                    f"素材：\n{state['source_markdown']}"
-                    f"{self._agent_guidance(state, 'draft')}"
+                    f"为《{state['title']}》直接生成完整的 Markdown 正文。"
+                    "请自行规划清晰的标题层级和叙述节奏，不输出写作过程、元说明或代码围栏。"
+                    f"\n\n主题：\n{state['topic']}\n\n"
+                    f"作者素材、模板或参考资料：\n{state['source_markdown']}"
+                    f"{search_instruction}{self._agent_guidance(state, 'draft')}"
                 ),
                 context={
                     "title": state["title"],
@@ -260,10 +317,13 @@ class PresetArticleWorkflow:
                     "outline": state["outline"],
                 },
             ),
-            on_delta,
+            tools=tools,
+            execute_tool=execute_tool,
+            on_delta=on_delta,
+            max_tool_calls=state["max_web_search_calls"],
         )
         emit_buffer(force=True)
-        return {"raw_draft": response.text}
+        return {"raw_draft": response.text, "source_evidence": source_evidence}
 
     def _naturalize(self, state: WorkflowState) -> dict[str, str]:
         response = self.model_access.generate_text(
@@ -301,20 +361,19 @@ class PresetArticleWorkflow:
         return {"review_report": response.text}
 
     def _risk(self, state: WorkflowState) -> dict[str, str]:
-        response = self.model_access.generate_text(
-            TextGenerationRequest(
-                purpose="risk",
-                prompt=(
-                    f"只读检查以下文章的事实、合规与平台风险：\n\n{state['canonical_markdown']}"
-                    f"{self._agent_guidance(state, 'risk')}"
-                ),
-                context={
-                    "title": state["title"],
-                    "source_markdown": state["canonical_markdown"],
-                },
-            )
+        markdown = state["canonical_markdown"]
+        findings: list[str] = []
+        absolute_matches = sorted(
+            set(re.findall(r"100%|绝对|永久|唯一|第一|保证|零风险", markdown))
         )
-        return {"risk_report": response.text}
+        if absolute_matches:
+            findings.append(f"- 绝对化或承诺性表述：{'、'.join(absolute_matches)}")
+        numeric_claims = re.findall(r"(?<!\w)\d+(?:\.\d+)?%", markdown)
+        if numeric_claims and "[source-" not in markdown:
+            findings.append("- 文中包含百分比数据，但未看到联网来源标记；发布前请人工确认出处。")
+        if not findings:
+            findings.append("- 未命中内置高风险表达规则；仍应由作者确认事实、署名与平台规范。")
+        return {"risk_report": "# 发布前检查\n\n" + "\n".join(findings)}
 
     def _visual(self, state: WorkflowState) -> dict[str, object]:
         composition = state["visual_composition"]
@@ -468,6 +527,9 @@ class PresetArticleWorkflow:
             "topic": workflow_input.topic,
             "source_markdown": workflow_input.source_markdown,
             "agent_instructions": workflow_input.agent_instructions,
+            "web_search_mode": workflow_input.web_search_mode,
+            "max_web_search_calls": workflow_input.max_web_search_calls,
+            "source_evidence": [],
             "visual_composition": workflow_input.visual_composition,
             "research_report": "",
             "outline": "",
@@ -510,6 +572,7 @@ class PresetArticleWorkflow:
                 state["canonical_markdown"],
                 workflow_input.visual_composition,
             ),
+            source_evidence=state["source_evidence"],
             engine=engine,
         )
 
@@ -524,14 +587,14 @@ def preset_definition() -> dict[str, Any]:
                 "type": "agent",
                 "required": False,
                 "skippable": True,
-                "default_enabled": True,
+                "default_enabled": False,
             },
             {
                 "id": "outline",
                 "type": "agent",
                 "required": False,
                 "skippable": True,
-                "default_enabled": True,
+                "default_enabled": False,
             },
             {
                 "id": "draft",
@@ -545,7 +608,7 @@ def preset_definition() -> dict[str, Any]:
                 "type": "transform",
                 "required": False,
                 "skippable": True,
-                "default_enabled": True,
+                "default_enabled": False,
             },
             {
                 "id": "review",
@@ -553,11 +616,11 @@ def preset_definition() -> dict[str, Any]:
                 "mode": "read_only",
                 "required": False,
                 "skippable": True,
-                "default_enabled": True,
+                "default_enabled": False,
             },
             {
                 "id": "risk",
-                "type": "risk_review",
+                "type": "rule_check",
                 "mode": "read_only",
                 "required": True,
                 "skippable": False,
@@ -569,7 +632,7 @@ def preset_definition() -> dict[str, Any]:
                 "mode": "read_only",
                 "required": False,
                 "skippable": True,
-                "default_enabled": True,
+                "default_enabled": False,
             },
             {
                 "id": "approval",

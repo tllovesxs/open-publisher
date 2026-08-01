@@ -7,6 +7,7 @@ import {
   EyeOff,
   KeyRound,
   LoaderCircle,
+  RefreshCw,
   Server,
   SlidersHorizontal,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import type {
   ModelConfigurationSummary,
   ModelConnectionTestSummary,
   RuntimeSnapshot,
+  WechatSyncBridgeStatus,
 } from "../lib/desktopBridge";
 import type { PlatformDefinition } from "../types";
 
@@ -30,7 +32,10 @@ interface SettingsPageProps {
   disabledNodes: Set<DisabledOptionalNodeId>;
   platforms: PlatformDefinition[];
   runtime: RuntimeSnapshot | null;
+  wechatSyncStatus: WechatSyncBridgeStatus | null;
+  wechatSyncRefreshing: boolean;
   onConfigureModel: (request: ConfigureModelRequest) => void;
+  onRefreshWechatSync: () => void;
   onToggleNode: (nodeId: DisabledOptionalNodeId) => void;
 }
 
@@ -107,7 +112,10 @@ export function SettingsPage({
   disabledNodes,
   platforms,
   runtime,
+  wechatSyncStatus,
+  wechatSyncRefreshing,
   onConfigureModel,
+  onRefreshWechatSync,
   onToggleNode,
 }: SettingsPageProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("models");
@@ -115,12 +123,14 @@ export function SettingsPage({
   const [name, setName] = useState(initialModelDraft.name);
   const [baseUrl, setBaseUrl] = useState(initialModelDraft.baseUrl);
   const [apiKey, setApiKey] = useState("");
+  const [tavilyApiKey, setTavilyApiKey] = useState("");
   const [textModel, setTextModel] = useState(initialModelDraft.textModel);
   const [imageBaseUrl, setImageBaseUrl] = useState(initialModelDraft.imageBaseUrl);
   const [imageModel, setImageModel] = useState(initialModelDraft.imageModel);
   const [trustedHosts, setTrustedHosts] = useState(initialModelDraft.trustedHosts);
   const [timeoutSeconds, setTimeoutSeconds] = useState(initialModelDraft.timeoutSeconds);
   const [showKey, setShowKey] = useState(false);
+  const [showTavilyKey, setShowTavilyKey] = useState(false);
   const [validation, setValidation] = useState<string | null>(null);
 
   useEffect(() => {
@@ -165,6 +175,7 @@ export function SettingsPage({
       imageBaseUrl: imageBaseUrl.trim() || null,
       imageModel: imageModel.trim() || null,
       imageTrustedHosts: splitHosts(trustedHosts),
+      tavilyApiKey: tavilyApiKey.trim(),
       timeoutSeconds,
     });
   };
@@ -321,6 +332,41 @@ export function SettingsPage({
                   </div>
                 </details>
 
+                <details className="settings-advanced">
+                  <summary>
+                    联网检索
+                    <SlidersHorizontal size={15} />
+                  </summary>
+                  <div className="field">
+                    <label htmlFor="tavily-api-key">
+                      Tavily API Key
+                      {modelConfiguration?.webSearchConfigured && <small> 已配置</small>}
+                    </label>
+                    <span className="secret-input">
+                      <input
+                        autoComplete="off"
+                        id="tavily-api-key"
+                        onChange={(event) => setTavilyApiKey(event.target.value)}
+                        placeholder={
+                          modelConfiguration?.webSearchConfigured
+                            ? "留空则继续使用当前会话密钥"
+                            : "输入 Tavily API Key（可选）"
+                        }
+                        type={showTavilyKey ? "text" : "password"}
+                        value={tavilyApiKey}
+                      />
+                      <button
+                        aria-label={showTavilyKey ? "隐藏 Tavily API Key" : "显示 Tavily API Key"}
+                        onClick={() => setShowTavilyKey((current) => !current)}
+                        type="button"
+                      >
+                        {showTavilyKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </span>
+                    <small>写作 Agent 会自行判断是否检索；密钥只保留在当前桌面会话。</small>
+                  </div>
+                </details>
+
                 {(validation || modelError) && (
                   <div className="inline-alert inline-alert--error" role="alert">
                     <AlertCircle size={17} />
@@ -359,10 +405,22 @@ export function SettingsPage({
                   <Server aria-hidden="true" size={19} />
                   <div>
                     <h2 id="account-settings-title">平台账号</h2>
-                    <p>平台适配器尚未接入；当前只能生成本地平台稿与演练记录。</p>
+                    <p>通过 WechatSync 只读检查浏览器扩展中的平台登录状态。</p>
                   </div>
                 </div>
+                <button
+                  className="button button--quiet"
+                  disabled={wechatSyncRefreshing}
+                  onClick={onRefreshWechatSync}
+                  type="button"
+                >
+                  {wechatSyncRefreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
+                  刷新状态
+                </button>
               </div>
+              <p className="session-note" role="status">
+                {wechatSyncStatus?.detail ?? "尚未读取 WechatSync 状态。"}
+              </p>
               <div className="account-list">
                 {platforms.map((platform) => (
                   <article key={platform.id}>
@@ -374,7 +432,11 @@ export function SettingsPage({
                       <small>{platform.limit}</small>
                     </div>
                     <span className="account-state">
-                      {platform.status === "connected" ? "已连接" : "尚未接入"}
+                      {platform.status === "connected"
+                        ? "已登录"
+                        : wechatSyncStatus?.available
+                          ? "未登录"
+                          : "未检测到桥接"}
                     </span>
                   </article>
                 ))}

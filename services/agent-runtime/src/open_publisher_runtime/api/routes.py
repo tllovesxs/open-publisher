@@ -19,9 +19,12 @@ from open_publisher_runtime.api.schemas import (
     ApprovePublishPlanRequest,
     ArticleDetail,
     ArticleWithRevision,
+    BatchTopicPlanRequest,
+    BatchTopicPlanResponse,
     ConnectionProfilePublic,
     CreateArticleRequest,
     CreateConnectionProfileRequest,
+    CreateGenerationBatchRequest,
     CreatePublishPlanRequest,
     CreateRevisionRequest,
     CreateRunRequest,
@@ -32,6 +35,7 @@ from open_publisher_runtime.api.schemas import (
     GeneratedImageArtifactPublic,
     GenerateImagesRequest,
     GenerateImagesResponse,
+    GenerationBatchDetail,
     ImportContentPackageResponse,
     ModelTestRequest,
     ModelTestResponse,
@@ -48,6 +52,10 @@ from open_publisher_runtime.api.schemas import (
 )
 from open_publisher_runtime.application.articles import ArticleService
 from open_publisher_runtime.application.artifacts import ArtifactService
+from open_publisher_runtime.application.batch_generation import (
+    BatchTopicCandidate,
+    BatchTopicPlanner,
+)
 from open_publisher_runtime.application.connections import ConnectionService
 from open_publisher_runtime.application.content_packages import ContentPackageService
 from open_publisher_runtime.application.harness import (
@@ -364,6 +372,99 @@ def list_revisions(article_id: str, session: SessionDep) -> list[ArticleRevision
 @router.get("/workflows", response_model=list[Workflow])
 def list_workflows(session: SessionDep) -> list[Workflow]:
     return list(SqlAlchemyRuntimeRepository(session).list_workflows())
+
+
+@router.post("/generation-batches/plan", response_model=BatchTopicPlanResponse)
+def plan_generation_batch(
+    request: BatchTopicPlanRequest,
+    container: ContainerDep,
+) -> BatchTopicPlanResponse:
+    try:
+        if request.manual_topics:
+            candidates = [
+                BatchTopicCandidate(
+                    title=topic[:180],
+                    topic=topic,
+                    angle="由作者手动指定的独立选题。",
+                    key_points=["围绕该选题完成一篇独立文章。"],
+                )
+                for topic in request.manual_topics
+            ]
+            return BatchTopicPlanResponse(candidates=candidates, planned_by="manual")
+        candidates = BatchTopicPlanner(container.model_access).plan(
+            prompt=request.prompt,
+            count=request.count,
+            references=request.references,
+        )
+        return BatchTopicPlanResponse(candidates=candidates, planned_by="model")
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+@router.post(
+    "/generation-batches",
+    response_model=GenerationBatchDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_generation_batch(
+    request: CreateGenerationBatchRequest,
+    container: ContainerDep,
+) -> GenerationBatchDetail:
+    try:
+        if request.policy.visual_composition.mode != "none":
+            raise ValueError("batch image generation is not available in this release")
+        batch = container.batch_generation.create_batch(
+            prompt=request.prompt,
+            candidates=request.candidates,
+            source_markdown=request.source_markdown,
+            run_policy=request.policy,
+            writer_concurrency=request.writer_concurrency,
+        )
+        persisted, items = container.batch_generation.get_batch(batch.id)
+        return GenerationBatchDetail(batch=persisted, items=items)
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+@router.get("/generation-batches", response_model=list[GenerationBatchDetail])
+def list_generation_batches(container: ContainerDep) -> list[GenerationBatchDetail]:
+    result: list[GenerationBatchDetail] = []
+    for batch in container.batch_generation.list_batches():
+        persisted, items = container.batch_generation.get_batch(batch.id)
+        result.append(GenerationBatchDetail(batch=persisted, items=items))
+    return result
+
+
+@router.get("/generation-batches/{batch_id}", response_model=GenerationBatchDetail)
+def get_generation_batch(batch_id: str, container: ContainerDep) -> GenerationBatchDetail:
+    try:
+        batch, items = container.batch_generation.get_batch(batch_id)
+        return GenerationBatchDetail(batch=batch, items=items)
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+@router.post("/generation-batches/{batch_id}/cancel", response_model=GenerationBatchDetail)
+def cancel_generation_batch(batch_id: str, container: ContainerDep) -> GenerationBatchDetail:
+    try:
+        container.batch_generation.cancel_batch(batch_id)
+        batch, items = container.batch_generation.get_batch(batch_id)
+        return GenerationBatchDetail(batch=batch, items=items)
+    except Exception as error:
+        raise _translate_error(error) from error
+
+
+@router.post(
+    "/generation-batches/items/{item_id}/retry",
+    response_model=GenerationBatchDetail,
+)
+def retry_generation_item(item_id: str, container: ContainerDep) -> GenerationBatchDetail:
+    try:
+        item = container.batch_generation.retry_item(item_id)
+        batch, items = container.batch_generation.get_batch(item.batch_id)
+        return GenerationBatchDetail(batch=batch, items=items)
+    except Exception as error:
+        raise _translate_error(error) from error
 
 
 @router.post("/runs", response_model=WorkflowRun, status_code=status.HTTP_201_CREATED)

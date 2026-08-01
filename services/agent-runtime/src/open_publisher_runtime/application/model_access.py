@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -71,6 +71,21 @@ class SecretResolver(Protocol):
     def resolve(self, secret_ref: str) -> str: ...
 
 
+ToolExecutor = Callable[[str, dict[str, Any]], str]
+
+
+class ToolAwareStreamingTextProvider(Protocol):
+    def generate_with_tools_stream(
+        self,
+        request: TextGenerationRequest,
+        *,
+        tools: Sequence[dict[str, object]],
+        execute_tool: ToolExecutor,
+        on_delta: Callable[[str], None],
+        max_tool_calls: int,
+    ) -> TextGenerationResponse: ...
+
+
 class ModelAccessLayer:
     """In-process model gateway; it is not a network proxy."""
 
@@ -100,6 +115,33 @@ class ModelAccessLayer:
         if response.text:
             on_delta(response.text)
         return response
+
+    def generate_agent_text_stream(
+        self,
+        request: TextGenerationRequest,
+        *,
+        tools: Sequence[dict[str, object]],
+        execute_tool: ToolExecutor,
+        on_delta: Callable[[str], None],
+        max_tool_calls: int = 2,
+    ) -> TextGenerationResponse:
+        """Let an OpenAI-compatible model decide whether to call bounded tools.
+
+        Providers without tool calling remain usable: the writer receives the
+        same prompt and streams directly, rather than silently simulating a
+        web lookup.
+        """
+
+        tool_provider = getattr(self.text_provider, "generate_with_tools_stream", None)
+        if tools and callable(tool_provider):
+            return tool_provider(
+                request,
+                tools=tools,
+                execute_tool=execute_tool,
+                on_delta=on_delta,
+                max_tool_calls=max_tool_calls,
+            )
+        return self.generate_text_stream(request, on_delta)
 
     def generate_image(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
         return self.image_provider.generate(request)

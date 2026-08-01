@@ -72,8 +72,118 @@ pub struct RunWorkflowRequest {
     pub disabled_optional_node_ids: Vec<String>,
     #[serde(default)]
     pub agent_instructions: Vec<WorkflowAgentInstruction>,
+    #[serde(default = "default_web_search_mode")]
+    pub web_search_mode: String,
+    #[serde(default = "default_max_web_search_calls")]
+    pub max_web_search_calls: u8,
     #[serde(default)]
     pub visual_composition: VisualCompositionRequest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BatchTopicPlanRequest {
+    pub prompt: String,
+    pub count: u8,
+    #[serde(default)]
+    pub references: String,
+    #[serde(default)]
+    pub manual_topics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTopicCandidate {
+    pub title: String,
+    pub topic: String,
+    pub angle: String,
+    pub key_points: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTopicPlanSummary {
+    pub candidates: Vec<BatchTopicCandidate>,
+    pub planned_by: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateGenerationBatchRequest {
+    pub prompt: String,
+    pub candidates: Vec<BatchTopicCandidate>,
+    #[serde(default)]
+    pub source_markdown: String,
+    #[serde(default)]
+    pub disabled_optional_node_ids: Vec<String>,
+    #[serde(default)]
+    pub agent_instructions: Vec<WorkflowAgentInstruction>,
+    #[serde(default = "default_web_search_mode")]
+    pub web_search_mode: String,
+    #[serde(default = "default_max_web_search_calls")]
+    pub max_web_search_calls: u8,
+    #[serde(default = "default_writer_concurrency")]
+    pub writer_concurrency: u8,
+}
+
+const fn default_writer_concurrency() -> u8 {
+    2
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationBatchRequest {
+    pub batch_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationItemRequest {
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationBatchSummary {
+    pub id: String,
+    pub prompt: String,
+    pub status: String,
+    pub writer_concurrency: u8,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationItemSummary {
+    pub id: String,
+    pub batch_id: String,
+    pub position: u8,
+    pub title: String,
+    pub topic: String,
+    pub status: String,
+    pub article_id: Option<String>,
+    pub run_id: Option<String>,
+    pub error: Option<String>,
+    pub retry_count: u16,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationBatchDetail {
+    pub batch: GenerationBatchSummary,
+    pub items: Vec<GenerationItemSummary>,
+}
+
+fn default_web_search_mode() -> String {
+    "auto".to_owned()
+}
+
+const fn default_max_web_search_calls() -> u8 {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,6 +467,8 @@ pub struct ConfigureModelRequest {
     pub image_model: Option<String>,
     #[serde(default)]
     pub image_trusted_hosts: Vec<String>,
+    #[serde(default)]
+    pub tavily_api_key: String,
     pub timeout_seconds: u16,
 }
 
@@ -371,6 +483,7 @@ pub struct ModelConfigurationSummary {
     pub image_trusted_hosts: Vec<String>,
     pub timeout_seconds: u16,
     pub secret_configured: bool,
+    pub web_search_configured: bool,
     pub persistence: &'static str,
 }
 
@@ -382,6 +495,24 @@ pub struct ModelConnectionTestSummary {
     pub mocked: bool,
 }
 
+/// Public state obtained from the already-running WechatSync local bridge.
+/// No browser token, Cookie, or account name is returned to the WebView.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WechatSyncBridgeStatus {
+    pub available: bool,
+    pub connected: bool,
+    pub detail: String,
+    pub platforms: Vec<WechatSyncPlatformStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WechatSyncPlatformStatus {
+    pub id: String,
+    pub authenticated: bool,
+}
+
 /// The WebView talks only to this fixed command surface. Implementations own
 /// the child endpoint and bearer token and must never serialize either value.
 pub trait SidecarSupervisor: Send + Sync + 'static {
@@ -391,6 +522,27 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
     fn list_articles(&self) -> Result<Vec<StoredArticleSummary>, String>;
     fn save_draft(&self, request: SaveDraftRequest) -> Result<SaveDraftReceipt, String>;
     fn run_workflow(&self, request: RunWorkflowRequest) -> Result<RunWorkflowSummary, String>;
+    fn plan_generation_batch(
+        &self,
+        request: BatchTopicPlanRequest,
+    ) -> Result<BatchTopicPlanSummary, String>;
+    fn create_generation_batch(
+        &self,
+        request: CreateGenerationBatchRequest,
+    ) -> Result<GenerationBatchDetail, String>;
+    fn list_generation_batches(&self) -> Result<Vec<GenerationBatchDetail>, String>;
+    fn get_generation_batch(
+        &self,
+        request: GenerationBatchRequest,
+    ) -> Result<GenerationBatchDetail, String>;
+    fn cancel_generation_batch(
+        &self,
+        request: GenerationBatchRequest,
+    ) -> Result<GenerationBatchDetail, String>;
+    fn retry_generation_item(
+        &self,
+        request: GenerationItemRequest,
+    ) -> Result<GenerationBatchDetail, String>;
     fn workflow_activity(
         &self,
         article_id: String,
@@ -462,6 +614,7 @@ struct PrivateModelConfiguration {
     image_base_url: Option<String>,
     image_model: Option<String>,
     image_trusted_hosts: Vec<String>,
+    tavily_api_key: String,
     timeout_seconds: u16,
 }
 
@@ -476,6 +629,7 @@ impl PrivateModelConfiguration {
             image_trusted_hosts: self.image_trusted_hosts.clone(),
             timeout_seconds: self.timeout_seconds,
             secret_configured: !self.api_key.is_empty(),
+            web_search_configured: !self.tavily_api_key.is_empty(),
             persistence: "session",
         }
     }
@@ -496,6 +650,11 @@ enum ApiRoute<'a> {
     CreateRevision(&'a str),
     Workflows,
     Runs,
+    GenerationBatchPlan,
+    GenerationBatches,
+    GenerationBatch(&'a str),
+    CancelGenerationBatch(&'a str),
+    RetryGenerationItem(&'a str),
     ActiveRun(&'a str),
     PublishPlans,
     PublishPlan(&'a str),
@@ -520,6 +679,15 @@ impl ApiRoute<'_> {
             }
             Self::Workflows => "/api/v1/workflows".to_owned(),
             Self::Runs => "/api/v1/runs".to_owned(),
+            Self::GenerationBatchPlan => "/api/v1/generation-batches/plan".to_owned(),
+            Self::GenerationBatches => "/api/v1/generation-batches".to_owned(),
+            Self::GenerationBatch(batch_id) => format!("/api/v1/generation-batches/{batch_id}"),
+            Self::CancelGenerationBatch(batch_id) => {
+                format!("/api/v1/generation-batches/{batch_id}/cancel")
+            }
+            Self::RetryGenerationItem(item_id) => {
+                format!("/api/v1/generation-batches/items/{item_id}/retry")
+            }
             Self::ActiveRun(article_id) => {
                 format!("/api/v1/runs/active?article_id={article_id}")
             }
@@ -567,6 +735,8 @@ struct StartRunPolicyWire<'a> {
     allow_remote_publish: bool,
     disabled_optional_node_ids: &'a [String],
     agent_instructions: &'a [WorkflowAgentInstruction],
+    web_search_mode: &'a str,
+    max_web_search_calls: u8,
     visual_composition: &'a VisualCompositionRequest,
 }
 
@@ -577,6 +747,23 @@ struct StartRunRequestWire<'a> {
     revision_id: &'a str,
     topic: &'a str,
     policy: StartRunPolicyWire<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchTopicPlanRequestWire<'a> {
+    prompt: &'a str,
+    count: u8,
+    references: &'a str,
+    manual_topics: &'a [String],
+}
+
+#[derive(Debug, Serialize)]
+struct CreateGenerationBatchRequestWire<'a> {
+    prompt: &'a str,
+    candidates: &'a [BatchTopicCandidate],
+    source_markdown: &'a str,
+    policy: StartRunPolicyWire<'a>,
+    writer_concurrency: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -656,6 +843,45 @@ struct RunDetailWire {
     run: WorkflowRunWire,
     #[serde(default)]
     events: Vec<RuntimeEventWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchTopicPlanWire {
+    candidates: Vec<BatchTopicCandidate>,
+    planned_by: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerationBatchWire {
+    id: String,
+    prompt: String,
+    status: String,
+    writer_concurrency: u8,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerationItemWire {
+    id: String,
+    batch_id: String,
+    position: u8,
+    title: String,
+    topic: String,
+    status: String,
+    article_id: Option<String>,
+    run_id: Option<String>,
+    error: Option<String>,
+    retry_count: u16,
+    created_at: String,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerationBatchDetailWire {
+    batch: GenerationBatchWire,
+    items: Vec<GenerationItemWire>,
 }
 
 #[derive(Debug, Serialize)]
@@ -831,6 +1057,24 @@ struct ModelConnectionTestWire {
     mocked: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct WechatSyncHealthWire {
+    connected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct WechatSyncRequestWire {
+    result: Vec<WechatSyncPlatformWire>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WechatSyncPlatformWire {
+    id: String,
+    #[serde(default)]
+    is_authenticated: bool,
+}
+
 pub struct PythonSidecarSupervisor {
     inner: Mutex<SupervisorState>,
     client: Client,
@@ -889,6 +1133,82 @@ impl PythonSidecarSupervisor {
         self.inner
             .lock()
             .map_err(|_| "Python sidecar supervisor lock was poisoned".to_owned())
+    }
+
+    pub fn wechat_sync_status(&self) -> WechatSyncBridgeStatus {
+        let client = match Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(8))
+            .no_proxy()
+            .redirect(Policy::none())
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return unavailable_wechat_sync_status("无法初始化本地 WechatSync 连接。"),
+        };
+
+        let health = match client
+            .get("http://127.0.0.1:9528/status")
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(|response| response.json::<WechatSyncHealthWire>())
+        {
+            Ok(health) => health,
+            Err(_) => {
+                return unavailable_wechat_sync_status(
+                    "未检测到 WechatSync 本地桥。请先在浏览器扩展中启用 CLI/MCP 连接。",
+                )
+            }
+        };
+        if !health.connected {
+            return WechatSyncBridgeStatus {
+                available: true,
+                connected: false,
+                detail: "WechatSync 已启动，但浏览器扩展当前未连接。".to_owned(),
+                platforms: wechat_sync_platform_defaults(),
+            };
+        }
+
+        let request = serde_json::json!({
+            "method": "listPlatforms",
+            "params": { "forceRefresh": true },
+        });
+        let response = match client
+            .post("http://127.0.0.1:9528/request")
+            .json(&request)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(|response| response.json::<WechatSyncRequestWire>())
+        {
+            Ok(response) => response,
+            Err(_) => {
+                return WechatSyncBridgeStatus {
+                    available: true,
+                    connected: true,
+                    detail: "WechatSync 已连接，但无法读取平台登录状态。".to_owned(),
+                    platforms: wechat_sync_platform_defaults(),
+                }
+            }
+        };
+
+        let mut platforms = wechat_sync_platform_defaults();
+        for platform in response.result {
+            let target_id = match platform.id.as_str() {
+                "weixin" => "wechat",
+                "csdn" => "csdn",
+                "toutiao" => "toutiao",
+                _ => continue,
+            };
+            if let Some(target) = platforms.iter_mut().find(|entry| entry.id == target_id) {
+                target.authenticated = platform.is_authenticated;
+            }
+        }
+        WechatSyncBridgeStatus {
+            available: true,
+            connected: true,
+            detail: "WechatSync 已连接；登录状态来自浏览器扩展。".to_owned(),
+            platforms,
+        }
     }
 
     fn resolve_python(&self) -> PythonLaunch {
@@ -992,6 +1312,7 @@ impl PythonSidecarSupervisor {
             "OPEN_PUBLISHER_IMAGE_MODEL",
             "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS",
             "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS",
+            "OPEN_PUBLISHER_TAVILY_API_KEY",
             "OPEN_PUBLISHER_LOCAL_DEMO",
         ] {
             command.env_remove(variable);
@@ -1018,6 +1339,9 @@ impl PythonSidecarSupervisor {
                     "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS",
                     model.image_trusted_hosts.join(","),
                 );
+            }
+            if !model.tavily_api_key.is_empty() {
+                command.env("OPEN_PUBLISHER_TAVILY_API_KEY", &model.tavily_api_key);
             }
         } else if self.local_demo {
             command.env("OPEN_PUBLISHER_LOCAL_DEMO", "true");
@@ -1229,6 +1553,25 @@ impl PythonSidecarSupervisor {
     }
 }
 
+fn wechat_sync_platform_defaults() -> Vec<WechatSyncPlatformStatus> {
+    ["wechat", "csdn", "toutiao"]
+        .into_iter()
+        .map(|id| WechatSyncPlatformStatus {
+            id: id.to_owned(),
+            authenticated: false,
+        })
+        .collect()
+}
+
+fn unavailable_wechat_sync_status(detail: &str) -> WechatSyncBridgeStatus {
+    WechatSyncBridgeStatus {
+        available: false,
+        connected: false,
+        detail: detail.to_owned(),
+        platforms: wechat_sync_platform_defaults(),
+    }
+}
+
 impl PrivateConnection {
     fn url(&self, route: ApiRoute<'_>) -> String {
         format!(
@@ -1428,6 +1771,8 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &request.disabled_optional_node_ids,
                 agent_instructions: &request.agent_instructions,
+                web_search_mode: &request.web_search_mode,
+                max_web_search_calls: request.max_web_search_calls,
                 visual_composition: &request.visual_composition,
             },
         };
@@ -1477,6 +1822,149 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             visual_plan: workflow_visual_plan(&run.state_json)?,
             persistence: "local_database",
         })
+    }
+
+    fn plan_generation_batch(
+        &self,
+        request: BatchTopicPlanRequest,
+    ) -> Result<BatchTopicPlanSummary, String> {
+        validate_batch_topic_plan_request(&request)?;
+        let connection = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
+        };
+        let payload = BatchTopicPlanRequestWire {
+            prompt: &request.prompt,
+            count: request.count,
+            references: &request.references,
+            manual_topics: &request.manual_topics,
+        };
+        let response: BatchTopicPlanWire =
+            self.post_json(&connection, ApiRoute::GenerationBatchPlan, &payload)?;
+        if !matches!(response.planned_by.as_str(), "model" | "manual") {
+            return Err("local Python runtime returned an invalid batch plan source".to_owned());
+        }
+        validate_batch_candidates(&response.candidates)?;
+        Ok(BatchTopicPlanSummary {
+            candidates: response.candidates,
+            planned_by: response.planned_by,
+        })
+    }
+
+    fn create_generation_batch(
+        &self,
+        request: CreateGenerationBatchRequest,
+    ) -> Result<GenerationBatchDetail, String> {
+        validate_create_generation_batch_request(&request)?;
+        let connection = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
+        };
+        let composition = VisualCompositionRequest::default();
+        let payload = CreateGenerationBatchRequestWire {
+            prompt: &request.prompt,
+            candidates: &request.candidates,
+            source_markdown: &request.source_markdown,
+            policy: StartRunPolicyWire {
+                require_content_approval: false,
+                max_wall_clock_seconds: 900,
+                allow_remote_publish: false,
+                disabled_optional_node_ids: &request.disabled_optional_node_ids,
+                agent_instructions: &request.agent_instructions,
+                web_search_mode: &request.web_search_mode,
+                max_web_search_calls: request.max_web_search_calls,
+                visual_composition: &composition,
+            },
+            writer_concurrency: request.writer_concurrency,
+        };
+        let response: GenerationBatchDetailWire =
+            self.post_json(&connection, ApiRoute::GenerationBatches, &payload)?;
+        public_generation_batch_detail(response)
+    }
+
+    fn list_generation_batches(&self) -> Result<Vec<GenerationBatchDetail>, String> {
+        let connection = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
+        };
+        let response: Vec<GenerationBatchDetailWire> =
+            self.get_json(&connection, ApiRoute::GenerationBatches)?;
+        response
+            .into_iter()
+            .map(public_generation_batch_detail)
+            .collect()
+    }
+
+    fn get_generation_batch(
+        &self,
+        request: GenerationBatchRequest,
+    ) -> Result<GenerationBatchDetail, String> {
+        validate_backend_id(request.batch_id.clone(), "generation batch")?;
+        let connection = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
+        };
+        let response: GenerationBatchDetailWire =
+            self.get_json(&connection, ApiRoute::GenerationBatch(&request.batch_id))?;
+        public_generation_batch_detail(response)
+    }
+
+    fn cancel_generation_batch(
+        &self,
+        request: GenerationBatchRequest,
+    ) -> Result<GenerationBatchDetail, String> {
+        validate_backend_id(request.batch_id.clone(), "generation batch")?;
+        let connection = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
+        };
+        let response: GenerationBatchDetailWire = self.post_json(
+            &connection,
+            ApiRoute::CancelGenerationBatch(&request.batch_id),
+            &EmptyRequestWire {},
+        )?;
+        public_generation_batch_detail(response)
+    }
+
+    fn retry_generation_item(
+        &self,
+        request: GenerationItemRequest,
+    ) -> Result<GenerationBatchDetail, String> {
+        validate_backend_id(request.item_id.clone(), "generation item")?;
+        let connection = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
+        };
+        let response: GenerationBatchDetailWire = self.post_json(
+            &connection,
+            ApiRoute::RetryGenerationItem(&request.item_id),
+            &EmptyRequestWire {},
+        )?;
+        public_generation_batch_detail(response)
     }
 
     fn workflow_activity(
@@ -1727,11 +2215,8 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         request: ConfigureModelRequest,
     ) -> Result<ModelConfigurationSummary, String> {
         let mut state = self.lock_state()?;
-        let existing_key = state
-            .model_configuration
-            .as_ref()
-            .map(|configuration| configuration.api_key.as_str());
-        let configuration = validate_model_configuration(request, existing_key)?;
+        let configuration =
+            validate_model_configuration(request, state.model_configuration.as_ref())?;
         let summary = configuration.summary();
 
         terminate_child(&mut state);
@@ -1887,6 +2372,18 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
     if request.disabled_optional_node_ids.len() > 5 {
         return Err("workflow can disable at most five optional nodes".to_owned());
     }
+    if !matches!(
+        request.web_search_mode.as_str(),
+        "off" | "auto" | "required"
+    ) {
+        return Err("workflow web search mode is invalid".to_owned());
+    }
+    if request.max_web_search_calls > 3 {
+        return Err("workflow can make at most three web searches".to_owned());
+    }
+    if request.web_search_mode == "required" && request.max_web_search_calls == 0 {
+        return Err("required web search needs at least one allowed call".to_owned());
+    }
     let disabled_nodes: HashSet<&str> = request
         .disabled_optional_node_ids
         .iter()
@@ -1943,6 +2440,76 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
     }
     validate_visual_composition(&request.visual_composition)?;
     Ok(())
+}
+
+fn validate_batch_topic_plan_request(request: &BatchTopicPlanRequest) -> Result<(), String> {
+    validate_instruction_text(&request.prompt, "batch prompt", 6_000)?;
+    if !(1..=10).contains(&request.count)
+        || request.references.chars().count() > 60_000
+        || request
+            .references
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+        || request.manual_topics.len() > 10
+    {
+        return Err("batch topic plan input is invalid".to_owned());
+    }
+    let mut topics = HashSet::new();
+    for topic in &request.manual_topics {
+        validate_instruction_text(topic, "manual topic", 1_000)?;
+        if !topics.insert(topic.trim()) {
+            return Err("manual batch topics must be unique".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_batch_candidates(candidates: &[BatchTopicCandidate]) -> Result<(), String> {
+    if candidates.is_empty() || candidates.len() > 10 {
+        return Err("batch needs between one and ten topic candidates".to_owned());
+    }
+    let mut topics = HashSet::new();
+    for candidate in candidates {
+        validate_instruction_text(&candidate.title, "batch title", 180)?;
+        validate_instruction_text(&candidate.topic, "batch topic", 1_000)?;
+        validate_instruction_text(&candidate.angle, "batch angle", 500)?;
+        if candidate.key_points.is_empty() || candidate.key_points.len() > 8 {
+            return Err("batch topic key points are invalid".to_owned());
+        }
+        for point in &candidate.key_points {
+            validate_instruction_text(point, "batch key point", 500)?;
+        }
+        if !topics.insert(candidate.topic.trim()) {
+            return Err("batch topic candidates must be distinct".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_create_generation_batch_request(
+    request: &CreateGenerationBatchRequest,
+) -> Result<(), String> {
+    validate_instruction_text(&request.prompt, "batch prompt", 6_000)?;
+    if request.source_markdown.chars().count() > 80_000
+        || request
+            .source_markdown
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+        || !(1..=4).contains(&request.writer_concurrency)
+    {
+        return Err("batch creation input is invalid".to_owned());
+    }
+    validate_batch_candidates(&request.candidates)?;
+    validate_workflow_request(&RunWorkflowRequest {
+        article_id: "batch-request".to_owned(),
+        revision_id: "batch-revision".to_owned(),
+        topic: "batch".to_owned(),
+        disabled_optional_node_ids: request.disabled_optional_node_ids.clone(),
+        agent_instructions: request.agent_instructions.clone(),
+        web_search_mode: request.web_search_mode.clone(),
+        max_web_search_calls: request.max_web_search_calls,
+        visual_composition: VisualCompositionRequest::default(),
+    })
 }
 
 fn validate_visual_composition(request: &VisualCompositionRequest) -> Result<(), String> {
@@ -2087,7 +2654,7 @@ fn validate_connection_request(
 
 fn validate_model_configuration(
     mut request: ConfigureModelRequest,
-    existing_api_key: Option<&str>,
+    existing: Option<&PrivateModelConfiguration>,
 ) -> Result<PrivateModelConfiguration, String> {
     request.name = request.name.trim().to_owned();
     if request.name.is_empty()
@@ -2103,7 +2670,8 @@ fn validate_model_configuration(
         .ok_or_else(|| "文本模型不能为空。".to_owned())?;
     let supplied_key = request.api_key.trim();
     let api_key = if supplied_key.is_empty() {
-        existing_api_key
+        existing
+            .map(|configuration| configuration.api_key.as_str())
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .ok_or_else(|| "API Key 不能为空。".to_owned())?
@@ -2112,6 +2680,19 @@ fn validate_model_configuration(
             return Err("API Key 格式无效。".to_owned());
         }
         supplied_key.to_owned()
+    };
+    let supplied_tavily_key = request.tavily_api_key.trim();
+    let tavily_api_key = if supplied_tavily_key.is_empty() {
+        existing
+            .map(|configuration| configuration.tavily_api_key.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        if supplied_tavily_key.len() > 4_096 || supplied_tavily_key.chars().any(char::is_control) {
+            return Err("Tavily API Key 格式无效。".to_owned());
+        }
+        supplied_tavily_key.to_owned()
     };
 
     let image_base_url = normalize_base_url(request.image_base_url)?;
@@ -2152,6 +2733,7 @@ fn validate_model_configuration(
         image_base_url,
         image_model,
         image_trusted_hosts,
+        tavily_api_key,
         timeout_seconds: request.timeout_seconds,
     })
 }
@@ -2321,6 +2903,98 @@ fn validate_backend_id(value: String, entity: &str) -> Result<String, String> {
         ));
     }
     Ok(value)
+}
+
+fn public_generation_batch_detail(
+    detail: GenerationBatchDetailWire,
+) -> Result<GenerationBatchDetail, String> {
+    if !matches!(
+        detail.batch.status.as_str(),
+        "queued" | "running" | "completed" | "needs_attention" | "cancelled"
+    ) || !(1..=4).contains(&detail.batch.writer_concurrency)
+        || detail.batch.prompt.trim().is_empty()
+        || detail.batch.prompt.chars().count() > 6_000
+        || !valid_timestamp(&detail.batch.created_at)
+        || !valid_timestamp(&detail.batch.updated_at)
+        || detail.items.len() > 10
+    {
+        return Err("local Python runtime returned an invalid generation batch".to_owned());
+    }
+    let batch_id = validate_backend_id(detail.batch.id, "generation batch")?;
+    let mut expected_position = 1_u8;
+    let items = detail
+        .items
+        .into_iter()
+        .map(|item| {
+            if item.position != expected_position {
+                return Err("local Python runtime returned unordered generation items".to_owned());
+            }
+            expected_position += 1;
+            public_generation_item(item, &batch_id)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(GenerationBatchDetail {
+        batch: GenerationBatchSummary {
+            id: batch_id,
+            prompt: detail.batch.prompt,
+            status: detail.batch.status,
+            writer_concurrency: detail.batch.writer_concurrency,
+            created_at: detail.batch.created_at,
+            updated_at: detail.batch.updated_at,
+        },
+        items,
+    })
+}
+
+fn public_generation_item(
+    item: GenerationItemWire,
+    expected_batch_id: &str,
+) -> Result<GenerationItemSummary, String> {
+    if !matches!(
+        item.status.as_str(),
+        "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted"
+    ) || item.title.trim().is_empty()
+        || item.title.chars().count() > 500
+        || item.topic.trim().is_empty()
+        || item.topic.chars().count() > 1_000
+        || !valid_timestamp(&item.created_at)
+        || item
+            .started_at
+            .as_deref()
+            .is_some_and(|value| !valid_timestamp(value))
+        || item
+            .completed_at
+            .as_deref()
+            .is_some_and(|value| !valid_timestamp(value))
+        || item.error.as_ref().is_some_and(|value| value.len() > 2_000)
+    {
+        return Err("local Python runtime returned an invalid generation item".to_owned());
+    }
+    let batch_id = validate_backend_id(item.batch_id, "generation batch")?;
+    if batch_id != expected_batch_id {
+        return Err("local Python runtime returned an item for another batch".to_owned());
+    }
+    Ok(GenerationItemSummary {
+        id: validate_backend_id(item.id, "generation item")?,
+        batch_id,
+        position: item.position,
+        title: item.title,
+        topic: item.topic,
+        status: item.status,
+        article_id: item
+            .article_id
+            .map(|value| validate_backend_id(value, "article"))
+            .transpose()?,
+        run_id: item
+            .run_id
+            .map(|value| validate_backend_id(value, "workflow run"))
+            .transpose()?,
+        error: item.error,
+        retry_count: item.retry_count,
+        created_at: item.created_at,
+        started_at: item.started_at,
+        completed_at: item.completed_at,
+    })
 }
 
 fn summarize_workflow_activity(detail: RunDetailWire) -> Result<WorkflowActivitySummary, String> {
@@ -2890,11 +3564,12 @@ fn summarize_template_extraction(
 mod tests {
     use super::{
         public_process_publish_job, public_publish_job, public_publish_plan, strong_token,
-        summarize_template_extraction, title_from_markdown, validate_connection_request,
-        validate_create_publish_plan_request, validate_draft, validate_image_request,
-        validate_process_publish_job_request, validate_process_summary_against_plan,
-        validate_publish_plan_request, validate_template_extraction_request,
-        validate_workflow_request, ApprovePublishPlanRequestWire, ArticleDetailWire,
+        summarize_template_extraction, title_from_markdown, unavailable_wechat_sync_status,
+        validate_connection_request, validate_create_publish_plan_request, validate_draft,
+        validate_image_request, validate_process_publish_job_request,
+        validate_process_summary_against_plan, validate_publish_plan_request,
+        validate_template_extraction_request, validate_workflow_request,
+        wechat_sync_platform_defaults, ApprovePublishPlanRequestWire, ArticleDetailWire,
         ArticleListItemWire, ArticleWithRevisionWire, ConnectionConfigRequestWire,
         ConnectionProfilePublic, ConnectionProfileWire, CreateArticleMetadataWire,
         CreateArticleRequestWire, CreateConnectionProfileRequest, CreateConnectionRequestWire,
@@ -2961,6 +3636,8 @@ mod tests {
                 allow_remote_publish: false,
                 disabled_optional_node_ids: &disabled_optional_node_ids,
                 agent_instructions: &agent_instructions,
+                web_search_mode: "auto",
+                max_web_search_calls: 2,
                 visual_composition: &visual_composition,
             },
         };
@@ -3086,6 +3763,24 @@ mod tests {
     }
 
     #[test]
+    fn wechat_sync_status_never_exposes_accounts_or_tokens() {
+        let defaults = wechat_sync_platform_defaults();
+        assert_eq!(
+            defaults
+                .iter()
+                .map(|platform| platform.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wechat", "csdn", "toutiao"]
+        );
+        assert!(defaults.iter().all(|platform| !platform.authenticated));
+
+        let unavailable = unavailable_wechat_sync_status("bridge unavailable");
+        assert!(!unavailable.available);
+        assert!(!unavailable.connected);
+        assert_eq!(unavailable.platforms.len(), 3);
+    }
+
+    #[test]
     fn command_inputs_are_bounded() {
         assert!(validate_draft(&SaveDraftRequest {
             article_id: "desktop-article".to_owned(),
@@ -3099,6 +3794,8 @@ mod tests {
             topic: "Local first".to_owned(),
             disabled_optional_node_ids: vec!["research".to_owned()],
             agent_instructions: Vec::new(),
+            web_search_mode: "auto".to_owned(),
+            max_web_search_calls: 2,
             visual_composition: VisualCompositionRequest::default(),
         })
         .is_ok());
@@ -3108,6 +3805,8 @@ mod tests {
             topic: "Local first".to_owned(),
             disabled_optional_node_ids: vec!["risk".to_owned()],
             agent_instructions: Vec::new(),
+            web_search_mode: "auto".to_owned(),
+            max_web_search_calls: 2,
             visual_composition: VisualCompositionRequest::default(),
         })
         .is_err());
@@ -3128,6 +3827,8 @@ mod tests {
                     instructions: "Use short paragraphs.\nKeep claims verifiable.".to_owned(),
                 }],
             }],
+            web_search_mode: "auto".to_owned(),
+            max_web_search_calls: 2,
             visual_composition: VisualCompositionRequest::default(),
         })
         .is_ok());
@@ -3435,6 +4136,8 @@ mod tests {
                 topic: "Private sidecar bridge".to_owned(),
                 disabled_optional_node_ids: Vec::new(),
                 agent_instructions: Vec::new(),
+                web_search_mode: "auto".to_owned(),
+                max_web_search_calls: 2,
                 visual_composition: VisualCompositionRequest::default(),
             })
             .expect("workflow completes");
@@ -3449,6 +4152,8 @@ mod tests {
                 topic: "Optional node selection".to_owned(),
                 disabled_optional_node_ids: vec!["research".to_owned(), "natural-style".to_owned()],
                 agent_instructions: Vec::new(),
+                web_search_mode: "auto".to_owned(),
+                max_web_search_calls: 2,
                 visual_composition: VisualCompositionRequest::default(),
             })
             .expect("customized workflow completes");

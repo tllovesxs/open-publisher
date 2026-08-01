@@ -22,6 +22,7 @@ WorkflowNodeId = Literal[
 ]
 
 VisualImageMode = Literal["none", "auto", "fixed"]
+WebSearchMode = Literal["off", "auto", "required"]
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,99}$")
 
@@ -164,10 +165,18 @@ class RunPolicy(BaseModel):
     max_revision_loops: int = Field(default=1, ge=0, le=3)
     max_model_calls: int = Field(default=8, ge=1, le=32)
     max_parallel: int = Field(default=4, ge=1, le=8)
+    web_search_mode: WebSearchMode = "auto"
+    max_web_search_calls: int = Field(default=2, ge=0, le=3)
     max_wall_clock_seconds: int = Field(default=300, ge=1, le=3600)
     allow_remote_publish: bool = False
     disabled_optional_node_ids: list[OptionalWorkflowNodeId] = Field(
-        default_factory=list,
+        default_factory=lambda: [
+            "research",
+            "outline",
+            "natural-style",
+            "review",
+            "visual",
+        ],
         max_length=5,
     )
     agent_instructions: list[WorkflowAgentInstruction] = Field(

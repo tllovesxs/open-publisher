@@ -12,6 +12,8 @@ from open_publisher_runtime.domain.entities import (
     Artifact,
     ConnectionProfile,
     DomainModel,
+    GenerationBatch,
+    GenerationItem,
     PlatformVariant,
     PublishAttempt,
     PublishJob,
@@ -22,12 +24,18 @@ from open_publisher_runtime.domain.entities import (
     WorkflowRun,
     utc_now,
 )
-from open_publisher_runtime.domain.enums import PublishJobState, RunStatus
+from open_publisher_runtime.domain.enums import (
+    GenerationItemStatus,
+    PublishJobState,
+    RunStatus,
+)
 from open_publisher_runtime.infrastructure.orm import (
     ArticleORM,
     ArticleRevisionORM,
     ArtifactORM,
     ConnectionProfileORM,
+    GenerationBatchORM,
+    GenerationItemORM,
     PlatformVariantORM,
     PublishAttemptORM,
     PublishJobORM,
@@ -122,6 +130,54 @@ class SqlAlchemyRuntimeRepository:
     def get_artifact(self, artifact_id: str) -> Artifact | None:
         obj = self.session.get(ArtifactORM, artifact_id)
         return _domain(Artifact, obj) if obj else None
+
+    def add_generation_batch(self, batch: GenerationBatch) -> GenerationBatch:
+        return self._add(GenerationBatchORM, batch)
+
+    def update_generation_batch(self, batch: GenerationBatch) -> GenerationBatch:
+        return self._update(GenerationBatchORM, batch)
+
+    def get_generation_batch(self, batch_id: str) -> GenerationBatch | None:
+        obj = self.session.get(GenerationBatchORM, batch_id)
+        return _domain(GenerationBatch, obj) if obj else None
+
+    def list_generation_batches(self, *, limit: int = 30) -> Sequence[GenerationBatch]:
+        objects = self.session.scalars(
+            select(GenerationBatchORM)
+            .order_by(GenerationBatchORM.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [_domain(GenerationBatch, obj) for obj in objects]
+
+    def add_generation_item(self, item: GenerationItem) -> GenerationItem:
+        return self._add(GenerationItemORM, item)
+
+    def update_generation_item(self, item: GenerationItem) -> GenerationItem:
+        return self._update(GenerationItemORM, item)
+
+    def get_generation_item(self, item_id: str) -> GenerationItem | None:
+        obj = self.session.get(GenerationItemORM, item_id)
+        return _domain(GenerationItem, obj) if obj else None
+
+    def list_generation_items(self, batch_id: str) -> Sequence[GenerationItem]:
+        objects = self.session.scalars(
+            select(GenerationItemORM)
+            .where(GenerationItemORM.batch_id == batch_id)
+            .order_by(GenerationItemORM.position)
+        ).all()
+        return [_domain(GenerationItem, obj) for obj in objects]
+
+    def list_generation_items_by_statuses(
+        self, statuses: Sequence[GenerationItemStatus]
+    ) -> Sequence[GenerationItem]:
+        if not statuses:
+            return []
+        objects = self.session.scalars(
+            select(GenerationItemORM).where(
+                GenerationItemORM.status.in_([state.value for state in statuses])
+            )
+        ).all()
+        return [_domain(GenerationItem, obj) for obj in objects]
 
     def add_workflow(self, workflow: Workflow) -> Workflow:
         return self._add(WorkflowORM, workflow)

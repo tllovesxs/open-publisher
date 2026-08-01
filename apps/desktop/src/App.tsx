@@ -26,8 +26,10 @@ import {
 import { platforms } from "./data/mock";
 import {
   desktopBridge,
+  type BatchTopicCandidate,
   type ConfigureModelRequest,
   type DisabledOptionalNodeId,
+  type GenerationBatchDetail,
   type ModelConfigurationSummary,
   type ModelConnectionTestSummary,
   type PublishPlanSummary,
@@ -39,6 +41,7 @@ import {
   type WorkflowActivityEvent,
   type WorkflowAgentInstruction,
   type WorkflowNodeId,
+  type WechatSyncBridgeStatus,
   type RunWorkflowSummary,
   type StoredArticleSummary,
 } from "./lib/desktopBridge";
@@ -639,8 +642,15 @@ export default function App() {
   });
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>("wechat");
   const [disabledNodes, setDisabledNodes] = useState<Set<DisabledOptionalNodeId>>(() => {
-    const stored = loadStudioValue<unknown>(WORKFLOW_NODES_STORAGE_KEY, ["visual"]);
-    return new Set(Array.isArray(stored) ? stored.filter(isOptionalWorkflowNodeId) : ["visual"]);
+    const defaultDisabled: DisabledOptionalNodeId[] = [
+      "research",
+      "outline",
+      "natural-style",
+      "review",
+      "visual",
+    ];
+    const stored = loadStudioValue<unknown>(WORKFLOW_NODES_STORAGE_KEY, defaultDisabled);
+    return new Set(Array.isArray(stored) ? stored.filter(isOptionalWorkflowNodeId) : defaultDisabled);
   });
   const [generatedImages, setGeneratedImages] = useState<Record<string, number>>({});
   const [generatingImage, setGeneratingImage] = useState(false);
@@ -655,6 +665,11 @@ export default function App() {
   const [modelTest, setModelTest] = useState<ModelConnectionTestSummary | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [configuringModel, setConfiguringModel] = useState(false);
+  const [generationBatches, setGenerationBatches] = useState<GenerationBatchDetail[]>([]);
+  const [batchPlanning, setBatchPlanning] = useState(false);
+  const [wechatSyncStatus, setWechatSyncStatus] =
+    useState<WechatSyncBridgeStatus | null>(null);
+  const [refreshingWechatSync, setRefreshingWechatSync] = useState(false);
   const [creationActivity, setCreationActivity] =
     useState<CreationActivity | null>(loadCreationActivity);
   const [failedCreationContext, setFailedCreationContext] =
@@ -702,6 +717,20 @@ export default function App() {
   const studioSkills = useMemo(
     () => [...availableSkills, ...customSkills],
     [customSkills],
+  );
+
+  const configuredPlatforms = useMemo(
+    () =>
+      platforms.map((platform) => {
+        const status = wechatSyncStatus?.platforms.find(
+          (item) => item.id === platform.id,
+        );
+        return {
+          ...platform,
+          status: status?.authenticated ? "connected" as const : platform.status,
+        };
+      }),
+    [wechatSyncStatus],
   );
 
   const selectedArticle =
@@ -756,6 +785,95 @@ export default function App() {
     return true;
   };
 
+  const refreshGenerationBatches = async () => {
+    if (runtime?.bridgeMode !== "python_sidecar") return;
+    const batches = await desktopBridge.listGenerationBatches();
+    setGenerationBatches(batches);
+  };
+
+  const refreshWechatSyncStatus = async () => {
+    if (runtime?.bridgeMode !== "python_sidecar") return;
+    setRefreshingWechatSync(true);
+    try {
+      setWechatSyncStatus(await desktopBridge.wechatSyncStatus());
+    } finally {
+      setRefreshingWechatSync(false);
+    }
+  };
+
+  const planGenerationBatch = async (input: {
+    prompt: string;
+    count: number;
+    references: string;
+  }): Promise<BatchTopicCandidate[]> => {
+    if (!requireTextModel()) throw new Error("请先完成文本模型连接");
+    setBatchPlanning(true);
+    try {
+      const plan = await desktopBridge.planGenerationBatch({
+        prompt: input.prompt,
+        count: input.count,
+        references: input.references,
+        manualTopics: [],
+      });
+      return plan.candidates;
+    } finally {
+      setBatchPlanning(false);
+    }
+  };
+
+  const createGenerationBatch = async (request: {
+    creation: CreationRequest;
+    candidates: BatchTopicCandidate[];
+    writerConcurrency: number;
+  }) => {
+    if (!requireTextModel()) throw new Error("请先完成文本模型连接");
+    const agentDisabledNodes = disabledOptionalNodesFor(studioAgents);
+    const creation: CreationRequest = {
+      ...request.creation,
+      disabledNodeIds: [
+        ...new Set<DisabledOptionalNodeId>([
+          ...request.creation.disabledNodeIds,
+          ...agentDisabledNodes,
+          "visual",
+        ]),
+      ],
+      agentInstructions: buildWorkflowAgentInstructions(studioAgents, studioSkills),
+    };
+    const detail = await desktopBridge.createGenerationBatch({
+      prompt: creation.topic,
+      candidates: request.candidates,
+      sourceMarkdown: buildCreationSeed(creation),
+      disabledOptionalNodeIds: creation.disabledNodeIds,
+      agentInstructions: creation.agentInstructions ?? [],
+      webSearchMode: creation.webSearchMode,
+      maxWebSearchCalls: creation.webSearchMode === "off" ? 0 : 2,
+      writerConcurrency: request.writerConcurrency,
+    });
+    setGenerationBatches((current) => [
+      detail,
+      ...current.filter((batch) => batch.batch.id !== detail.batch.id),
+    ]);
+    setToast(`已加入批量队列 · ${detail.items.length} 篇文章`);
+  };
+
+  const cancelGenerationBatch = async (batchId: string) => {
+    const detail = await desktopBridge.cancelGenerationBatch({ batchId });
+    setGenerationBatches((current) =>
+      current.map((batch) =>
+        batch.batch.id === detail.batch.id ? detail : batch,
+      ),
+    );
+  };
+
+  const retryGenerationItem = async (itemId: string) => {
+    const detail = await desktopBridge.retryGenerationItem({ itemId });
+    setGenerationBatches((current) =>
+      current.map((batch) =>
+        batch.batch.id === detail.batch.id ? detail : batch,
+      ),
+    );
+  };
+
   const lifecycleStep = useMemo(() => {
     if (activeNav === "create") return creatingArticle ? "draft" : "brief";
     if (activeNav === "publish") return "publish";
@@ -804,6 +922,16 @@ export default function App() {
         if (loaded[0]) setPublishTargets(new Set(loaded[0].channels));
         const readySnapshot = await desktopBridge.runtimeSnapshot();
         if (!cancelled) setRuntime(readySnapshot);
+        if (readySnapshot.bridgeMode === "python_sidecar") {
+          const [batches, publisherStatus] = await Promise.all([
+            desktopBridge.listGenerationBatches(),
+            desktopBridge.wechatSyncStatus(),
+          ]);
+          if (!cancelled) {
+            setGenerationBatches(batches);
+            setWechatSyncStatus(publisherStatus);
+          }
+        }
       } catch (error) {
         if (cancelled) return;
         const detail = error instanceof Error ? error.message : String(error);
@@ -1619,6 +1747,8 @@ export default function App() {
       topic: article.deck || article.title,
       disabledOptionalNodeIds: disabledNodeIds,
       agentInstructions,
+      webSearchMode: "auto",
+      maxWebSearchCalls: 2,
     });
     const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
     let summary: RunWorkflowSummary;
@@ -1710,6 +1840,8 @@ export default function App() {
           request.imagePlan,
         ),
         agentInstructions,
+        webSearchMode: request.webSearchMode,
+        maxWebSearchCalls: request.webSearchMode === "off" ? 0 : 2,
         visualComposition: visualCompositionFromCreation(request),
       });
       const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
@@ -2141,9 +2273,16 @@ export default function App() {
       case "create":
         return (
           <CreatePage
+            batchPlanning={batchPlanning}
+            batches={generationBatches}
             generating={creatingArticle}
             modelLabel={modelConfiguration?.textModel ?? "配置模型"}
             onCreate={(request) => void createFromBrief(request)}
+            onCreateBatch={createGenerationBatch}
+            onPlanBatch={planGenerationBatch}
+            onRefreshBatches={refreshGenerationBatches}
+            onCancelBatch={cancelGenerationBatch}
+            onRetryBatchItem={retryGenerationItem}
             onOpenSettings={() => navigate("settings")}
             agents={studioAgents}
             mediaAssets={mediaAssets}
@@ -2177,7 +2316,7 @@ export default function App() {
             onRunWorkflow={() => void improveCurrentArticle()}
             onSave={() => void saveCurrentArticle()}
             onSelect={selectArticle}
-            platforms={platforms}
+            platforms={configuredPlatforms}
             saving={saving}
             selectedArticle={selectedArticle}
             selectedPlatform={selectedPlatform}
@@ -2213,7 +2352,7 @@ export default function App() {
             onSelectArticle={selectArticle}
             onToggleTarget={togglePublishTarget}
             plan={currentPublishSession?.plan ?? null}
-            platforms={platforms}
+            platforms={configuredPlatforms}
             receipts={currentPublishSession?.receipts ?? []}
             selectedArticle={selectedArticle}
             selectedTargets={publishTargets}
@@ -2263,9 +2402,12 @@ export default function App() {
             modelError={modelError}
             modelTest={modelTest}
             onConfigureModel={(request) => void configureModel(request)}
+            onRefreshWechatSync={() => void refreshWechatSyncStatus()}
             onToggleNode={toggleWorkflowNode}
-            platforms={platforms}
+            platforms={configuredPlatforms}
             runtime={runtime}
+            wechatSyncStatus={wechatSyncStatus}
+            wechatSyncRefreshing={refreshingWechatSync}
           />
         );
     }

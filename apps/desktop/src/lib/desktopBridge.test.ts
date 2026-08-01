@@ -184,12 +184,14 @@ describe("desktopBridge browser preview boundary", () => {
       imageBaseUrl: null,
       imageModel: null,
       imageTrustedHosts: [],
+      tavilyApiKey: "",
       timeoutSeconds: 30,
     });
     expect(configuration).toMatchObject({
       name: "Session model",
       textModel: "test-text-model",
       secretConfigured: true,
+      webSearchConfigured: false,
       persistence: "session",
     });
     expect(configuration).not.toHaveProperty("apiKey");

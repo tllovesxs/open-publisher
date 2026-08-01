@@ -200,3 +200,37 @@ class PublishReceiptORM(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GenerationBatchORM(Base):
+    __tablename__ = "generation_batches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    prompt: Mapped[str] = mapped_column(Text)
+    policy_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(50), index=True)
+    writer_concurrency: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GenerationItemORM(Base):
+    __tablename__ = "generation_items"
+    __table_args__ = (UniqueConstraint("batch_id", "position", name="uq_generation_item_position"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_batches.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(500))
+    topic: Mapped[str] = mapped_column(Text)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(50), index=True)
+    article_id: Mapped[str | None] = mapped_column(ForeignKey("articles.id"), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_runs.id"), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

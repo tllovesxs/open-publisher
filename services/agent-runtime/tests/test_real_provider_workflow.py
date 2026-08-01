@@ -107,20 +107,17 @@ def test_workflow_persists_openai_compatible_output_as_artifacts(
                         "review",
                         "visual",
                     ],
-                    "max_model_calls": 2,
+                    "max_model_calls": 1,
                 },
             },
         ).json()
 
         assert run["status"] == "completed"
-        assert run["state_json"]["enabled_node_ids"] == ["draft", "risk"]
+        assert run["state_json"]["enabled_node_ids"] == ["draft"]
         assert client.get(
             f"/api/v1/articles/{article['article']['id']}"
         ).json()["latest_revision"]["markdown"] == "remote-output-1"
 
-    assert [call["url"] for call in calls] == [
-        f"{base_url}/chat/completions",
-        f"{base_url}/chat/completions",
-    ]
+    assert [call["url"] for call in calls] == [f"{base_url}/chat/completions"]
     assert all(call["json"]["model"] == "remote-text-model" for call in calls)
     assert calls[0]["json"]["stream"] is True
