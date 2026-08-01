@@ -100,6 +100,39 @@ pub struct BatchTopicCandidate {
     pub key_points: Vec<String>,
 }
 
+/// Python owns the local HTTP API and follows the repository-wide snake_case
+/// contract. Keep this separate from the Tauri-facing candidate so React can
+/// continue to use its camelCase command payloads.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchTopicCandidateWire {
+    title: String,
+    topic: String,
+    angle: String,
+    key_points: Vec<String>,
+}
+
+impl From<BatchTopicCandidateWire> for BatchTopicCandidate {
+    fn from(candidate: BatchTopicCandidateWire) -> Self {
+        Self {
+            title: candidate.title,
+            topic: candidate.topic,
+            angle: candidate.angle,
+            key_points: candidate.key_points,
+        }
+    }
+}
+
+impl From<&BatchTopicCandidate> for BatchTopicCandidateWire {
+    fn from(candidate: &BatchTopicCandidate) -> Self {
+        Self {
+            title: candidate.title.clone(),
+            topic: candidate.topic.clone(),
+            angle: candidate.angle.clone(),
+            key_points: candidate.key_points.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchTopicPlanSummary {
@@ -760,7 +793,7 @@ struct BatchTopicPlanRequestWire<'a> {
 #[derive(Debug, Serialize)]
 struct CreateGenerationBatchRequestWire<'a> {
     prompt: &'a str,
-    candidates: &'a [BatchTopicCandidate],
+    candidates: Vec<BatchTopicCandidateWire>,
     source_markdown: &'a str,
     policy: StartRunPolicyWire<'a>,
     writer_concurrency: u8,
@@ -847,7 +880,7 @@ struct RunDetailWire {
 
 #[derive(Debug, Deserialize)]
 struct BatchTopicPlanWire {
-    candidates: Vec<BatchTopicCandidate>,
+    candidates: Vec<BatchTopicCandidateWire>,
     planned_by: String,
 }
 
@@ -1848,9 +1881,14 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         if !matches!(response.planned_by.as_str(), "model" | "manual") {
             return Err("local Python runtime returned an invalid batch plan source".to_owned());
         }
-        validate_batch_candidates(&response.candidates)?;
+        let candidates = response
+            .candidates
+            .into_iter()
+            .map(BatchTopicCandidate::from)
+            .collect::<Vec<_>>();
+        validate_batch_candidates(&candidates)?;
         Ok(BatchTopicPlanSummary {
-            candidates: response.candidates,
+            candidates,
             planned_by: response.planned_by,
         })
     }
@@ -1869,9 +1907,14 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
                 .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?
         };
         let composition = VisualCompositionRequest::default();
+        let candidates = request
+            .candidates
+            .iter()
+            .map(BatchTopicCandidateWire::from)
+            .collect();
         let payload = CreateGenerationBatchRequestWire {
             prompt: &request.prompt,
-            candidates: &request.candidates,
+            candidates,
             source_markdown: &request.source_markdown,
             policy: StartRunPolicyWire {
                 require_content_approval: false,
@@ -3570,14 +3613,15 @@ mod tests {
         validate_process_summary_against_plan, validate_publish_plan_request,
         validate_template_extraction_request, validate_workflow_request,
         wechat_sync_platform_defaults, ApprovePublishPlanRequestWire, ArticleDetailWire,
-        ArticleListItemWire, ArticleWithRevisionWire, ConnectionConfigRequestWire,
-        ConnectionProfilePublic, ConnectionProfileWire, CreateArticleMetadataWire,
-        CreateArticleRequestWire, CreateConnectionProfileRequest, CreateConnectionRequestWire,
-        CreatePublishPlanRequest, CreatePublishPlanRequestWire, CreateRevisionRequestWire,
-        EmptyRequestWire, EnqueuePublishPlanWire, ExtractTemplateRequest,
-        ExtractTemplateResponseWire, GenerateImageRequest, GenerateImageResponseWire,
-        GenerateImagesRequestWire, HealthResponseWire, IdWire, ProcessPublishJobRequest,
-        ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
+        ArticleListItemWire, ArticleWithRevisionWire, BatchTopicCandidate, BatchTopicCandidateWire,
+        BatchTopicPlanWire, ConnectionConfigRequestWire, ConnectionProfilePublic,
+        ConnectionProfileWire, CreateArticleMetadataWire, CreateArticleRequestWire,
+        CreateConnectionProfileRequest, CreateConnectionRequestWire, CreatePublishPlanRequest,
+        CreatePublishPlanRequestWire, CreateRevisionRequestWire, EmptyRequestWire,
+        EnqueuePublishPlanWire, ExtractTemplateRequest, ExtractTemplateResponseWire,
+        GenerateImageRequest, GenerateImageResponseWire, GenerateImagesRequestWire,
+        HealthResponseWire, IdWire, ProcessPublishJobRequest, ProcessPublishJobWire,
+        PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
         PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, SaveDraftRequest,
         SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire, VisualCompositionRequest,
         WorkflowAgentInstruction, WorkflowRunWire, WorkflowSkillInstruction, WorkflowWire,
@@ -3751,6 +3795,40 @@ mod tests {
         let mut leaked_connection = fixtures["ConnectionProfilePublic"].clone();
         leaked_connection["secret_ref"] = serde_json::json!("env://MUST_NOT_LEAK");
         assert!(serde_json::from_value::<ConnectionProfileWire>(leaked_connection).is_err());
+    }
+
+    #[test]
+    fn batch_topic_candidates_translate_between_tauri_and_python_contracts() {
+        let python_response = serde_json::json!({
+            "candidates": [{
+                "title": "从安装包体积看万能导更新",
+                "topic": "万能导最新版本的体积优化",
+                "angle": "解释体积下降给用户带来的实际变化",
+                "key_points": ["依赖整理", "安装体验", "升级建议"]
+            }],
+            "planned_by": "model"
+        });
+        let response: BatchTopicPlanWire =
+            serde_json::from_value(python_response).expect("Python batch plan response");
+        let candidate = BatchTopicCandidate::from(
+            response
+                .candidates
+                .into_iter()
+                .next()
+                .expect("one planned candidate"),
+        );
+        assert_eq!(
+            candidate.key_points,
+            vec!["依赖整理", "安装体验", "升级建议"]
+        );
+
+        let outbound = BatchTopicCandidateWire::from(&candidate);
+        let serialized = serde_json::to_value(outbound).expect("Python batch request");
+        assert_eq!(
+            serialized["key_points"],
+            serde_json::json!(["依赖整理", "安装体验", "升级建议"])
+        );
+        assert!(serialized.get("keyPoints").is_none());
     }
 
     #[test]
