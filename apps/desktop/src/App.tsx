@@ -678,6 +678,9 @@ export default function App() {
     return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
   });
   const writerStreamRef = useRef<Record<string, string>>({});
+  const writerTypewriterQueueRef = useRef<Record<string, string>>({});
+  const writerTypewriterTimersRef = useRef<Record<string, number | undefined>>({});
+  const writerDraftCompletedRef = useRef(new Set<string>());
   const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
   const [articleProgress, setArticleProgress] = useState<ArticleProgress | null>(null);
   const [articleContentReplacing, setArticleContentReplacing] = useState(false);
@@ -980,6 +983,71 @@ export default function App() {
     if (animate) window.setTimeout(() => setArticleContentReplacing(false), 260);
   };
 
+  const clearWriterTypewriter = (articleId: string, clearRendered = false) => {
+    const timer = writerTypewriterTimersRef.current[articleId];
+    if (timer !== undefined) window.clearTimeout(timer);
+    delete writerTypewriterTimersRef.current[articleId];
+    delete writerTypewriterQueueRef.current[articleId];
+    writerDraftCompletedRef.current.delete(articleId);
+    if (clearRendered) delete writerStreamRef.current[articleId];
+    setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+  };
+
+  const completeWriterTypewriterIfDrained = (articleId: string) => {
+    if (writerTypewriterQueueRef.current[articleId]) return;
+    if (!writerDraftCompletedRef.current.has(articleId)) return;
+    writerDraftCompletedRef.current.delete(articleId);
+    setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+  };
+
+  const scheduleWriterTypewriter = (articleId: string) => {
+    if (writerTypewriterTimersRef.current[articleId] !== undefined) return;
+    writerTypewriterTimersRef.current[articleId] = window.setTimeout(() => {
+      delete writerTypewriterTimersRef.current[articleId];
+      const queued = writerTypewriterQueueRef.current[articleId] ?? "";
+      if (!queued) {
+        completeWriterTypewriterIfDrained(articleId);
+        return;
+      }
+
+      // A small batch preserves the visual rhythm without re-rendering a full
+      // Markdown preview once for every individual character.
+      const characters = Array.from(queued);
+      const renderedDelta = characters.slice(0, 3).join("");
+      writerTypewriterQueueRef.current[articleId] = characters.slice(3).join("");
+      const markdown = `${writerStreamRef.current[articleId] ?? ""}${renderedDelta}`;
+      writerStreamRef.current[articleId] = markdown;
+      setDrafts((current) => ({ ...current, [articleId]: markdown }));
+
+      const remaining = writerTypewriterQueueRef.current[articleId];
+      if (markdown.replace(/\s/g, "").length % 36 < renderedDelta.replace(/\s/g, "").length || !remaining) {
+        showArticleProgress({
+          articleId,
+          title: "写作 Agent 正在输出正文",
+          detail: `已流式写入 ${markdown.replace(/\s/g, "").length} 字。`,
+          value: null,
+        });
+      }
+      if (remaining) {
+        scheduleWriterTypewriter(articleId);
+      } else {
+        completeWriterTypewriterIfDrained(articleId);
+      }
+    }, 18);
+  };
+
+  useEffect(
+    () => () => {
+      Object.values(writerTypewriterTimersRef.current).forEach((timer) => {
+        if (timer !== undefined) window.clearTimeout(timer);
+      });
+      writerTypewriterTimersRef.current = {};
+      writerTypewriterQueueRef.current = {};
+      writerDraftCompletedRef.current.clear();
+    },
+    [],
+  );
+
   const receiveWorkflowActivity = (
     articleId: string,
     event: WorkflowActivityEvent,
@@ -992,20 +1060,20 @@ export default function App() {
       event.draftDelta
     ) {
       lastWorkflowActivityAt.current = Date.now();
-      const markdown = `${writerStreamRef.current[articleId] ?? ""}${event.draftDelta}`;
-      writerStreamRef.current[articleId] = markdown;
-      replaceArticleContent(articleId, markdown, false);
+      writerTypewriterQueueRef.current[articleId] =
+        `${writerTypewriterQueueRef.current[articleId] ?? ""}${event.draftDelta}`;
+      scheduleWriterTypewriter(articleId);
       showArticleProgress({
         articleId,
         title: "写作 Agent 正在输出正文",
-        detail: `已流式写入 ${markdown.replace(/\s/g, "").length} 字。`,
+        detail: "正在以打字机效果写入编辑器。",
         value: null,
       });
       return;
     }
     lastWorkflowActivityAt.current = Date.now();
     if (event.eventType === "run.node_started" && event.nodeId === "draft") {
-      writerStreamRef.current[articleId] = "";
+      clearWriterTypewriter(articleId, true);
       setWriterStreamingArticleId(articleId);
       showArticleProgress({
         articleId,
@@ -1017,11 +1085,11 @@ export default function App() {
       return;
     }
     if (event.eventType === "run.node_completed" && event.nodeId === "draft") {
-      setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+      writerDraftCompletedRef.current.add(articleId);
+      completeWriterTypewriterIfDrained(articleId);
       return;
     }
     if (event.eventType === "run.node_started" && event.nodeId) {
-      setWriterStreamingArticleId((current) => (current === articleId ? null : current));
       showArticleProgress({
         articleId,
         title: `${agent} 正在处理文章`,
@@ -1556,9 +1624,13 @@ export default function App() {
     let summary: RunWorkflowSummary;
     try {
       summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
+    } catch (error) {
+      clearWriterTypewriter(article.id);
+      throw error;
     } finally {
       stopActivityPolling();
     }
+    clearWriterTypewriter(article.id);
     setArticleContentReplacing(true);
     applyWorkflowResult(article.id, summary, channels);
     window.setTimeout(() => setArticleContentReplacing(false), 260);
@@ -1644,9 +1716,13 @@ export default function App() {
       let summary: RunWorkflowSummary;
       try {
         summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
+      } catch (error) {
+        clearWriterTypewriter(article.id);
+        throw error;
       } finally {
         stopActivityPolling();
       }
+      clearWriterTypewriter(article.id);
       setArticleContentReplacing(true);
       applyWorkflowResult(article.id, summary, request.platforms);
       window.setTimeout(() => setArticleContentReplacing(false), 260);
@@ -1680,6 +1756,7 @@ export default function App() {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const safeDetail = sanitizeActivityMessage(detail || "未知错误");
+      clearWriterTypewriter(article.id);
       if (!revisionSaved) {
         setDirtyIds((current) => new Set(current).add(article.id));
       }

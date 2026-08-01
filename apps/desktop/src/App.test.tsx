@@ -134,6 +134,7 @@ describe("desktop product flow", () => {
   it("opens the article immediately and streams the writing Agent output", async () => {
     let finishWorkflow: (() => void) | undefined;
     let activityReadCount = 0;
+    const streamedMarkdown = `# 流式文章\n\n${"正文正在以打字机节奏到达。".repeat(10)}`;
     const runWorkflow = vi.fn<DesktopBridge["runWorkflow"]>(
       (request) =>
         new Promise<RunWorkflowSummary>((resolve) => {
@@ -158,7 +159,7 @@ describe("desktop product flow", () => {
             eventType: "run.node_output_delta",
             nodeId: "draft" as const,
             createdAt: "2026-08-01T02:20:01.000Z",
-            draftDelta: "# 流式文章\\n\\n正文正在到达。",
+            draftDelta: streamedMarkdown,
           },
           {
             id: "stream-complete",
@@ -185,7 +186,12 @@ describe("desktop product flow", () => {
     const editor = await screen.findByLabelText("Markdown 正文");
     await waitFor(() => expect(activityReadCount).toBeGreaterThan(0));
     await waitFor(() =>
-      expect((editor as HTMLTextAreaElement).value).toContain("正文正在到达"),
+      expect((editor as HTMLTextAreaElement).value).toMatch(/^# 流式文章/),
+    );
+    expect((editor as HTMLTextAreaElement).value.length).toBeLessThan(streamedMarkdown.length);
+    await waitFor(
+      () => expect((editor as HTMLTextAreaElement).value).toBe(streamedMarkdown),
+      { timeout: 3_000 },
     );
     fireEvent.click(await screen.findByRole("button", { name: "关闭进度提示" }));
     expect(screen.queryByRole("button", { name: "关闭进度提示" })).toBeNull();
