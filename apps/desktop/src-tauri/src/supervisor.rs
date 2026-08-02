@@ -2901,6 +2901,17 @@ fn strong_token() -> String {
 
 fn terminate_child(state: &mut SupervisorState) {
     if let Some(mut child) = state.child.take() {
+        #[cfg(windows)]
+        {
+            // Uvicorn can spawn a worker beneath the Python launcher on Windows.
+            // Killing only the direct child leaves the listening worker orphaned.
+            let _ = Command::new("taskkill")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        #[cfg(not(windows))]
         let _ = child.kill();
         let _ = child.wait();
     }
