@@ -172,7 +172,7 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
           {snapshot.status === "running" ? <LoaderCircle className="spin" size={15} /> : snapshot.status === "failed" ? <AlertCircle size={15} /> : <Check size={15} />}
         </span>
         <span className="workflow-workspace__toggle-copy">
-          <strong>工作区</strong>
+          <strong>Agent 工作流</strong>
           <small>{statusLabel} · {activityEvents.length} 项过程</small>
         </span>
         {open ? <ChevronDown aria-hidden="true" size={17} /> : <ChevronRight aria-hidden="true" size={17} />}
