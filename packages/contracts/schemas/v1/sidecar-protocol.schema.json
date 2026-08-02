@@ -413,6 +413,51 @@
           "items": {
             "$ref": "#/$defs/VisualAssetInstruction"
           }
+        },
+        "asset_scope": {
+          "enum": [
+            "selected_only",
+            "library",
+            "none"
+          ]
+        },
+        "preferred_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "density": {
+          "enum": [
+            "minimal",
+            "balanced",
+            "per-section",
+            "rich"
+          ]
+        },
+        "style": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "palette": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 80
+        },
+        "preferred_image_backend": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "generation_batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "skip_confirmation": {
+          "type": "boolean"
         }
       },
       "allOf": [
@@ -461,6 +506,25 @@
               "target_count": {
                 "minimum": 1,
                 "maximum": 6
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "asset_scope": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "asset_scope"
+            ]
+          },
+          "then": {
+            "properties": {
+              "assets": {
+                "maxItems": 0
               }
             }
           }

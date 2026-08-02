@@ -133,7 +133,7 @@ export type DisabledOptionalNodeId =
   | "review"
   | "visual";
 
-export type WorkflowNodeId = DisabledOptionalNodeId | "draft" | "risk";
+export type WorkflowNodeId = DisabledOptionalNodeId | "draft" | "reference-safety" | "risk";
 
 /** A text-only Skill snapshot. The desktop bridge never executes Skill code. */
 export interface WorkflowSkillInstruction {
@@ -173,6 +173,8 @@ export interface RunWorkflowSummary {
 }
 
 export type VisualImageMode = "none" | "auto" | "fixed";
+export type VisualAssetScope = "selected_only" | "library" | "none";
+export type VisualDensity = "minimal" | "balanced" | "per-section" | "rich";
 
 /** Text-only metadata lets a text model place a local image without seeing its bytes. */
 export interface VisualAssetInstruction {
@@ -185,17 +187,45 @@ export interface VisualCompositionRequest {
   mode: VisualImageMode;
   targetCount: number;
   assets: VisualAssetInstruction[];
+  assetScope: VisualAssetScope;
+  preferredType: "infographic" | "scene" | "flowchart" | "comparison" | "framework" | "timeline";
+  density: VisualDensity;
+  style: string;
+  palette: string | null;
+  preferredImageBackend: string;
+  generationBatchSize: number;
+  skipConfirmation: boolean;
+}
+
+export interface VisualMaterialCandidateSummary {
+  assetId: string;
+  /** Integer score on a 0-1000 scale, avoiding a float across the Rust boundary. */
+  score: number;
+  description: string;
 }
 
 export interface VisualPlacementSummary {
+  id: string;
+  blockId: string | null;
+  anchorExcerpt: string | null;
   afterHeading: string | null;
+  purpose: string;
+  visualContent: string;
+  visualType: string;
+  source: "existing_asset" | "generate";
   assetId: string | null;
+  candidates: VisualMaterialCandidateSummary[];
+  selectionReason: string;
   alt: string;
   generationPrompt: string | null;
+  promptFile: string | null;
 }
 
 export interface VisualCompositionPlanSummary {
+  sourceRevisionHash: string;
   targetCount: number;
+  settings: Record<string, string>;
+  needsConfirmation: boolean;
   placements: VisualPlacementSummary[];
 }
 
@@ -400,6 +430,17 @@ export interface TemplateExtractionSummary {
   }>;
   variables: string[];
   usageInstructions: string;
+  contentAtomLedger: {
+    claims: string[];
+    facts: string[];
+    examples: string[];
+    quotes: string[];
+    namedEntities: string[];
+    caveats: string[];
+  };
+  phraseBlacklist: string[];
+  analysisVersion: string;
+  sourceFingerprint: string;
   provider: string;
   model: string;
   mocked: boolean;
@@ -585,27 +626,59 @@ const mockTemplateMarkdown = (sourceMarkdown: string) => {
 
 const mockVisualPlanFor = (
   request: RunWorkflowRequest,
+  outputMarkdown: string,
 ): VisualCompositionPlanSummary | null => {
   const composition = request.visualComposition;
   if (!composition || composition.mode === "none") return null;
   const targetCount = composition.mode === "fixed" ? composition.targetCount : 1;
   return {
+    sourceRevisionHash: mockHash(outputMarkdown),
     targetCount,
+    settings: {
+      type: composition.preferredType,
+      density: composition.density,
+      style: composition.style,
+      palette: composition.palette ?? "default",
+      generation_batch_size: String(composition.generationBatchSize),
+    },
+    // The test-only browser bridge cannot run the persisted Baoyu confirmation
+    // protocol. Native runs always request a visible confirmation.
+    needsConfirmation: false,
     placements: Array.from({ length: targetCount }, (_, index) => {
       const asset = composition.assets[index];
       if (asset) {
         return {
+          id: `illustration-${index + 1}`,
+          blockId: null,
+          anchorExcerpt: null,
           afterHeading: null,
+          purpose: "模拟素材插入。",
+          visualContent: asset.description,
+          visualType: composition.preferredType,
+          source: "existing_asset" as const,
           assetId: asset.id,
+          candidates: [],
+          selectionReason: "测试桥接使用已选素材。",
           alt: asset.alt,
           generationPrompt: null,
+          promptFile: null,
         };
       }
       return {
+        id: `illustration-${index + 1}`,
+        blockId: null,
+        anchorExcerpt: null,
         afterHeading: null,
+        purpose: "模拟生成插图。",
+        visualContent: `模拟文章配图 ${index + 1}`,
+        visualType: composition.preferredType,
+        source: "generate" as const,
         assetId: null,
+        candidates: [],
+        selectionReason: "测试桥接没有匹配的素材。",
         alt: `模拟文章配图 ${index + 1}`,
-        generationPrompt: `为文章生成第 ${index + 1} 张克制的模拟配图。`,
+        generationPrompt: `# 模拟配图\n\nZONES: 为文章生成第 ${index + 1} 张克制的模拟配图。\nSTYLE: ${composition.style}\nASPECT: 3:2`,
+        promptFile: `prompts/${String(index + 1).padStart(2, "0")}-mock.md`,
       };
     }),
   };
@@ -729,7 +802,7 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
           id: `${outputRevisionId}-${suffix}`,
           kind,
         })),
-      visualPlan: mockVisualPlanFor(request),
+      visualPlan: mockVisualPlanFor(request, outputMarkdown),
       persistence: "memory",
     };
   },
@@ -945,9 +1018,9 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
   async extractTemplate(request) {
     await pause(180);
     return {
-      name: "文章结构模板",
-      description: "从原文层级提取的可复用 Markdown 结构。",
-      category: "自定义文章",
+      name: "高保真参考模板",
+      description: "保留原文作为本地参考，并提取可迁移的结构与文风规则。",
+      category: "参考写作",
       markdown: mockTemplateMarkdown(request.sourceMarkdown),
       styleProfile: {
         tone: "专业、清晰",
@@ -974,7 +1047,13 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       },
       fixedBlocks: [],
       variables: ["title", "lead", "closing"],
-      usageInstructions: "保持原文结构，替换具体事实。",
+      usageInstructions: "复用结构和表达节奏，不复用文章中的事实或表达。",
+      contentAtomLedger: {
+        claims: [], facts: [], examples: [], quotes: [], namedEntities: [], caveats: [],
+      },
+      phraseBlacklist: [],
+      analysisVersion: "reference-template.v1",
+      sourceFingerprint: `sha256:${mockHash(request.sourceMarkdown)}`,
       provider: "mock",
       model: mockModelConfiguration?.textModel ?? "deterministic-mock-v1",
       mocked: true,

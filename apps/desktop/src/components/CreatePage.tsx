@@ -204,7 +204,7 @@ export function CreatePage(props: CreatePageProps) {
 
     <div className="creation-studio">
       <div className="creation-toolbar">
-        <label><span>模板</span><select onChange={(event) => props.onTemplateChange(event.target.value)} value={props.selectedTemplate?.id ?? ""}><option value="">自由结构</option>{props.templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label>
+        <label><span>模板</span><select onChange={(event) => props.onTemplateChange(event.target.value)} value={props.selectedTemplate?.id ?? ""}><option value="">自由结构</option>{props.templates.map((template) => <option key={template.id} value={template.id}>{template.mode === "reference" ? `${template.name} · 高保真` : template.name}</option>)}</select></label>
         <label><span>风格</span><select onChange={(event) => setTone(event.target.value)} value={tone}><option>专业清晰</option><option>自然亲切</option><option>简洁直接</option><option>深入严谨</option></select></label>
         <label><span>篇幅</span><select onChange={(event) => setLengthPreset(event.target.value as LengthPreset)} value={lengthPreset}>{lengthOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         <label><span>联网</span><select onChange={(event) => setWebSearchMode(event.target.value as WebSearchMode)} value={webSearchMode}><option value="auto">自动</option><option value="off">关闭</option></select></label>
@@ -217,7 +217,7 @@ export function CreatePage(props: CreatePageProps) {
           <button className="text-button" onClick={() => fileInputRef.current?.click()} type="button"><FilePlus2 size={15} />导入资料</button>
           <input accept=".md,.markdown,.txt,text/plain,text/markdown" className="visually-hidden" onChange={(event) => void importReference(event.target.files?.[0])} ref={fileInputRef} type="file" />
           <button className="text-button" onClick={() => setPicker("media")} type="button"><ImagePlus size={15} />素材 {props.selectedMedia.length || ""}</button>
-          <span>{props.selectedTemplate?.name ?? "自由结构"}</span>
+          <span>{props.selectedTemplate?.mode === "reference" ? `高保真参考 · ${props.selectedTemplate.name}` : props.selectedTemplate?.name ?? "自由结构"}</span>
           <button className="button button--primary" disabled={props.generating} onClick={() => { const request = creationRequest(); if (request) props.onCreate(request); }} type="button">{props.generating ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{props.generating ? "正在创作" : "开始创作"}</button>
         </div>
       </div>

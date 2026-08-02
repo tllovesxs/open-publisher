@@ -96,9 +96,9 @@ class MockTextProvider:
                     ]
                 )
             template = {
-                "name": "文章结构模板",
-                "description": "从原文层级提取的可复用 Markdown 结构。",
-                "category": "自定义文章",
+                "name": "高保真参考模板",
+                "description": "保留原文作为本地参考，并提取可迁移的结构与文风规则。",
+                "category": "参考写作",
                 "markdown": "\n".join(
                     [
                         "# {{title}}",
@@ -111,6 +111,41 @@ class MockTextProvider:
                         "{{closing}}",
                     ]
                 ).strip(),
+                "style_profile": {
+                    "tone": "专业、清晰",
+                    "audience": "关注主题的读者",
+                    "perspective": "作者解释视角",
+                    "sentence_style": "短段落，先结论后解释",
+                    "pacing": "按章节递进",
+                    "density": "中等",
+                },
+                "structure_profile": {
+                    "opening_pattern": "先给结论和背景",
+                    "section_pattern": "按主题拆分章节",
+                    "conclusion_pattern": "总结并给出下一步",
+                    "heading_depth": "二级标题承载章节",
+                    "paragraph_pattern": "每段表达一个要点",
+                },
+                "layout_profile": {
+                    "use_lists": True,
+                    "use_tables": False,
+                    "use_blockquotes": False,
+                    "use_code_blocks": False,
+                    "image_placement": "放在相关小节之后",
+                    "emphasis_rules": "适度强调关键词",
+                },
+                "fixed_blocks": [],
+                "variables": ["title", "lead", "closing"],
+                "usage_instructions": "复用结构和表达节奏，不复用文章中的事实或表达。",
+                "content_atom_ledger": {
+                    "claims": [],
+                    "facts": [],
+                    "examples": [],
+                    "quotes": [],
+                    "named_entities": [],
+                    "caveats": [],
+                },
+                "phrase_blacklist": [],
             }
             text = json.dumps(template, ensure_ascii=False)
         elif request.purpose == "batch-topic-plan":
@@ -145,6 +180,8 @@ class MockTextProvider:
             )
         elif request.purpose == "draft":
             source_section = source if source else f"{topic} 是本文讨论的核心主题。"
+            if "<open-publisher-reference-" in source_section:
+                source_section = f"{topic} 是本文讨论的核心主题。"
             text = (
                 f"# {title}\n\n"
                 f"{source_section}\n\n"
@@ -164,6 +201,22 @@ class MockTextProvider:
             if naturalized == source:
                 naturalized = f"{source}\n\n> 本稿已完成自然表达整理，事实边界保持不变。"
             text = naturalized
+        elif request.purpose == "reference-safety-rewrite":
+            matches = request.context.get("reference_matches")
+            candidates = matches if isinstance(matches, list) else []
+            text = json.dumps(
+                {
+                    "replacements": [
+                        {
+                            "before": str(candidate),
+                            "after": "这部分需要基于当前主题重新组织表达",
+                        }
+                        for candidate in candidates
+                        if str(candidate).strip()
+                    ]
+                },
+                ensure_ascii=False,
+            )
         elif request.purpose == "editor-rewrite":
             selected_texts = request.context.get("selected_texts")
             sources = (
@@ -181,8 +234,9 @@ class MockTextProvider:
                 else:
                     rewritten = candidate
                 replacements.append({"index": index, "markdown": rewritten})
+            editorial_note = "已根据本次要求检查表达，并保持原有 Markdown 结构与事实边界。"
             text = (
-                "<editorial_note>已根据本次要求检查表达，并保持原有 Markdown 结构与事实边界。</editorial_note>\n"
+                f"<editorial_note>{editorial_note}</editorial_note>\n"
                 f"<replacements>{json.dumps(replacements, ensure_ascii=False)}</replacements>"
             )
         elif request.purpose == "review":

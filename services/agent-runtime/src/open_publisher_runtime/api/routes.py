@@ -5,10 +5,11 @@ import json
 import logging
 import re
 import sys
+from collections.abc import Iterator
+from datetime import UTC
 from queue import Queue
 from threading import Thread
-from datetime import UTC
-from typing import Annotated, Iterator
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
@@ -340,7 +341,10 @@ def _rewrite_request_config(request: RewriteArticleRequest) -> TextGenerationReq
     )
 
 
-def _rewrite_response_from_model(request: RewriteArticleRequest, container: RuntimeContainer) -> RewriteArticleResponse:
+def _rewrite_response_from_model(
+    request: RewriteArticleRequest,
+    container: RuntimeContainer,
+) -> RewriteArticleResponse:
     result = container.model_access.generate_text(_rewrite_request_config(request))
     return _parse_rewrite_response(
         result.text,
@@ -383,7 +387,11 @@ def _rewrite_stream_events(
             )
             events.put(("completed", response.model_dump(mode="json")))
         except Exception as error:
-            logger.warning("Article rewrite stream failed request=%s error=%s", request.request_id, type(error).__name__)
+            logger.warning(
+                "Article rewrite stream failed request=%s error=%s",
+                request.request_id,
+                type(error).__name__,
+            )
             events.put(("failed", {"detail": "文章修改失败，请检查模型配置后重试。"}))
 
     Thread(target=run, daemon=True, name="open-publisher-rewrite").start()
@@ -454,6 +462,10 @@ def extract_template(
         fixed_blocks=result.fixed_blocks,
         variables=result.variables,
         usage_instructions=result.usage_instructions,
+        content_atom_ledger=result.content_atom_ledger,
+        phrase_blacklist=result.phrase_blacklist,
+        analysis_version=result.analysis_version,
+        source_fingerprint=result.source_fingerprint,
         provider=result.provider,
         model=result.model,
         mocked=result.mocked,

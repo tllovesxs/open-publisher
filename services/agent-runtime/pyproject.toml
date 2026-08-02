@@ -36,6 +36,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_publisher_runtime"]
+include = [
+    "src/open_publisher_runtime/resources/**/*.md",
+    "src/open_publisher_runtime/resources/**/LICENSE",
+    "src/open_publisher_runtime/resources/**/REVISION",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

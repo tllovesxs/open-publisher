@@ -63,7 +63,7 @@ Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenA
 | AI Health & Fitness | 根据目标、饮食和身体条件生成训练计划。 | 是表单约束到计划输出的案例，领域无关。`不建议引入`。 |
 | AI Investment Agent | 调用 Yahoo Finance 等数据源比较股票并生成报告。 | 适合作为实时数据工具与报告模板范例，不能用于一般文章流程。`不建议引入`。 |
 | AI Journalist | 搜索角色找资料，写手生成文章，编辑修订并输出成稿。 | 与 Open Publisher 最接近。我们应把检索设为可选、编辑限制为一次有差异的审阅，避免无止境多 Agent 循环。`重点参考`。 |
-| AI Meeting Agent | 在会前搜集参会方、行业和议题，输出会议情报包。 | 适合参考“先做 Brief 再写作”的资料包形式。`仅参考产物结构`。 |
+| AI Meeting Agent | 在会前搜集参会方、行业和议题DevPulse AI，输出会议情报包。 | 适合参考“先做 Brief 再写作”的资料包形式。`仅参考产物结构`。 |
 | AI Movie Production | 用一句故事概念生成剧本初稿、角色和选角想法。 | 是创意扩写案例，适合学习创意约束，不适合技术文章。`不建议引入`。 |
 | AI Personal Finance | 根据用户收入、支出和目标给出财务分析。 | 结构化输入与解释型输出可借鉴，领域无关。`不建议引入`。 |
 | AI Recipe & Meal Planning | 根据食材、偏好和限制设计菜单与做法。 | 可参考模板化 Markdown 输出、不可违反的约束。`仅参考提示词设计`。 |

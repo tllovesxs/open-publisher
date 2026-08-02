@@ -236,6 +236,22 @@ pub struct VisualCompositionRequest {
     pub target_count: u8,
     #[serde(default)]
     pub assets: Vec<VisualAssetInstruction>,
+    #[serde(default = "default_visual_asset_scope")]
+    pub asset_scope: String,
+    #[serde(default = "default_visual_type")]
+    pub preferred_type: String,
+    #[serde(default = "default_visual_density")]
+    pub density: String,
+    #[serde(default = "default_visual_style")]
+    pub style: String,
+    #[serde(default = "default_visual_palette")]
+    pub palette: Option<String>,
+    #[serde(default = "default_preferred_image_backend")]
+    pub preferred_image_backend: String,
+    #[serde(default = "default_generation_batch_size")]
+    pub generation_batch_size: u8,
+    #[serde(default)]
+    pub skip_confirmation: bool,
 }
 
 impl Default for VisualCompositionRequest {
@@ -244,12 +260,48 @@ impl Default for VisualCompositionRequest {
             mode: default_visual_mode(),
             target_count: 0,
             assets: Vec::new(),
+            asset_scope: default_visual_asset_scope(),
+            preferred_type: default_visual_type(),
+            density: default_visual_density(),
+            style: default_visual_style(),
+            palette: default_visual_palette(),
+            preferred_image_backend: default_preferred_image_backend(),
+            generation_batch_size: default_generation_batch_size(),
+            skip_confirmation: false,
         }
     }
 }
 
 fn default_visual_mode() -> String {
     "none".to_owned()
+}
+
+fn default_visual_asset_scope() -> String {
+    "selected_only".to_owned()
+}
+
+fn default_visual_type() -> String {
+    "infographic".to_owned()
+}
+
+fn default_visual_density() -> String {
+    "balanced".to_owned()
+}
+
+fn default_visual_style() -> String {
+    "sketch-notes".to_owned()
+}
+
+fn default_visual_palette() -> Option<String> {
+    Some("macaron".to_owned())
+}
+
+fn default_preferred_image_backend() -> String {
+    "auto".to_owned()
+}
+
+const fn default_generation_batch_size() -> u8 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,17 +361,38 @@ pub struct RunWorkflowSummary {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualCompositionPlanSummary {
+    pub source_revision_hash: String,
     pub target_count: u8,
+    pub settings: HashMap<String, String>,
+    pub needs_confirmation: bool,
     pub placements: Vec<VisualPlacementSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualPlacementSummary {
+    pub id: String,
+    pub block_id: Option<String>,
+    pub anchor_excerpt: Option<String>,
     pub after_heading: Option<String>,
+    pub purpose: String,
+    pub visual_content: String,
+    pub visual_type: String,
+    pub source: String,
     pub asset_id: Option<String>,
+    pub candidates: Vec<VisualMaterialCandidateSummary>,
+    pub selection_reason: String,
     pub alt: String,
     pub generation_prompt: Option<String>,
+    pub prompt_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualMaterialCandidateSummary {
+    pub asset_id: String,
+    pub score: u16,
+    pub description: String,
 }
 
 /// A deliberately narrow projection of a live Python workflow run. Writer
@@ -526,6 +599,10 @@ pub struct TemplateExtractionSummary {
     pub fixed_blocks: Vec<Value>,
     pub variables: Vec<String>,
     pub usage_instructions: String,
+    pub content_atom_ledger: Value,
+    pub phrase_blacklist: Vec<String>,
+    pub analysis_version: String,
+    pub source_fingerprint: String,
     pub provider: String,
     pub model: String,
     pub mocked: bool,
@@ -1227,6 +1304,12 @@ struct ExtractTemplateResponseWire {
     variables: Vec<String>,
     #[serde(default)]
     usage_instructions: String,
+    #[serde(default)]
+    content_atom_ledger: Value,
+    #[serde(default)]
+    phrase_blacklist: Vec<String>,
+    analysis_version: String,
+    source_fingerprint: String,
     provider: String,
     model: String,
     mocked: bool,
@@ -2126,9 +2209,12 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             output_revision_id,
             output_revision_number: article.latest_revision.number,
             output_markdown: article.latest_revision.markdown,
-            output_content_hash: article.latest_revision.content_hash,
+            output_content_hash: article.latest_revision.content_hash.clone(),
             artifacts: workflow_artifact_summaries(&run.state_json)?,
-            visual_plan: workflow_visual_plan(&run.state_json)?,
+            visual_plan: workflow_visual_plan(
+                &run.state_json,
+                &article.latest_revision.content_hash,
+            )?,
             persistence: "local_database",
         })
     }
@@ -3021,7 +3107,14 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
         validate_instruction_text(&agent.prompt, "Agent prompt", 6_000)?;
         if !matches!(
             agent.node_id.as_str(),
-            "research" | "outline" | "draft" | "natural-style" | "review" | "risk" | "visual"
+            "research"
+                | "outline"
+                | "draft"
+                | "natural-style"
+                | "review"
+                | "reference-safety"
+                | "risk"
+                | "visual"
         ) {
             return Err("workflow Agent node assignment is invalid".to_owned());
         }
@@ -3130,6 +3223,37 @@ fn validate_visual_composition(request: &VisualCompositionRequest) -> Result<(),
             return Err("visual image count does not match the selected mode".to_owned())
         }
         _ => return Err("visual image mode is invalid".to_owned()),
+    }
+    match request.asset_scope.as_str() {
+        "selected_only" | "library" | "none" => {}
+        _ => return Err("visual asset scope is invalid".to_owned()),
+    }
+    if request.asset_scope == "none" && !request.assets.is_empty() {
+        return Err("visual assets must be empty when scope is none".to_owned());
+    }
+    if !matches!(
+        request.preferred_type.as_str(),
+        "infographic" | "scene" | "flowchart" | "comparison" | "framework" | "timeline"
+    ) {
+        return Err("visual type is invalid".to_owned());
+    }
+    if !matches!(
+        request.density.as_str(),
+        "minimal" | "balanced" | "per-section" | "rich"
+    ) {
+        return Err("visual density is invalid".to_owned());
+    }
+    validate_instruction_text(&request.style, "visual style", 80)?;
+    if let Some(palette) = &request.palette {
+        validate_instruction_text(palette, "visual palette", 80)?;
+    }
+    validate_instruction_text(
+        &request.preferred_image_backend,
+        "preferred image backend",
+        80,
+    )?;
+    if !(1..=8).contains(&request.generation_batch_size) {
+        return Err("visual generation batch size must be between 1 and 8".to_owned());
     }
 
     let mut asset_ids = HashSet::new();
@@ -3693,7 +3817,14 @@ fn summarize_workflow_activity_event(
             let node_id = validate_backend_id(value.clone(), "workflow node")?;
             if !matches!(
                 node_id.as_str(),
-                "research" | "outline" | "draft" | "natural-style" | "review" | "risk" | "visual"
+                "research"
+                    | "outline"
+                    | "draft"
+                    | "natural-style"
+                    | "review"
+                    | "reference-safety"
+                    | "risk"
+                    | "visual"
             ) {
                 return Err("local Python runtime returned an unknown workflow node".to_owned());
             }
@@ -3856,7 +3987,7 @@ fn validate_revision_wire(revision: &ArticleRevisionWire) -> Result<(), String> 
 fn workflow_artifact_summaries(
     state: &HashMap<String, Value>,
 ) -> Result<Vec<WorkflowArtifactSummary>, String> {
-    const ARTIFACTS: [(&str, &str); 8] = [
+    const ARTIFACTS: [(&str, &str); 11] = [
         ("research_artifact_id", "workflow.research"),
         ("outline_artifact_id", "workflow.outline"),
         ("raw_draft_artifact_id", "workflow.raw-draft"),
@@ -3867,6 +3998,12 @@ fn workflow_artifact_summaries(
         ("canonical_draft_artifact_id", "workflow.canonical-draft"),
         ("review_artifact_id", "workflow.review"),
         ("risk_artifact_id", "workflow.risk"),
+        ("visual_outline_artifact_id", "workflow.visual-outline"),
+        (
+            "visual_material_selection_artifact_id",
+            "workflow.visual-material-selection",
+        ),
+        ("visual_prompts_artifact_id", "workflow.visual-prompts"),
         ("visual_plan_artifact_id", "workflow.visual-plan"),
     ];
     ARTIFACTS
@@ -3888,6 +4025,7 @@ fn workflow_artifact_summaries(
 
 fn workflow_visual_plan(
     state: &HashMap<String, Value>,
+    expected_revision_hash: &str,
 ) -> Result<Option<VisualCompositionPlanSummary>, String> {
     let Some(Value::Object(plan)) = state.get("visual_composition_plan") else {
         return Ok(None);
@@ -3898,6 +4036,28 @@ fn workflow_visual_plan(
         .and_then(|value| u8::try_from(value).ok())
         .filter(|value| *value <= 6)
         .ok_or_else(|| "local Python runtime returned an invalid visual plan count".to_owned())?;
+    let source_revision_hash =
+        required_visual_plan_text(plan.get("source_revision_hash"), "source revision hash", 64)?;
+    if !valid_hash(&source_revision_hash) || source_revision_hash != expected_revision_hash {
+        return Err("visual plan is stale for the output article revision".to_owned());
+    }
+    let needs_confirmation = plan
+        .get("needs_confirmation")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "local Python runtime omitted visual confirmation policy".to_owned())?;
+    let settings = plan
+        .get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "local Python runtime returned invalid visual settings".to_owned())?
+        .iter()
+        .map(|(key, value)| {
+            let setting = required_visual_plan_text(Some(value), "visual setting", 100)?;
+            if key.is_empty() || key.len() > 64 {
+                return Err("local Python runtime returned invalid visual setting key".to_owned());
+            }
+            Ok((key.clone(), setting))
+        })
+        .collect::<Result<HashMap<_, _>, String>>()?;
     let placements = plan
         .get("placements")
         .and_then(Value::as_array)
@@ -3910,7 +4070,10 @@ fn workflow_visual_plan(
         .map(summarize_visual_placement)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(VisualCompositionPlanSummary {
+        source_revision_hash,
         target_count,
+        settings,
+        needs_confirmation,
         placements,
     }))
 }
@@ -3919,22 +4082,109 @@ fn summarize_visual_placement(value: &Value) -> Result<VisualPlacementSummary, S
     let object = value
         .as_object()
         .ok_or_else(|| "local Python runtime returned an invalid visual placement".to_owned())?;
+    let id = required_visual_plan_text(object.get("id"), "placement id", 32)?;
+    if !matches!(
+        id.as_str(),
+        "illustration-1"
+            | "illustration-2"
+            | "illustration-3"
+            | "illustration-4"
+            | "illustration-5"
+            | "illustration-6"
+    ) {
+        return Err("local Python runtime returned an invalid visual placement id".to_owned());
+    }
+    let block_id = optional_visual_plan_text(object.get("block_id"), "block id", 100)?;
+    let anchor_excerpt =
+        optional_visual_plan_text(object.get("anchor_excerpt"), "anchor excerpt", 240)?;
     let after_heading = optional_visual_plan_text(object.get("after_heading"), "heading", 180)?;
+    let purpose = required_visual_plan_text(object.get("purpose"), "purpose", 900)?;
+    let visual_content = required_visual_plan_text(object.get("visual_content"), "content", 1_500)?;
+    let visual_type = required_visual_plan_text(object.get("visual_type"), "type", 32)?;
+    if !matches!(
+        visual_type.as_str(),
+        "infographic" | "scene" | "flowchart" | "comparison" | "framework" | "timeline"
+    ) {
+        return Err("local Python runtime returned an invalid visual type".to_owned());
+    }
+    let source = required_visual_plan_text(object.get("source"), "source", 32)?;
     let asset_id = optional_visual_plan_text(object.get("asset_id"), "asset id", 100)?;
     if let Some(asset_id) = &asset_id {
         validate_instruction_identifier(asset_id, "visual asset")?;
     }
     let alt = required_visual_plan_text(object.get("alt"), "alt text", 180)?;
-    let generation_prompt =
-        optional_visual_plan_text(object.get("generation_prompt"), "generation prompt", 2_000)?;
-    if asset_id.is_some() == generation_prompt.is_some() {
-        return Err("local Python runtime returned an ambiguous visual placement".to_owned());
+    let generation_prompt = optional_visual_multiline_text(
+        object.get("generation_prompt"),
+        "generation prompt",
+        4_000,
+    )?;
+    let prompt_file = optional_visual_plan_text(object.get("prompt_file"), "prompt file", 220)?;
+    let selection_reason =
+        required_visual_plan_text(object.get("selection_reason"), "selection reason", 900)?;
+    let candidates = object
+        .get("candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "local Python runtime omitted visual material candidates".to_owned())?;
+    if candidates.len() > 5 {
+        return Err("local Python runtime returned too many visual material candidates".to_owned());
+    }
+    let mut candidate_ids = HashSet::new();
+    let candidates = candidates
+        .iter()
+        .map(|candidate| {
+            let object = candidate.as_object().ok_or_else(|| {
+                "local Python runtime returned an invalid visual material candidate".to_owned()
+            })?;
+            let asset_id =
+                required_visual_plan_text(object.get("asset_id"), "candidate asset id", 100)?;
+            validate_instruction_identifier(&asset_id, "visual candidate asset")?;
+            if !candidate_ids.insert(asset_id.clone()) {
+                return Err(
+                    "local Python runtime duplicated a visual material candidate".to_owned(),
+                );
+            }
+            let score = object
+                .get("score")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+                .ok_or_else(|| {
+                    "local Python runtime returned an invalid material score".to_owned()
+                })?;
+            let description =
+                required_visual_plan_text(object.get("description"), "candidate description", 900)?;
+            Ok(VisualMaterialCandidateSummary {
+                asset_id,
+                score: (score * 1_000.0).round() as u16,
+                description,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    match source.as_str() {
+        "existing_asset"
+            if asset_id.is_some() && generation_prompt.is_none() && prompt_file.is_none() => {}
+        "generate"
+            if asset_id.is_none() && generation_prompt.is_some() && prompt_file.is_some() => {}
+        _ => {
+            return Err(
+                "local Python runtime returned an ambiguous visual placement source".to_owned(),
+            )
+        }
     }
     Ok(VisualPlacementSummary {
+        id,
+        block_id,
+        anchor_excerpt,
         after_heading,
+        purpose,
+        visual_content,
+        visual_type,
+        source,
         asset_id,
+        candidates,
+        selection_reason,
         alt,
         generation_prompt,
+        prompt_file,
     })
 }
 
@@ -3950,6 +4200,33 @@ fn optional_visual_plan_text(
             if normalized.is_empty()
                 || normalized.chars().count() > maximum
                 || normalized.chars().any(char::is_control)
+            {
+                return Err(format!(
+                    "local Python runtime returned an invalid visual {field}"
+                ));
+            }
+            Ok(Some(normalized))
+        }
+        Some(_) => Err(format!(
+            "local Python runtime returned an invalid visual {field}"
+        )),
+    }
+}
+
+fn optional_visual_multiline_text(
+    value: Option<&Value>,
+    field: &str,
+    maximum: usize,
+) -> Result<Option<String>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let normalized = value.trim().to_owned();
+            if normalized.is_empty()
+                || normalized.chars().count() > maximum
+                || normalized
+                    .chars()
+                    .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
             {
                 return Err(format!(
                     "local Python runtime returned an invalid visual {field}"
@@ -4283,6 +4560,32 @@ fn summarize_template_extraction(
     {
         return Err("local Python runtime returned a template with a concrete URL".to_owned());
     }
+    if !response.content_atom_ledger.is_object() {
+        return Err("local Python runtime returned an invalid reference content ledger".to_owned());
+    }
+    let mut phrase_blacklist = Vec::with_capacity(response.phrase_blacklist.len());
+    if response.phrase_blacklist.len() > 48 {
+        return Err(
+            "local Python runtime returned too many protected reference phrases".to_owned(),
+        );
+    }
+    for phrase in response.phrase_blacklist {
+        phrase_blacklist.push(
+            normalize_public_option(Some(phrase), "参考文章禁用表达", 180)?.ok_or_else(|| {
+                "local Python runtime returned an empty protected phrase".to_owned()
+            })?,
+        );
+    }
+    let analysis_version =
+        normalize_public_option(Some(response.analysis_version), "参考模板分析版本", 80)?
+            .ok_or_else(|| "local Python runtime returned an empty analysis version".to_owned())?;
+    if !response
+        .source_fingerprint
+        .strip_prefix("sha256:")
+        .is_some_and(valid_hash)
+    {
+        return Err("local Python runtime returned an invalid source fingerprint".to_owned());
+    }
     let provider = normalize_public_option(Some(response.provider), "provider", 100)?
         .ok_or_else(|| "local Python runtime returned an empty template provider".to_owned())?;
     let model = normalize_public_option(Some(response.model), "model", 200)?
@@ -4298,6 +4601,10 @@ fn summarize_template_extraction(
         fixed_blocks: response.fixed_blocks,
         variables: response.variables,
         usage_instructions: response.usage_instructions,
+        content_atom_ledger: response.content_atom_ledger,
+        phrase_blacklist,
+        analysis_version,
+        source_fingerprint: response.source_fingerprint,
         provider,
         model,
         mocked: response.mocked,
@@ -4892,6 +5199,10 @@ mod tests {
             fixed_blocks: Vec::new(),
             variables: vec!["title".to_owned()],
             usage_instructions: String::new(),
+            content_atom_ledger: Value::Object(Default::default()),
+            phrase_blacklist: Vec::new(),
+            analysis_version: "reference-template.v1".to_owned(),
+            source_fingerprint: format!("sha256:{}", "a".repeat(64)),
             provider: "mock".to_owned(),
             model: "deterministic-mock-v1".to_owned(),
             mocked: true,
@@ -4911,6 +5222,10 @@ mod tests {
             fixed_blocks: Vec::new(),
             variables: Vec::new(),
             usage_instructions: String::new(),
+            content_atom_ledger: Value::Object(Default::default()),
+            phrase_blacklist: Vec::new(),
+            analysis_version: "reference-template.v1".to_owned(),
+            source_fingerprint: format!("sha256:{}", "a".repeat(64)),
             provider: "mock".to_owned(),
             model: "deterministic-mock-v1".to_owned(),
             mocked: true,

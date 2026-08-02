@@ -95,6 +95,17 @@ export interface TemplateFixedBlock {
   position: TemplateFixedBlockPosition;
 }
 
+export type TemplateMode = "scaffold" | "reference";
+
+export interface TemplateContentAtomLedger {
+  claims: string[];
+  facts: string[];
+  examples: string[];
+  quotes: string[];
+  namedEntities: string[];
+  caveats: string[];
+}
+
 export interface MarkdownTemplate {
   id: string;
   name: string;
@@ -108,6 +119,14 @@ export interface MarkdownTemplate {
   variables: string[];
   usageInstructions: string;
   isBuiltIn: boolean;
+  /** Reference templates preserve the source article locally for style analysis. */
+  mode?: TemplateMode;
+  referenceMarkdown?: string;
+  sourceFingerprint?: string;
+  analysisVersion?: string;
+  contentAtomLedger?: TemplateContentAtomLedger;
+  phraseBlacklist?: string[];
+  rightsConfirmed?: boolean;
 }
 
 export interface MediaAsset {

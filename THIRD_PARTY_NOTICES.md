@@ -20,11 +20,16 @@ and safety boundary defined in `packages/platform-sdk`.
 - Project: <https://github.com/JimLiu/baoyu-skills>
 - Reviewed revision: `6b7a2e417500561a5ecdd0b168332f4142584617`
 - License observed at that revision: MIT
-- Use in Open Publisher: the built-in text-only `baoyu-article-illustrator` rule adapts its
-  article-illustration workflow for the local visual-planning Agent
-- Copied code or assets: none; no upstream scripts, providers, or executable entrypoints are bundled
+- Use in Open Publisher: the built-in visual planning Agent follows the upstream article
+  illustration workflow and reads its original Markdown resources at runtime
+- Copied source: a fixed `skills/baoyu-article-illustrator/` documentation snapshot, including
+  its references and `prompts/system.md`, is bundled at
+  `services/agent-runtime/src/open_publisher_runtime/resources/baoyu-article-illustrator/`.
+  It contains no upstream executable entrypoint, provider implementation, or platform adapter.
+- Integrity: `SKILL.md` SHA-256 at the pinned revision is
+  `5f99fc77bdf524fe0cfff36f17844ce6425ae2c45cb139836fe77727dcb65370`.
 
-Copyright (c) 2026 Jim Liu. The included adapted text is available under the MIT License:
+Copyright (c) 2026 Jim Liu. The bundled upstream documentation is available under the MIT License:
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 > associated documentation files (the "Software"), to deal in the Software without restriction,

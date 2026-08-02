@@ -46,7 +46,7 @@ test("canonical Markdown revision validates and unknown fields fail", () => {
   assert.equal(validate({ ...revision, schemaVersion: "2.0" }), false);
 });
 
-test("template extraction keeps source input private and returns an editable placeholder template", () => {
+test("template extraction keeps source input private and returns a high-fidelity reference analysis", () => {
   const schemaId = "https://schemas.openpublisher.dev/v1/template-extraction.schema.json";
   const request = ajv.compile({ $ref: `${schemaId}#/$defs/TemplateExtractionRequest` });
   const response = ajv.compile({ $ref: `${schemaId}#/$defs/TemplateExtractionResponse` });
@@ -60,6 +60,12 @@ test("template extraction keeps source input private and returns an editable pla
     description: "适合按结论、背景和实践展开的文章。",
     category: "技术文章",
     markdown: "# {{title}}\n\n{{lead}}\n\n## {{section_heading}}\n\n{{section_content}}",
+    content_atom_ledger: {
+      claims: [], facts: [], examples: [], quotes: [], named_entities: [], caveats: [],
+    },
+    phrase_blacklist: [],
+    analysis_version: "reference-template.v1",
+    source_fingerprint: `sha256:${"a".repeat(64)}`,
     provider: "mock",
     model: "deterministic-mock-v1",
     mocked: true,

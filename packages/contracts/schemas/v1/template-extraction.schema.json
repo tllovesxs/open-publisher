@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.openpublisher.dev/v1/template-extraction.schema.json",
   "title": "TemplateExtraction",
-  "description": "Authenticated local-sidecar contract for turning a source Markdown article into an editable, reusable Markdown template. Source Markdown is input-only and must never be returned.",
+  "description": "Authenticated local-sidecar contract for analysing a source Markdown article into a high-fidelity reference template. Source Markdown is input-only and must never be returned.",
   "$defs": {
     "TemplateExtractionRequest": {
       "type": "object",
@@ -27,6 +27,10 @@
         "description",
         "category",
         "markdown",
+        "content_atom_ledger",
+        "phrase_blacklist",
+        "analysis_version",
+        "source_fingerprint",
         "provider",
         "model",
         "mocked"
@@ -56,6 +60,60 @@
           "maxLength": 32768,
           "pattern": "\\{\\{[a-z][a-z0-9_]*\\}\\}"
         },
+        "style_profile": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 400 }
+        },
+        "structure_profile": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 400 }
+        },
+        "layout_profile": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "boolean"], "maxLength": 400 }
+        },
+        "fixed_blocks": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "object" }
+        },
+        "variables": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "maxLength": 80 }
+        },
+        "usage_instructions": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "content_atom_ledger": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claims": { "$ref": "#/$defs/AtomList" },
+            "facts": { "$ref": "#/$defs/AtomList" },
+            "examples": { "$ref": "#/$defs/AtomList" },
+            "quotes": { "$ref": "#/$defs/AtomList" },
+            "named_entities": { "$ref": "#/$defs/AtomList" },
+            "caveats": { "$ref": "#/$defs/AtomList" }
+          }
+        },
+        "phrase_blacklist": {
+          "type": "array",
+          "maxItems": 48,
+          "items": { "type": "string", "minLength": 1, "maxLength": 180 }
+        },
+        "analysis_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "source_fingerprint": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 80,
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
         "provider": {
           "type": "string",
           "minLength": 1,
@@ -71,6 +129,15 @@
         "mocked": {
           "type": "boolean"
         }
+      }
+    },
+    "AtomList": {
+      "type": "array",
+      "maxItems": 48,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 320
       }
     }
   }

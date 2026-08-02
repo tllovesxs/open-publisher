@@ -150,7 +150,7 @@ describe("desktopBridge browser preview boundary", () => {
       sourceMarkdown: "# 原始文章\n\n## 一段结构\n\n具体事实和链接不应保留。",
     });
     expect(template).toMatchObject({
-      name: "文章结构模板",
+      name: "高保真参考模板",
       provider: "mock",
       mocked: true,
     });

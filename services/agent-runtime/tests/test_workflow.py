@@ -1,6 +1,8 @@
+import json
 import threading
 import time
 from contextlib import contextmanager
+from urllib.parse import quote
 
 import pytest
 from sqlalchemy import select
@@ -142,7 +144,7 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         for event_type, node_id in node_events
         if event_type == "run.node_completed"
     }
-    assert started_nodes == {"draft", "risk"}
+    assert started_nodes == {"draft", "reference-safety", "risk"}
     assert completed_nodes == started_nodes
     assert all(event_type != "run.node_failed" for event_type, _ in node_events)
     draft_checkpoints = [
@@ -166,6 +168,72 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         "max_parallel": 4,
         "max_wall_clock_seconds": 300,
     }
+
+
+def test_reference_template_keeps_source_private_and_applies_style_context(client) -> None:
+    reference_source = (
+        "# 参考文章\n\n独特原文表达不应出现在新文章里。\n\n"
+        "## 原文案例\n\n原始案例细节。"
+    )
+    metadata = quote(
+        json.dumps(
+            {
+                "source_fingerprint": "sha256:" + "a" * 64,
+                "style_profile": {"tone": "直接、有判断"},
+                "structure_profile": {"openingPattern": "先抛出误区"},
+                "layout_profile": {"useLists": True},
+                "content_atom_ledger": {"examples": ["原文案例"]},
+                "phrase_blacklist": ["独特原文表达"],
+            },
+            ensure_ascii=False,
+        )
+    )
+    seed = (
+        "# 新文章\n\n## 创作要求\n\n- 主题：新的实践主题\n\n"
+        f"<!-- open-publisher-reference-template:v1:{metadata} -->\n"
+        "<open-publisher-reference-template-1>\n"
+        f"{reference_source}\n"
+        "</open-publisher-reference-template-1>"
+    )
+    provider = RecordingTextProvider()
+    client.app.state.container.model_access.text_provider = provider
+    article = client.post(
+        "/api/v1/articles", json={"title": "新文章", "markdown": seed}
+    ).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "topic": "新的实践主题",
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    draft_request = next(request for request in provider.requests if request.purpose == "draft")
+    assert "<reference_article>" in draft_request.prompt
+    assert reference_source in draft_request.prompt
+    assert "open-publisher-reference-template:v1" not in draft_request.prompt
+    output = response.json()
+    with client.app.state.container.database.session() as session:
+        repository = SqlAlchemyRuntimeRepository(session)
+        artifacts = ArtifactService(repository, client.app.state.container.blob_store)
+        final_markdown = artifacts.read_text(output["state_json"]["raw_draft_artifact_id"])
+        risk_report = artifacts.read_text(output["state_json"]["risk_artifact_id"])
+    assert "独特原文表达不应出现在新文章里" not in final_markdown
+    assert "高保真参考检查" in risk_report
 
 
 def test_active_run_endpoint_exposes_durable_node_activity(client, article_payload) -> None:
@@ -294,23 +362,23 @@ def test_visual_agent_receives_selected_asset_text_metadata_only(
     visual_request = next(
         request for request in provider.requests if request.purpose == "visual"
     )
-    assert "三层产品架构图" in visual_request.prompt
-    assert "展示采集、编排、发布三层之间的单向数据流。" in visual_request.prompt
+    selection_request = next(
+        request
+        for request in provider.requests
+        if request.purpose == "visual-material-selection"
+    )
+    assert "三层产品架构图" in selection_request.prompt
+    assert "展示采集、编排、发布三层之间的单向数据流。" in selection_request.prompt
     assert "data:image" not in visual_request.prompt
-    assert visual_request.context["visual_composition"] == {
-        "mode": "fixed",
-        "target_count": 1,
-        "assets": [
-            {
-                "id": "media-architecture",
-                "alt": "三层产品架构图",
-                "description": "展示采集、编排、发布三层之间的单向数据流。",
-            }
-        ],
+    assert "data:image" not in selection_request.prompt
+    assert visual_request.context["visual_composition"]["assets"][0]["id"] == "media-architecture"
+    assert run["state_json"]["visual_composition_plan"]["placements"][0]["source"] in {
+        "existing_asset",
+        "generate",
     }
-    assert run["state_json"]["visual_composition_plan"]["placements"][0][
-        "asset_id"
-    ] == "media-architecture"
+    assert "visual_outline_artifact_id" in run["state_json"]
+    assert "visual_material_selection_artifact_id" in run["state_json"]
+    assert "visual_prompts_artifact_id" in run["state_json"]
 
 
 def test_run_can_pause_and_resume_for_approval(client, article_payload) -> None:
@@ -411,7 +479,7 @@ def test_langgraph_fanout_respects_max_parallel(client, article_payload) -> None
             "revision_id": article["revision"]["id"],
             "policy": {
                 "disabled_optional_node_ids": [],
-                "max_model_calls": 6,
+                "max_model_calls": 7,
                 "max_parallel": 2,
             },
         },
@@ -459,7 +527,7 @@ def test_wall_clock_budget_fails_after_preserving_consumed_call_claim(
 
 def test_preset_definition_matches_required_chain_and_fanout(client) -> None:
     current = client.get("/api/v1/workflows").json()[0]
-    assert current["version"] == "1.2.0"
+    assert current["version"] == "1.3.0"
     workflow = current["definition_json"]
     nodes = {node["id"]: node for node in workflow["nodes"]}
     assert workflow["required_model_calls"] == 6
@@ -468,6 +536,14 @@ def test_preset_definition_matches_required_chain_and_fanout(client) -> None:
     assert nodes["draft"]["skippable"] is False
     assert nodes["risk"]["default_enabled"] is True
     assert nodes["risk"]["type"] == "rule_check"
+    assert nodes["reference-safety"] == {
+        "id": "reference-safety",
+        "type": "rule_check",
+        "mode": "conditional_model_rewrite",
+        "required": True,
+        "skippable": False,
+        "default_enabled": True,
+    }
     for node_id in ("research", "outline", "natural-style", "review", "visual"):
         assert nodes[node_id]["default_enabled"] is False
         assert nodes[node_id]["required"] is False
@@ -475,9 +551,10 @@ def test_preset_definition_matches_required_chain_and_fanout(client) -> None:
     assert nodes["review"]["mode"] == "read_only"
     assert nodes["risk"]["mode"] == "read_only"
     assert nodes["visual"]["mode"] == "read_only"
-    assert ["natural-style", "review"] in workflow["edges"]
-    assert ["natural-style", "risk"] in workflow["edges"]
-    assert ["natural-style", "visual"] in workflow["edges"]
+    assert ["natural-style", "reference-safety"] in workflow["edges"]
+    assert ["reference-safety", "review"] in workflow["edges"]
+    assert ["reference-safety", "risk"] in workflow["edges"]
+    assert ["reference-safety", "visual"] in workflow["edges"]
     assert workflow["joins"] == [
         {
             "target": "approval",
@@ -499,13 +576,13 @@ def test_demo_uses_current_preset_when_a_legacy_definition_exists(client) -> Non
         )
 
     workflows = client.get("/api/v1/workflows").json()
-    assert [workflow["version"] for workflow in workflows[:2]] == ["1.2.0", "1.0.0"]
+    assert [workflow["version"] for workflow in workflows[:2]] == ["1.3.0", "1.0.0"]
     response = client.post(
         "/api/v1/demo/complete",
         json={"platforms": ["csdn"]},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["run"]["workflow_snapshot_json"]["version"] == "1.2.0"
+    assert response.json()["run"]["workflow_snapshot_json"]["version"] == "1.3.0"
 
 
 def test_workflow_has_deterministic_sequential_fallback(
@@ -591,6 +668,7 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
         "enabled_node_ids": ["draft"],
         "disabled_optional_node_ids": disabled,
         "required_model_calls": 1,
+        "reference_safety_reservation": 0,
     }
     assert run["workflow_snapshot_json"]["policy"][
         "disabled_optional_node_ids"
@@ -694,9 +772,9 @@ def test_customized_budget_still_rejects_less_than_enabled_call_count(
     run = response.json()
     assert run["status"] == "failed"
     assert "model-call budget" in run["error"]
-    assert "(1 < 2)" in run["error"]
+    assert "(1 < 3)" in run["error"]
     assert provider.calls == 0
-    assert run["workflow_snapshot_json"]["node_selection"]["required_model_calls"] == 2
+    assert run["workflow_snapshot_json"]["node_selection"]["required_model_calls"] == 3
     assert run["state_json"]["budget"]["model_calls_reserved"] == 0
 
 

@@ -19,6 +19,7 @@ import {
 } from "react";
 import type {
   MarkdownTemplate,
+  TemplateContentAtomLedger,
   TemplateFixedBlock,
   TemplateFixedBlockPosition,
 } from "../types";
@@ -99,6 +100,7 @@ export function TemplatesPage({
   const [extractError, setExtractError] = useState<string | null>(null);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
   const [sourceFileName, setSourceFileName] = useState<string | null>(null);
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [query, setQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceInputRef = useRef<HTMLTextAreaElement>(null);
@@ -115,6 +117,7 @@ export function TemplatesPage({
   const sourceCharacterCount = [...sourceMarkdown].length;
   const canExtract = sourceMarkdown.trim().length > 0
     && sourceCharacterCount <= MAX_SOURCE_MARKDOWN_CHARACTERS
+    && rightsConfirmed
     && !extracting;
 
   useEffect(() => {
@@ -184,7 +187,10 @@ export function TemplatesPage({
 
   const extractTemplate = async () => {
     if (!canExtract) {
-      setExtractError("请先粘贴或导入一篇不超过 60000 字符的 Markdown 文章。");
+      setExtractError(rightsConfirmed
+        ? "请先粘贴或导入一篇不超过 60000 字符的 Markdown 文章。"
+        : "请确认你拥有这篇文章的使用授权后再创建参考模板。",
+      );
       return;
     }
     setExtracting(true);
@@ -196,11 +202,29 @@ export function TemplatesPage({
       setExtractionOpen(false);
       setSourceMarkdown("");
       setSourceFileName(null);
+      setRightsConfirmed(false);
     } catch (error) {
       setExtractError(`提取失败：${errorMessage(error)}`);
     } finally {
       setExtracting(false);
     }
+  };
+
+  const updateLedger = (
+    key: keyof TemplateContentAtomLedger,
+    value: string,
+  ) => {
+    if (!editing) return;
+    const current = editing.contentAtomLedger ?? {
+      claims: [], facts: [], examples: [], quotes: [], namedEntities: [], caveats: [],
+    };
+    setEditing({
+      ...editing,
+      contentAtomLedger: {
+        ...current,
+        [key]: value.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, 48),
+      },
+    });
   };
 
   return (
@@ -222,7 +246,7 @@ export function TemplatesPage({
           </button>
           <button className="button button--primary" onClick={openExtraction} type="button">
             <Sparkles aria-hidden="true" size={16} />
-            从文章提取
+            创建参考模板
           </button>
         </div>
       </header>
@@ -280,14 +304,20 @@ export function TemplatesPage({
                 <Pencil size={16} />
               </button>
             </header>
-            <pre>{selected.markdown}</pre>
+            {selected.mode === "reference" && selected.referenceMarkdown ? (
+              <details className="template-preview__reference">
+                <summary>完整参考原文（仅保存在本机）</summary>
+                <pre>{selected.referenceMarkdown}</pre>
+              </details>
+            ) : <pre>{selected.markdown}</pre>}
             <div className="template-preview__profiles">
+              <span>{selected.mode === "reference" ? "高保真参考" : "结构模板"}</span>
               <span>文风：{selected.styleProfile.tone || "未设置"}</span>
               <span>结构：{selected.structureProfile.sectionPattern || "按 Markdown 骨架"}</span>
               <span>固定片段：{selected.fixedBlocks.filter((block) => block.enabled && block.content.trim()).length} 个</span>
             </div>
             <footer>
-              <span>{selected.isBuiltIn ? "内置模板" : "自定义模板"}</span>
+              <span>{selected.isBuiltIn ? "内置模板" : selected.mode === "reference" ? "本地参考模板" : "自定义模板"}</span>
               <button className="button button--primary" onClick={onStartCreating} type="button">
                 <CopyPlus aria-hidden="true" size={16} />
                 用此模板创作
@@ -309,8 +339,8 @@ export function TemplatesPage({
           <section className="template-editor template-extractor">
             <header>
               <div>
-                <span className="page-kicker">AI 模板提取</span>
-                <h2 id="template-extraction-title">从文章提取模板</h2>
+                <span className="page-kicker">高保真参考模板</span>
+                <h2 id="template-extraction-title">从文章分析写法</h2>
               </div>
               <button
                 aria-label="关闭文章提取"
@@ -324,7 +354,7 @@ export function TemplatesPage({
             </header>
             <div className="template-editor__body template-extractor__body">
               <p id="template-extraction-description" className="template-extractor__note">
-                原文只用于提取结构；结果会在保存前打开供你检查。
+                完整原文只保存在本机；AI 只提取可编辑的文风、结构和排版蓝图，不将原文变成占位符。
               </p>
               <div className="template-extractor__actions">
                 <input
@@ -368,6 +398,15 @@ export function TemplatesPage({
                   <span className="template-extractor__limit">内容超出限制</span>
                 )}
               </div>
+              <label className="template-extractor__rights">
+                <input
+                  checked={rightsConfirmed}
+                  disabled={extracting}
+                  onChange={(event) => setRightsConfirmed(event.target.checked)}
+                  type="checkbox"
+                />
+                我确认拥有这篇文章的使用授权，且不会将原文用于未经许可的复制发布。
+              </label>
               {extracting && (
                 <div aria-live="polite" className="template-extractor__loading">
                   <LoaderCircle aria-hidden="true" className="is-spinning" size={16} />
@@ -382,7 +421,7 @@ export function TemplatesPage({
               </button>
               <button className="button button--primary" disabled={!canExtract} onClick={() => void extractTemplate()} type="button">
                 {extracting ? <LoaderCircle aria-hidden="true" className="is-spinning" size={16} /> : <Sparkles aria-hidden="true" size={16} />}
-                {extractError ? "重试提取" : "提取为模板"}
+                {extractError ? "重新分析" : "分析参考模板"}
               </button>
             </footer>
           </section>
@@ -401,10 +440,10 @@ export function TemplatesPage({
             <header>
               <div>
                 <span className="page-kicker">
-                  {editorSource === "extracted" ? "AI 提取结果" : "Markdown 模板"}
+                  {editorSource === "extracted" ? "AI 分析结果" : editing.mode === "reference" ? "高保真参考模板" : "Markdown 模板"}
                 </span>
                 <h2 id="template-editor-title">
-                  {editorSource === "extracted" ? "审核并保存模板" : "编辑模板"}
+                  {editorSource === "extracted" ? "审核并保存参考模板" : "编辑模板"}
                 </h2>
               </div>
               <button
@@ -440,14 +479,22 @@ export function TemplatesPage({
                   value={editing.description}
                 />
               </label>
-              <label className="field">
-                <span>Markdown 正文</span>
-                <textarea
-                  onChange={(event) => setEditing({ ...editing, markdown: event.target.value })}
-                  rows={16}
-                  value={editing.markdown}
-                />
-              </label>
+              {editing.mode === "reference" && editing.referenceMarkdown ? (
+                <section className="template-reference-source">
+                  <span>完整参考原文</span>
+                  <p>原文作为高保真写法参考保留；请在下方编辑蓝图和固定片段，不会改写这份原文。</p>
+                  <pre>{editing.referenceMarkdown}</pre>
+                </section>
+              ) : (
+                <label className="field">
+                  <span>Markdown 正文</span>
+                  <textarea
+                    onChange={(event) => setEditing({ ...editing, markdown: event.target.value })}
+                    rows={16}
+                    value={editing.markdown}
+                  />
+                </label>
+              )}
               <fieldset className="template-editor__fieldset">
                 <legend>文风规范</legend>
                 <div className="form-grid form-grid--two">
@@ -512,6 +559,44 @@ export function TemplatesPage({
                 <span>使用说明</span>
                 <textarea maxLength={4000} onChange={(event) => setEditing({ ...editing, usageInstructions: event.target.value })} placeholder="告诉 Agent 哪些规则必须保持，以及哪些内容需要替换。" rows={3} value={editing.usageInstructions} />
               </label>
+              {editing.mode === "reference" && (
+                <fieldset className="template-editor__fieldset">
+                  <legend>原创保护</legend>
+                  <p className="template-extractor__note">这些内容用于提醒写作 Agent 不可挪用。每行一项，可以按你的判断删改。</p>
+                  <div className="form-grid form-grid--two">
+                    {([
+                      ["claims", "原文观点"],
+                      ["facts", "原文事实与数据"],
+                      ["examples", "原文案例"],
+                      ["quotes", "原文引语"],
+                      ["namedEntities", "人物、产品与机构"],
+                      ["caveats", "原文限制条件"],
+                    ] as const).map(([key, label]) => (
+                      <label className="field" key={key}>
+                        <span>{label}</span>
+                        <textarea
+                          onChange={(event) => updateLedger(key, event.target.value)}
+                          placeholder="每行一项"
+                          rows={3}
+                          value={(editing.contentAtomLedger?.[key] ?? []).join("\n")}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <label className="field">
+                    <span>禁止复用表达</span>
+                    <textarea
+                      onChange={(event) => setEditing({
+                        ...editing,
+                        phraseBlacklist: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, 48),
+                      })}
+                      placeholder="每行一条标志性表达"
+                      rows={4}
+                      value={(editing.phraseBlacklist ?? []).join("\n")}
+                    />
+                  </label>
+                </fieldset>
+              )}
               <fieldset className="template-editor__fieldset">
                 <legend>固定片段</legend>
                 <p className="template-extractor__note">固定片段由程序在文章生成后插入，不会被模型改写或删除。可直接填写项目介绍、项目地址和求 Star 文案；{"{{title}}"}、{"{{topic}}"} 会自动替换。</p>

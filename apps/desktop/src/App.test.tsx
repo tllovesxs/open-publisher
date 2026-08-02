@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
-import App, { applyTemplateFixedBlocks, normalizeTemplate } from "./App";
+import App, { applyTemplateFixedBlocks, buildCreationSeed, normalizeTemplate } from "./App";
 import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
   type DesktopBridge,
@@ -76,6 +76,42 @@ describe("desktop product flow", () => {
     const once = applyTemplateFixedBlocks("# 新文章\n\n正文", withBlock, article, request);
     expect(once).toContain("项目：新文章");
     expect(applyTemplateFixedBlocks(once, withBlock, article, request).match(/项目：新文章/g)).toHaveLength(1);
+  });
+
+  it("keeps the complete reference article in a local high-fidelity creation seed", () => {
+    const template = normalizeTemplate({
+      id: "reference-template-1",
+      name: "高保真模板",
+      description: "参考文章",
+      category: "参考写作",
+      markdown: "# {{title}}\n\n{{lead}}",
+      isBuiltIn: false,
+      mode: "reference",
+      referenceMarkdown: "# 参考原文\n\n独特的参考表达只用于分析。",
+      sourceFingerprint: `sha256:${"a".repeat(64)}`,
+      rightsConfirmed: true,
+      phraseBlacklist: ["独特的参考表达"],
+      contentAtomLedger: { claims: [], facts: [], examples: [], quotes: [], namedEntities: [], caveats: [] },
+    });
+    const seed = buildCreationSeed({
+      topic: "新的写作主题",
+      title: "",
+      references: "",
+      contentType: "技术文章",
+      tone: "专业清晰",
+      length: "约 3,000 字",
+      platforms: [],
+      preset: "standard",
+      disabledNodeIds: [],
+      template,
+      imageAssets: [],
+      imagePlan: { mode: "none", targetCount: 0 },
+      webSearchMode: "off",
+    });
+
+    expect(seed).toContain("open-publisher-reference-template:v1:");
+    expect(seed).toContain("独特的参考表达只用于分析。");
+    expect(seed).toContain("phrase_blacklist");
   });
 
   it("uses the built-in Baoyu article-illustration Skill for the fixed visual workflow", () => {
@@ -295,13 +331,31 @@ describe("desktop product flow", () => {
         return {
           ...result,
           visualPlan: {
+            sourceRevisionHash: result.outputContentHash,
             targetCount: 1,
+            settings: {
+              type: "framework",
+              style: "sketch-notes",
+              palette: "macaron",
+              generation_batch_size: "4",
+            },
+            needsConfirmation: false,
             placements: [
               {
+                id: "illustration-1",
+                blockId: null,
+                anchorExcerpt: null,
                 afterHeading: null,
+                purpose: "解释可靠写作流程。",
+                visualContent: "可靠写作流程架构图。",
+                visualType: "framework",
+                source: "generate",
                 assetId: null,
+                candidates: [],
+                selectionReason: "没有适合的素材。",
                 alt: "自动生成的架构说明图",
                 generationPrompt: "展示可靠写作流程的简洁架构图，不含文字。",
+                promptFile: "prompts/01-framework-writing-flow.md",
               },
             ],
           },
@@ -323,11 +377,11 @@ describe("desktop product flow", () => {
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         disabledOptionalNodeIds: expect.not.arrayContaining(["visual"]),
-        visualComposition: {
+        visualComposition: expect.objectContaining({
           mode: "auto",
           targetCount: 0,
           assets: [],
-        },
+        }),
       }),
     );
     expect(generateImage).toHaveBeenCalledWith({
@@ -347,6 +401,66 @@ describe("desktop product flow", () => {
         markdown: expect.stringContaining("![自动生成的架构说明图]"),
       }),
     );
+  });
+
+  it("waits for explicit visual-plan confirmation before starting image generation", async () => {
+    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
+    vi.spyOn(desktopBridge, "runWorkflow").mockImplementation(async (request) => {
+      const result = await originalRunWorkflow(request);
+      return {
+        ...result,
+        visualPlan: {
+          sourceRevisionHash: result.outputContentHash,
+          targetCount: 1,
+          settings: {
+            type: "framework",
+            style: "sketch-notes",
+            palette: "macaron",
+            generation_batch_size: "4",
+          },
+          needsConfirmation: true,
+          placements: [
+            {
+              id: "illustration-1",
+              blockId: "block-1-demo",
+              anchorExcerpt: "确认后才会开始执行图片生成。",
+              afterHeading: "确认流程",
+              purpose: "说明作者确认是配图执行的前置条件。",
+              visualContent: "作者确认后启动图片生成的流程图。",
+              visualType: "flowchart",
+              source: "generate" as const,
+              assetId: null,
+              candidates: [],
+              selectionReason: "已选素材均无法表达确认后的执行状态。",
+              alt: "确认后启动配图生成的流程图",
+              generationPrompt: "展示确认后再启动图片生成的简洁流程图，不含文字。",
+              promptFile: "prompts/01-confirmed-visual-flow.md",
+            },
+          ],
+        },
+      };
+    });
+    const generateImage = vi.spyOn(desktopBridge, "generateImage");
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "配图先确认再执行" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "确认正文配图方案" }),
+    ).toBeVisible();
+    expect(generateImage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认并继续" }));
+    await waitFor(() => expect(generateImage).toHaveBeenCalledTimes(1));
+    expect(generateImage).toHaveBeenCalledWith({
+      prompt: "展示确认后再启动图片生成的简洁流程图，不含文字。",
+      size: "1536x1024",
+      model: "test-image-model",
+    });
   });
 
   it("uses selected local media with its description before asking the image model", async () => {
@@ -393,7 +507,7 @@ describe("desktop product flow", () => {
     await screen.findByText(/文章已生成 · 修订/);
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
-        visualComposition: {
+        visualComposition: expect.objectContaining({
           mode: "fixed",
           targetCount: 1,
           assets: [
@@ -403,7 +517,7 @@ describe("desktop product flow", () => {
               description: "展示采集、编排、发布三层之间的单向数据流，适合放在架构小节。",
             },
           ],
-        },
+        }),
       }),
     );
     expect(generateImage).not.toHaveBeenCalled();
@@ -473,22 +587,22 @@ describe("desktop product flow", () => {
     await waitForNativeRuntime();
     fireEvent.click(screen.getByRole("button", { name: "模板" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "从文章提取" }));
+    fireEvent.click(await screen.findByRole("button", { name: "创建参考模板" }));
     const source = await screen.findByLabelText("原始 Markdown");
     fireEvent.change(source, {
       target: {
         value: "# Wandao 体积下降 42%\n\n## 改动\n\n具体版本与链接不应进入模板。",
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: "提取为模板" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /我确认拥有这篇文章的使用授权/ }));
+    fireEvent.click(screen.getByRole("button", { name: "分析参考模板" }));
 
-    expect(await screen.findByRole("heading", { name: "审核并保存模板" })).toBeVisible();
-    const markdown = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
-    expect(markdown.value).toContain("{{title}}");
-    expect(markdown.value).not.toContain("Wandao");
+    expect(await screen.findByRole("heading", { name: "审核并保存参考模板" })).toBeVisible();
+    expect(screen.getByText("完整参考原文")).toBeVisible();
+    expect(screen.getByText(/Wandao 体积下降 42%/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
 
-    expect(await screen.findByRole("heading", { name: "文章结构模板" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "高保真参考模板" })).toBeVisible();
   });
 
   it("configures and tests the model from settings without rendering the secret", async () => {

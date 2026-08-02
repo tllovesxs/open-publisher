@@ -24,7 +24,7 @@ class StaticTextProvider:
         )
 
 
-def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) -> None:
+def test_template_extraction_creates_reference_analysis_without_echoing_source(client) -> None:
     source = (
         "# Wandao 体积下降 42%\n\n"
         "https://example.invalid/release\n\n"
@@ -39,11 +39,22 @@ def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) ->
     assert payload["provider"] == "mock"
     assert payload["mocked"] is True
     assert "{{title}}" in payload["markdown"]
-    assert payload["style_profile"]["tone"] == ""
+    assert payload["style_profile"]["tone"] == "专业、清晰"
     assert "title" in payload["variables"]
     assert "Wandao" not in payload["markdown"]
     assert "example.invalid" not in payload["markdown"]
     assert "source_markdown" not in payload
+    assert payload["content_atom_ledger"] == {
+        "claims": [],
+        "facts": [],
+        "examples": [],
+        "quotes": [],
+        "named_entities": [],
+        "caveats": [],
+    }
+    assert payload["phrase_blacklist"] == []
+    assert payload["analysis_version"] == "reference-template.v1"
+    assert payload["source_fingerprint"].startswith("sha256:")
     assert set(payload) == {
         "name",
         "description",
@@ -55,6 +66,10 @@ def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) ->
         "fixed_blocks",
         "variables",
         "usage_instructions",
+        "content_atom_ledger",
+        "phrase_blacklist",
+        "analysis_version",
+        "source_fingerprint",
         "provider",
         "model",
         "mocked",

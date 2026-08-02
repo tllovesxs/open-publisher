@@ -17,11 +17,14 @@ WorkflowNodeId = Literal[
     "draft",
     "natural-style",
     "review",
+    "reference-safety",
     "risk",
     "visual",
 ]
 
 VisualImageMode = Literal["none", "auto", "fixed"]
+VisualAssetScope = Literal["selected_only", "library", "none"]
+VisualDensity = Literal["minimal", "balanced", "per-section", "rich"]
 WebSearchMode = Literal["off", "auto", "required"]
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,99}$")
@@ -138,6 +141,15 @@ class VisualCompositionRequest(BaseModel):
     mode: VisualImageMode = "none"
     target_count: int = Field(default=0, ge=0, le=6)
     assets: list[VisualAssetInstruction] = Field(default_factory=list, max_length=6)
+    # The visual Agent must not search personal media beyond the explicit scope.
+    asset_scope: VisualAssetScope = "selected_only"
+    preferred_type: str = Field(default="infographic", min_length=1, max_length=32)
+    density: VisualDensity = "balanced"
+    style: str = Field(default="sketch-notes", min_length=1, max_length=80)
+    palette: str | None = Field(default="macaron", max_length=80)
+    preferred_image_backend: str = Field(default="auto", min_length=1, max_length=80)
+    generation_batch_size: int = Field(default=4, ge=1, le=8)
+    skip_confirmation: bool = False
 
     @field_validator("assets")
     @classmethod
@@ -156,6 +168,8 @@ class VisualCompositionRequest(BaseModel):
             raise ValueError("visual target_count must be zero when mode is auto")
         if self.mode == "fixed" and not 1 <= self.target_count <= 6:
             raise ValueError("visual target_count must be between 1 and 6 when mode is fixed")
+        if self.asset_scope == "none" and self.assets:
+            raise ValueError("visual assets must be empty when asset_scope is none")
 
 
 class RunPolicy(BaseModel):

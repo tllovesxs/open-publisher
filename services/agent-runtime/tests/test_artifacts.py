@@ -58,6 +58,7 @@ def test_identical_workflow_outputs_keep_per_run_artifact_lineage(
                 "article_id": article["article"]["id"],
                 "revision_id": article["revision"]["id"],
                 "topic": "相同输入的独立运行",
+                "policy": {"disabled_optional_node_ids": []},
             },
         )
         assert response.status_code == 201, response.text

@@ -46,6 +46,7 @@ const nodeLabel: Record<WorkflowNodeId, string> = {
   outline: "大纲规划",
   draft: "正文撰写",
   "natural-style": "自然表达",
+  "reference-safety": "原创表达检查",
   review: "内容审阅",
   risk: "风险检查",
   visual: "配图规划",
@@ -60,6 +61,9 @@ const artifactLabel: Record<string, string> = {
   "workflow.natural-style-patch": "自然表达修改",
   "workflow.review-report": "审阅报告",
   "workflow.risk-report": "发布前检查",
+  "workflow.visual-outline": "配图大纲",
+  "workflow.visual-material-selection": "素材选择记录",
+  "workflow.visual-prompts": "生图提示词",
   "workflow.visual-plan": "配图计划",
 };
 
@@ -76,6 +80,12 @@ function eventLabel(event: WorkflowActivityEvent) {
       return `${node}已跳过`;
     case "run.node_tool_called":
       return "正在检索公开来源";
+    case "run.node_precheck":
+      return "正在检查配图设置和素材范围";
+    case "run.node_outline_saved":
+      return "配图大纲已保存，正在匹配素材";
+    case "run.node_prompts_saved":
+      return "生图提示词已保存，等待确认";
     case "run.queued":
       return "等待本地运行时启动";
     case "run.started":
@@ -108,7 +118,7 @@ function eventIcon(event: WorkflowActivityEvent) {
   if (event.eventType === "run.node_completed" || event.eventType === "run.completed") return Check;
   if (event.nodeId === "draft") return FileText;
   if (event.nodeId === "visual") return Image;
-  if (event.nodeId === "review" || event.nodeId === "risk") return ShieldCheck;
+  if (event.nodeId === "review" || event.nodeId === "reference-safety" || event.nodeId === "risk") return ShieldCheck;
   if (event.nodeId === "research" || event.nodeId === "outline") return Sparkles;
   return LoaderCircle;
 }

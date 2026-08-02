@@ -83,6 +83,10 @@ class TemplateExtractionResponse(ApiModel):
     fixed_blocks: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
     variables: list[str] = Field(default_factory=list, max_length=64)
     usage_instructions: str = Field(default="", max_length=4_000)
+    content_atom_ledger: dict[str, list[str]] = Field(default_factory=dict)
+    phrase_blacklist: list[str] = Field(default_factory=list, max_length=48)
+    analysis_version: str = Field(min_length=1, max_length=80)
+    source_fingerprint: str = Field(min_length=8, max_length=80)
     provider: str = Field(min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=200)
     mocked: bool

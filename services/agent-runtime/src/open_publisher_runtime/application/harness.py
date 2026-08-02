@@ -17,6 +17,7 @@ from open_publisher_runtime.domain.entities import (
 from open_publisher_runtime.domain.enums import ApprovalStatus, RunStatus
 from open_publisher_runtime.domain.policies import RunPolicy
 from open_publisher_runtime.workflows.preset import (
+    REFERENCE_TEMPLATE_MARKER,
     PresetArticleWorkflow,
     PresetWorkflowInput,
     preset_definition,
@@ -31,6 +32,9 @@ WORKFLOW_ARTIFACT_STATE_KEYS = (
     "review_artifact_id",
     "risk_artifact_id",
     "visual_plan_artifact_id",
+    "visual_outline_artifact_id",
+    "visual_material_selection_artifact_id",
+    "visual_prompts_artifact_id",
 )
 
 
@@ -63,7 +67,7 @@ NodeEventRecorder = Callable[[str, str, str, dict[str, object] | None], None]
 
 class WorkflowService:
     PRESET_NAME = "mock-article"
-    PRESET_VERSION = "1.2.0"
+    PRESET_VERSION = "1.3.0"
 
     def __init__(self, repository: RuntimeRepository) -> None:
         self.repository = repository
@@ -174,9 +178,13 @@ class RunController:
         enabled_model_node_ids = self.workflow_runner.enabled_model_node_ids(
             disabled_optional_node_ids
         )
-        required_model_calls = self.workflow_runner.required_model_calls_for(
+        base_required_model_calls = self.workflow_runner.required_model_calls_for(
             disabled_optional_node_ids
         )
+        reference_safety_reservation = int(
+            REFERENCE_TEMPLATE_MARKER in revision.markdown
+        )
+        required_model_calls = base_required_model_calls + reference_safety_reservation
         run = WorkflowRun(
             workflow_id=workflow.id,
             article_id=article.id,
@@ -198,6 +206,7 @@ class RunController:
                     "enabled_node_ids": list(enabled_model_node_ids),
                     "disabled_optional_node_ids": list(disabled_optional_node_ids),
                     "required_model_calls": required_model_calls,
+                    "reference_safety_reservation": reference_safety_reservation,
                 },
             },
             state_json={
@@ -286,7 +295,9 @@ class RunController:
                 ),
             )
             elapsed_seconds = monotonic() - workflow_started
-            budget_state["model_calls_used"] = required_model_calls
+            budget_state["model_calls_used"] = (
+                base_required_model_calls + int(output.reference_safety_called)
+            )
             run.state_json = {**run.state_json, "budget": budget_state}
             self.repository.update_run(run)
             # Preserve consumed budget even if later artifact validation or the deadline fails.
@@ -307,6 +318,7 @@ class RunController:
                 "enabled_node_ids": list(enabled_model_node_ids),
                 "disabled_optional_node_ids": list(disabled_optional_node_ids),
                 "required_model_calls": required_model_calls,
+                "reference_safety_called": output.reference_safety_called,
                 "input_revision_hash": revision.content_hash,
                 "budget": budget_state,
             }
@@ -338,8 +350,7 @@ class RunController:
                     kind="workflow.web-sources",
                     value={
                         "sources": [
-                            source.model_dump(mode="json")
-                            for source in output.source_evidence
+                            source.model_dump(mode="json") for source in output.source_evidence
                         ]
                     },
                     metadata=artifact_metadata,
@@ -360,9 +371,7 @@ class RunController:
                     media_type="text/markdown; charset=utf-8",
                     metadata=artifact_metadata,
                 )
-                state_json["natural_style_patch_artifact_id"] = (
-                    natural_style_patch_artifact.id
-                )
+                state_json["natural_style_patch_artifact_id"] = natural_style_patch_artifact.id
                 state_json["canonical_draft_artifact_id"] = canonical_draft_artifact.id
                 pending_draft_artifact_id = canonical_draft_artifact.id
             if "review" in enabled_node_ids:
@@ -382,11 +391,37 @@ class RunController:
             state_json["risk_artifact_id"] = risk_artifact.id
             if "visual" in enabled_node_ids:
                 visual_plan = output.visual_plan.model_dump(mode="json")
+                visual_outline_artifact = self.artifact_service.put_text(
+                    kind="workflow.visual-outline",
+                    text=output.visual_plan.outline_markdown,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                visual_material_selection_artifact = self.artifact_service.put_text(
+                    kind="workflow.visual-material-selection",
+                    text=output.visual_plan.material_selection_markdown,
+                    media_type="text/markdown; charset=utf-8",
+                    metadata=artifact_metadata,
+                )
+                # Every generation prompt is persisted before a desktop can start
+                # the image backend. This is the Baoyu reproducibility gate.
+                visual_prompts_artifact = self.artifact_service.put_json(
+                    kind="workflow.visual-prompts",
+                    value=[
+                        item.model_dump(mode="json") for item in output.visual_plan.prompt_files
+                    ],
+                    metadata=artifact_metadata,
+                )
                 visual_plan_artifact = self.artifact_service.put_json(
                     kind="workflow.visual-plan",
                     value=visual_plan,
                     metadata=artifact_metadata,
                 )
+                state_json["visual_outline_artifact_id"] = visual_outline_artifact.id
+                state_json["visual_material_selection_artifact_id"] = (
+                    visual_material_selection_artifact.id
+                )
+                state_json["visual_prompts_artifact_id"] = visual_prompts_artifact.id
                 state_json["visual_plan_artifact_id"] = visual_plan_artifact.id
                 state_json["visual_composition_plan"] = visual_plan
             state_json["pending_draft_artifact_id"] = pending_draft_artifact_id
@@ -401,9 +436,7 @@ class RunController:
                     "actions": ["approve", "reject"],
                 }
                 if "review_artifact_id" in state_json:
-                    interrupt_json["review_artifact_id"] = state_json[
-                        "review_artifact_id"
-                    ]
+                    interrupt_json["review_artifact_id"] = state_json["review_artifact_id"]
                 if "visual_plan_artifact_id" in state_json:
                     interrupt_json["visual_plan_artifact_id"] = state_json[
                         "visual_plan_artifact_id"
@@ -478,6 +511,15 @@ class RunController:
     def _finalize(self, run: WorkflowRun) -> WorkflowRun:
         draft_artifact_id = str(run.state_json["pending_draft_artifact_id"])
         markdown = self.artifact_service.read_text(draft_artifact_id)
+        visual_plan = run.state_json.get("visual_composition_plan")
+        if isinstance(visual_plan, dict):
+            expected_hash = visual_plan.get("source_revision_hash")
+            actual_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+            if expected_hash != actual_hash:
+                raise ValueError(
+                    "visual plan is stale for the pending Markdown revision; "
+                    "create a new plan before any image work"
+                )
         revision = self.article_service.create_revision(
             article_id=run.article_id,
             markdown=markdown,

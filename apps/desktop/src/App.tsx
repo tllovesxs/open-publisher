@@ -1,4 +1,4 @@
-import { Menu, Plus, X } from "lucide-react";
+import { Check, Image, Menu, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
 import { ArticlesPage } from "./components/ArticlesPage";
@@ -60,6 +60,7 @@ import type {
   StudioAgent,
   StudioSkill,
   TemplateFixedBlock,
+  TemplateContentAtomLedger,
   TemplateLayoutProfile,
   TemplateStructureProfile,
   TemplateStyleProfile,
@@ -84,6 +85,12 @@ interface ArticleProgress {
   title: string;
   detail: string;
   value: number | null;
+}
+
+interface VisualConfirmationState {
+  articleId: string;
+  plan: VisualCompositionPlanSummary;
+  resolve: (approved: boolean) => void;
 }
 
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
@@ -140,7 +147,7 @@ function isOptionalWorkflowNodeId(
 }
 
 function isWorkflowNodeId(value: string | undefined): value is WorkflowNodeId {
-  return value === "draft" || value === "risk" || isOptionalWorkflowNodeId(value);
+  return value === "draft" || value === "reference-safety" || value === "risk" || isOptionalWorkflowNodeId(value);
 }
 
 function creationAgentLabels(
@@ -256,6 +263,36 @@ const emptyLayoutProfile = (): TemplateLayoutProfile => ({
   emphasisRules: "",
 });
 
+const emptyContentAtomLedger = (): TemplateContentAtomLedger => ({
+  claims: [],
+  facts: [],
+  examples: [],
+  quotes: [],
+  namedEntities: [],
+  caveats: [],
+});
+
+function normalizeTemplateLedger(value: unknown): TemplateContentAtomLedger {
+  const candidate = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const list = (key: string, alternate?: string) => {
+    const raw = candidate[key] ?? (alternate ? candidate[alternate] : undefined);
+    return Array.isArray(raw)
+      ? raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim().slice(0, 320)).slice(0, 48)
+      : [];
+  };
+  return {
+    claims: list("claims"),
+    facts: list("facts"),
+    examples: list("examples"),
+    quotes: list("quotes"),
+    namedEntities: list("namedEntities", "named_entities"),
+    caveats: list("caveats"),
+  };
+}
+
 export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<MarkdownTemplate>;
@@ -279,6 +316,10 @@ export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
             : "after_article",
         }))
     : [];
+  const referenceMarkdown = typeof candidate.referenceMarkdown === "string"
+    ? candidate.referenceMarkdown.replace(/\r\n?/g, "\n").trim().slice(0, 60_000)
+    : "";
+  const mode = candidate.mode === "reference" && referenceMarkdown ? "reference" : "scaffold";
   return {
     id: candidate.id,
     name: candidate.name.slice(0, 120),
@@ -294,6 +335,21 @@ export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
       : [],
     usageInstructions: typeof candidate.usageInstructions === "string" ? candidate.usageInstructions.slice(0, 4_000) : "",
     isBuiltIn: candidate.isBuiltIn === true,
+    mode,
+    referenceMarkdown: mode === "reference" ? referenceMarkdown : undefined,
+    sourceFingerprint: typeof candidate.sourceFingerprint === "string"
+      && /^sha256:[a-f0-9]{64}$/.test(candidate.sourceFingerprint)
+      ? candidate.sourceFingerprint
+      : undefined,
+    analysisVersion: typeof candidate.analysisVersion === "string"
+      ? candidate.analysisVersion.slice(0, 80)
+      : undefined,
+    contentAtomLedger: normalizeTemplateLedger(candidate.contentAtomLedger),
+    phraseBlacklist: Array.isArray(candidate.phraseBlacklist)
+      ? candidate.phraseBlacklist.filter((phrase): phrase is string => typeof phrase === "string" && phrase.trim().length > 0)
+        .map((phrase) => phrase.trim().slice(0, 180)).slice(0, 48)
+      : [],
+    rightsConfirmed: mode === "reference" && candidate.rightsConfirmed === true,
   };
 }
 
@@ -398,6 +454,14 @@ function visualCompositionFromCreation(
       alt: asset.alt.trim().slice(0, 160) || asset.name.slice(0, 160),
       description: visualAssetDescription(asset),
     })),
+    assetScope: request.imageAssets.length > 0 ? "selected_only" : "none",
+    preferredType: "infographic",
+    density: request.imagePlan.mode === "auto" ? "balanced" : "minimal",
+    style: "sketch-notes",
+    palette: "macaron",
+    preferredImageBackend: "auto",
+    generationBatchSize: 4,
+    skipConfirmation: false,
   };
 }
 
@@ -427,7 +491,22 @@ function escapeImageAlt(value: string) {
     .slice(0, 180) || "文章配图";
 }
 
-function insertionLineForHeading(lines: string[], heading: string | null) {
+function normalizedMarkdownText(value: string) {
+  return value.replace(/[`*_~]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function insertionLineForAnchor(lines: string[], anchorExcerpt: string | null, heading: string | null) {
+  const anchor = normalizedMarkdownText(anchorExcerpt ?? "");
+  if (anchor) {
+    for (let start = 0; start < lines.length; start += 1) {
+      if (!lines[start]?.trim() || /^#{1,6}\s+|^```|^(?:[-*+]\s+|\d+[.)]\s+|>\s*)/.test(lines[start])) continue;
+      let end = start;
+      while (end < lines.length && lines[end]?.trim()) end += 1;
+      const paragraph = normalizedMarkdownText(lines.slice(start, end).join("\n"));
+      if (paragraph.includes(anchor) || anchor.includes(paragraph)) return end;
+      start = end;
+    }
+  }
   if (heading) {
     const headingIndex = lines.findIndex(
       (line) => line.replace(/^#{1,6}\s+/, "").trim() === heading,
@@ -456,7 +535,7 @@ function insertVisualMarkdown(
   const lines = markdown.trimEnd().split("\n");
   const insertions = placements
     .map(({ placement, asset }, originalIndex) => ({
-      line: insertionLineForHeading(lines, placement.afterHeading),
+      line: insertionLineForAnchor(lines, placement.anchorExcerpt, placement.afterHeading),
       originalIndex,
       markup: `![${escapeImageAlt(placement.alt || asset.alt)}](${mediaMarkdownReference(asset)})`,
     }))
@@ -537,6 +616,7 @@ const workflowNodeLabel: Record<WorkflowNodeId, string> = {
   outline: "大纲规划",
   draft: "正文撰写",
   "natural-style": "自然表达",
+  "reference-safety": "原创表达检查",
   review: "内容审阅",
   risk: "风险检查",
   visual: "配图规划",
@@ -709,10 +789,46 @@ function storedArticleToArticle(stored: StoredArticleSummary): Article {
   };
 }
 
-function buildCreationSeed(request: CreationRequest) {
+const MAX_CREATION_SEED_CHARACTERS = 78_000;
+
+function truncateCharacters(value: string, maximum: number) {
+  const characters = [...value];
+  return characters.length <= maximum ? value : `${characters.slice(0, Math.max(0, maximum - 1)).join("")}…`;
+}
+
+function highFidelityReferenceBlock(template: MarkdownTemplate) {
+  if (
+    template.mode !== "reference"
+    || !template.referenceMarkdown
+    || template.rightsConfirmed !== true
+  ) return "";
+  const safeId = template.id.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 120) || "template";
+  const tag = `open-publisher-reference-${safeId}`;
+  const metadata = encodeURIComponent(JSON.stringify({
+    source_fingerprint: template.sourceFingerprint ?? "",
+    style_profile: template.styleProfile,
+    structure_profile: template.structureProfile,
+    layout_profile: template.layoutProfile,
+    content_atom_ledger: template.contentAtomLedger ?? emptyContentAtomLedger(),
+    phrase_blacklist: template.phraseBlacklist ?? [],
+  }));
+  return [
+    `<!-- open-publisher-reference-template:v1:${metadata} -->`,
+    `<${tag}>`,
+    template.referenceMarkdown,
+    `</${tag}>`,
+  ].join("\n");
+}
+
+export function buildCreationSeed(request: CreationRequest) {
   const title = request.title || request.topic;
-  const references = request.references
-    ? `\n\n## 参考资料\n\n${request.references}`
+  const referenceBlock = request.template ? highFidelityReferenceBlock(request.template) : "";
+  const maxReferenceCharacters = Math.max(
+    0,
+    MAX_CREATION_SEED_CHARACTERS - [...referenceBlock].length - 4_000,
+  );
+  const referenceNotes = request.references
+    ? `\n\n## 参考资料\n\n${truncateCharacters(request.references, maxReferenceCharacters)}`
     : "";
   const templateHeadings = request.template
     ? request.template.markdown
@@ -724,9 +840,9 @@ function buildCreationSeed(request: CreationRequest) {
         .filter((heading) => heading !== title)
     : [];
   const template = request.template
-    ? `\n\n## 写作模板规范（只作为内部规则，不要把本节原样输出）\n\n模板名称：${request.template.name}\n\n文风：\n${Object.entries(request.template.styleProfile).map(([key, value]) => `- ${key}：${value}`).join("\n")}\n\n结构：\n${Object.entries(request.template.structureProfile).map(([key, value]) => `- ${key}：${value}`).join("\n")}\n\n排版：\n${Object.entries(request.template.layoutProfile).map(([key, value]) => `- ${key}：${String(value)}`).join("\n")}\n\n模板骨架章节：\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}\n\n使用说明：${request.template.usageInstructions || "遵守模板结构，结合主题替换所有占位内容。"}\n\n固定片段（由程序在生成后插入，写作 Agent 不要输出）：\n${request.template.fixedBlocks.filter((block) => block.enabled && block.content.trim()).map((block) => `- ${block.position}：${block.content}`).join("\n") || "- 无"}`
+    ? `\n\n## 写作模板规范（只作为内部规则，不要把本节原样输出）\n\n模板名称：${request.template.name}\n\n文风：\n${Object.entries(request.template.styleProfile).map(([key, value]) => `- ${key}：${value}`).join("\n")}\n\n结构：\n${Object.entries(request.template.structureProfile).map(([key, value]) => `- ${key}：${value}`).join("\n")}\n\n排版：\n${Object.entries(request.template.layoutProfile).map(([key, value]) => `- ${key}：${String(value)}`).join("\n")}\n\n模板骨架章节：\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}\n\n使用说明：${request.template.usageInstructions || "遵守模板结构，结合主题替换所有占位内容。"}\n\n固定片段：已配置 ${request.template.fixedBlocks.filter((block) => block.enabled && block.content.trim()).length} 个，由程序在生成后插入，写作 Agent 不要输出。`
     : "";
-  return `# ${title}
+  const seed = `# ${title}
 
 ## 创作要求
 
@@ -734,7 +850,13 @@ function buildCreationSeed(request: CreationRequest) {
 - 类型：${request.contentType}
 - 风格：${request.tone}
 - 篇幅：${request.length}
-${references}${template}`.trim();
+${referenceNotes}${template}${referenceBlock ? `\n\n${referenceBlock}` : ""}`.trim();
+  if ([...seed].length <= MAX_CREATION_SEED_CHARACTERS) return seed;
+  if (referenceBlock) {
+    const minimalSeed = `# ${title}\n\n## 创作要求\n\n- 主题：${request.topic}\n- 类型：${request.contentType}\n- 风格：${request.tone}\n- 篇幅：${request.length}\n\n${referenceBlock}`;
+    return truncateCharacters(minimalSeed, MAX_CREATION_SEED_CHARACTERS);
+  }
+  return truncateCharacters(seed, MAX_CREATION_SEED_CHARACTERS);
 }
 
 function renderFixedBlock(content: string, article: Article, request: CreationRequest) {
@@ -780,6 +902,61 @@ export function applyTemplateFixedBlocks(markdown: string, template: MarkdownTem
     }
   }
   return result.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+function visualSourceLabel(source: VisualPlacementSummary["source"]) {
+  return source === "existing_asset" ? "使用已选素材" : "生成新图片";
+}
+
+function VisualPlanConfirmationDialog({
+  plan,
+  onApprove,
+  onSkip,
+}: {
+  plan: VisualCompositionPlanSummary;
+  onApprove: () => void;
+  onSkip: () => void;
+}) {
+  const generatedCount = plan.placements.filter((placement) => placement.source === "generate").length;
+  return (
+    <div className="studio-modal" role="presentation">
+      <button aria-label="暂不插入配图" className="studio-modal__scrim" onClick={onSkip} type="button" />
+      <section aria-describedby="visual-plan-confirmation-copy" aria-label="确认正文配图方案" aria-modal="true" className="visual-confirmation-dialog" role="dialog">
+        <header>
+          <div>
+            <span className="page-kicker">正文配图方案</span>
+            <h2>确认后再开始生成</h2>
+            <p id="visual-plan-confirmation-copy">已保存配图大纲和 {generatedCount} 份生图提示词。本次将插入 {plan.targetCount} 张图片。</p>
+          </div>
+          <button aria-label="暂不插入配图" className="icon-button" onClick={onSkip} type="button"><X size={18} /></button>
+        </header>
+        <div className="visual-confirmation-dialog__settings" aria-label="方案设置">
+          <span>{plan.settings.type ?? "infographic"}</span>
+          <span>{plan.settings.style ?? "sketch-notes"}</span>
+          <span>{plan.settings.palette ?? "default"}</span>
+          <span>并发 {plan.settings.generation_batch_size ?? "4"}</span>
+        </div>
+        <ol className="visual-confirmation-dialog__list">
+          {plan.placements.map((placement, index) => (
+            <li key={placement.id}>
+              <span className={`visual-confirmation-dialog__source is-${placement.source}`}><Image aria-hidden="true" size={14} /></span>
+              <div>
+                <div className="visual-confirmation-dialog__title"><strong>配图 {index + 1}</strong><small>{visualSourceLabel(placement.source)}</small></div>
+                <p>{placement.purpose}</p>
+                <blockquote>{placement.anchorExcerpt ?? placement.afterHeading ?? "需要在文章页确认插入位置"}</blockquote>
+                <span className="visual-confirmation-dialog__reason">{placement.selectionReason}</span>
+                {placement.candidates.length > 0 && <details><summary>素材匹配候选</summary><ul>{placement.candidates.map((candidate) => <li key={candidate.assetId}><strong>{candidate.assetId}</strong><span>{Math.round(candidate.score / 10)}% · {candidate.description}</span></li>)}</ul></details>}
+              </div>
+            </li>
+          ))}
+        </ol>
+        <footer>
+          <button className="button button--quiet" onClick={onSkip} type="button">暂不配图</button>
+          <button className="button button--primary" onClick={onApprove} type="button"><Check size={16} />确认并继续</button>
+        </footer>
+      </section>
+    </div>
+  );
 }
 
 export default function App() {
@@ -859,6 +1036,7 @@ export default function App() {
   const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
   const [articleProgress, setArticleProgress] = useState<ArticleProgress | null>(null);
   const [articleContentReplacing, setArticleContentReplacing] = useState(false);
+  const [visualConfirmation, setVisualConfirmation] = useState<VisualConfirmationState | null>(null);
   const [rewriteUndoArticleId, setRewriteUndoArticleId] = useState<string | null>(null);
   const rewriteUndoRef = useRef<Record<string, { before: string; after: string }>>({});
   const dismissedWorkflowProgressArticleIds = useRef(new Set<string>());
@@ -874,6 +1052,22 @@ export default function App() {
       dismissedWorkflowProgressArticleIds.current.add(articleProgress.articleId);
     }
     setArticleProgress(null);
+  };
+
+  const requestVisualConfirmation = (
+    articleId: string,
+    plan: VisualCompositionPlanSummary | null,
+  ) => {
+    if (!plan || plan.targetCount === 0 || !plan.needsConfirmation) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      setVisualConfirmation({ articleId, plan, resolve });
+    });
+  };
+
+  const resolveVisualConfirmation = (approved: boolean) => {
+    const pending = visualConfirmation;
+    setVisualConfirmation(null);
+    pending?.resolve(approved);
   };
 
   const beginWorkflowWorkspace = (articleId: string) => {
@@ -1733,6 +1927,9 @@ export default function App() {
     if (plan.placements.length !== plan.targetCount) {
       throw new Error("视觉 Agent 返回的配图数量无效，文章未插入图片。请重试本次生成。");
     }
+    if (plan.sourceRevisionHash !== summary.outputContentHash) {
+      throw new Error("配图方案已不对应当前文章版本，未开始生图。请重新生成配图方案。");
+    }
 
     appendCreationActivity(
       "正在按文章结构编排配图",
@@ -1768,8 +1965,7 @@ export default function App() {
         value: 8,
       });
     }
-    const placements = await Promise.all(
-      plan.placements.map(async (placement, index) => {
+    const executePlacement = async (placement: VisualPlacementSummary, index: number) => {
         if (placement.assetId) {
           const asset = selectedAssets.get(placement.assetId);
           if (!asset) {
@@ -1784,7 +1980,7 @@ export default function App() {
         appendCreationActivity(
           `正在生成配图 ${index + 1}/${plan.targetCount}`,
           `visual-generation-started-${startedAt}-${index}`,
-          `正在并发生成第 ${index + 1} 张配图`,
+          `正在从已保存的 ${placement.promptFile ?? "Prompt 文件"} 生成第 ${index + 1} 张配图`,
         );
         const result = await desktopBridge.generateImage({
           prompt: placement.generationPrompt,
@@ -1818,8 +2014,14 @@ export default function App() {
           "success",
         );
         return { placement, asset };
-      }),
-    );
+      };
+    const placements: Array<{ placement: VisualPlacementSummary; asset: MediaAsset }> = [];
+    const batchSize = Math.max(1, Math.min(4, Number(plan.settings.generation_batch_size ?? 4)));
+    for (let offset = 0; offset < plan.placements.length; offset += batchSize) {
+      const batch = plan.placements.slice(offset, offset + batchSize);
+      const results = await Promise.all(batch.map((placement, index) => executePlacement(placement, offset + index)));
+      placements.push(...results);
+    }
 
     const outputMarkdown = summary.outputMarkdown;
     const markdown = insertVisualMarkdown(outputMarkdown, placements);
@@ -2034,17 +2236,52 @@ export default function App() {
         stopActivityPolling();
       }
       clearWriterTypewriter(article.id);
-      const templatedSummary = request.template
-        ? {
-            ...summary,
-            outputMarkdown: applyTemplateFixedBlocks(summary.outputMarkdown, request.template, article, request),
-          }
-        : summary;
-      completeWorkflowWorkspace(article.id, templatedSummary);
+      completeWorkflowWorkspace(article.id, summary);
       setArticleContentReplacing(true);
-      applyWorkflowResult(article.id, templatedSummary, request.platforms);
+      applyWorkflowResult(article.id, summary, request.platforms);
       window.setTimeout(() => setArticleContentReplacing(false), 260);
-      const composed = await composeVisualPlan(article, templatedSummary, request, startedAt);
+      const approvedVisualPlan = await requestVisualConfirmation(article.id, summary.visualPlan);
+      let composed = approvedVisualPlan
+        ? await composeVisualPlan(article, summary, request, startedAt)
+        : {
+            revisionId: summary.outputRevisionId,
+            revisionNumber: summary.outputRevisionNumber,
+            markdown: summary.outputMarkdown,
+            generatedCount: 0,
+          };
+      if (!approvedVisualPlan && request.imagePlan.mode !== "none") {
+        appendCreationActivity(
+          "已跳过正文配图",
+          `visual-plan-skipped-${startedAt}`,
+          "文章已保留；未启动任何图片生成或素材插入。",
+        );
+      }
+      const finalMarkdown = request.template
+        ? applyTemplateFixedBlocks(composed.markdown, request.template, article, request)
+        : composed.markdown;
+      if (finalMarkdown !== composed.markdown) {
+        const receipt = await desktopBridge.saveDraft({
+          articleId: article.id,
+          baseRevision: composed.revisionId,
+          markdown: finalMarkdown,
+        });
+        composed = {
+          ...composed,
+          revisionId: receipt.revisionId,
+          revisionNumber: composed.revisionNumber + 1,
+          markdown: finalMarkdown,
+        };
+        applyWorkflowResult(
+          article.id,
+          {
+            ...summary,
+            outputRevisionId: composed.revisionId,
+            outputRevisionNumber: composed.revisionNumber,
+            outputMarkdown: composed.markdown,
+          },
+          request.platforms,
+        );
+      }
       setRuntime(await desktopBridge.runtimeSnapshot());
       setCreationActivity((current) =>
         current
@@ -2428,8 +2665,8 @@ export default function App() {
       const result = await desktopBridge.extractTemplate({ sourceMarkdown });
       setToast(
         result.mocked
-          ? "已提取本地演示模板，请检查后保存"
-          : `已提取模板结构 · ${result.model} · 请检查后保存`,
+          ? "已分析本地演示参考模板，请检查后保存"
+          : `已分析高保真参考模板 · ${result.model} · 请检查后保存`,
       );
       const styleProfile = result.styleProfile as unknown as Record<string, unknown>;
       const structureProfile = result.structureProfile as unknown as Record<string, unknown>;
@@ -2466,6 +2703,13 @@ export default function App() {
         fixedBlocks: result.fixedBlocks,
         variables: result.variables,
         usageInstructions: result.usageInstructions,
+        mode: "reference",
+        referenceMarkdown: sourceMarkdown.replace(/\r\n?/g, "\n").trim(),
+        sourceFingerprint: result.sourceFingerprint,
+        analysisVersion: result.analysisVersion,
+        contentAtomLedger: normalizeTemplateLedger(result.contentAtomLedger),
+        phraseBlacklist: result.phraseBlacklist,
+        rightsConfirmed: true,
         isBuiltIn: false,
       } satisfies MarkdownTemplate;
     } catch (error) {
@@ -2862,6 +3106,13 @@ export default function App() {
             <X size={14} />
           </button>
         </div>
+      )}
+      {visualConfirmation && (
+        <VisualPlanConfirmationDialog
+          onApprove={() => resolveVisualConfirmation(true)}
+          onSkip={() => resolveVisualConfirmation(false)}
+          plan={visualConfirmation.plan}
+        />
       )}
     </div>
   );
