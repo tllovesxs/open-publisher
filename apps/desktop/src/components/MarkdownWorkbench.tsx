@@ -319,7 +319,7 @@ export function MarkdownWorkbench({
               <button
                 className="selection-rewrite-button"
                 onClick={() => onRequestSelectionRewrite(selectedText)}
-                onMouseDown={(event) => event.preventDefault()}
+                onPointerDown={(event) => event.preventDefault()}
                 type="button"
               >
                 <WandSparkles size={14} /> AI 修改选中内容

@@ -10,7 +10,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { RewriteArticleSummary } from "../lib/desktopBridge";
 
 export interface MarkdownSelection {
@@ -56,13 +56,11 @@ export function ArticleAssistant({
   const [applying, setApplying] = useState(false);
   const [candidate, setCandidate] = useState<RewriteCandidate | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!selection?.text.trim()) return;
     setScope("selection");
     setOpen(true);
-    window.requestAnimationFrame(() => inputRef.current?.focus());
   }, [selection?.start, selection?.end]);
 
   const activeSelection = scope === "selection" ? selection : null;
@@ -235,7 +233,6 @@ export function ArticleAssistant({
                   }
                 }}
                 placeholder={activeSelection ? "说明如何修改这段内容" : "例如：删掉重复表达，保留技术细节"}
-                ref={inputRef}
                 value={instruction}
               />
             </label>

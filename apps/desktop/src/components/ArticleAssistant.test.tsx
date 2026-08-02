@@ -39,4 +39,40 @@ describe("ArticleAssistant", () => {
       }),
     );
   });
+
+  it("does not move focus away from an editor when a text selection becomes active", () => {
+    const requestAnimationFrame = vi.spyOn(window, "requestAnimationFrame");
+    const onRewrite = vi.fn();
+    const onApplyCandidate = vi.fn();
+
+    const { rerender } = render(
+      <>
+        <textarea aria-label="Markdown 正文" />
+        <ArticleAssistant
+          onApplyCandidate={onApplyCandidate}
+          onClearSelection={vi.fn()}
+          onRewrite={onRewrite}
+          selection={null}
+        />
+      </>,
+    );
+    const editor = screen.getByLabelText("Markdown 正文");
+    editor.focus();
+
+    rerender(
+      <>
+        <textarea aria-label="Markdown 正文" />
+        <ArticleAssistant
+          onApplyCandidate={onApplyCandidate}
+          onClearSelection={vi.fn()}
+          onRewrite={onRewrite}
+          selection={{ start: 0, end: 4, text: "待修改文字" }}
+        />
+      </>,
+    );
+
+    expect(editor).toHaveFocus();
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    requestAnimationFrame.mockRestore();
+  });
 });
