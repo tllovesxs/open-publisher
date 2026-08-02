@@ -890,10 +890,26 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "article_id",
+        "request_id",
         "markdown",
-        "instruction"
+        "instruction",
+        "selected_texts",
+        "conversation"
       ],
       "properties": {
+        "article_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": ".*\\S.*"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": ".*\\S.*"
+        },
         "markdown": {
           "type": "string",
           "minLength": 1,
@@ -906,18 +922,36 @@
           "maxLength": 4000,
           "pattern": ".*\\S.*"
         },
-        "selected_text": {
-          "oneOf": [
-            {
+        "selected_texts": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
               "type": "string",
               "minLength": 1,
               "maxLength": 40000,
               "pattern": ".*\\S.*"
-            },
-            {
-              "type": "null"
+          }
+        },
+        "conversation": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "text"],
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": ["user", "assistant"]
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000,
+                "pattern": ".*\\S.*"
+              }
             }
-          ]
+          }
         }
       }
     },
@@ -925,16 +959,28 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "replacement",
+        "replacements",
+        "summary",
         "provider",
         "model",
         "mocked"
       ],
       "properties": {
-        "replacement": {
+        "replacements": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80000,
+            "pattern": ".*\\S.*"
+          }
+        },
+        "summary": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 200000,
+          "maxLength": 1200,
           "pattern": ".*\\S.*"
         },
         "provider": {

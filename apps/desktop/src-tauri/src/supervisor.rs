@@ -3,6 +3,7 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, OpenOptions},
+    io::{BufRead, BufReader},
     net::{IpAddr, Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -382,18 +383,39 @@ pub struct ProcessPublishJobRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RewriteArticleRequest {
+    pub article_id: String,
+    pub request_id: String,
     pub markdown: String,
     pub instruction: String,
-    pub selected_text: Option<String>,
+    pub selected_texts: Vec<String>,
+    pub conversation: Vec<RewriteConversationMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RewriteConversationMessage {
+    pub role: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RewriteArticleSummary {
-    pub replacement: String,
+    pub replacements: Vec<String>,
+    pub summary: String,
     pub provider: String,
     pub model: String,
     pub mocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteStreamEvent {
+    pub article_id: String,
+    pub request_id: String,
+    pub event_type: String,
+    pub detail: Option<String>,
+    pub delta: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -647,6 +669,7 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
     fn rewrite_article(
         &self,
         request: RewriteArticleRequest,
+        on_event: &mut dyn FnMut(RewriteStreamEvent),
     ) -> Result<RewriteArticleSummary, String>;
     fn generate_image(&self, request: GenerateImageRequest)
         -> Result<GenerateImageSummary, String>;
@@ -809,7 +832,7 @@ enum ApiRoute<'a> {
     ApprovePublishPlan(&'a str),
     EnqueuePublishPlan(&'a str),
     ProcessPublishJob(&'a str),
-    RewriteArticle,
+    RewriteArticleStream,
     GenerateImage,
     ExtractTemplate,
     Connections,
@@ -851,7 +874,7 @@ impl ApiRoute<'_> {
             Self::ProcessPublishJob(job_id) => {
                 format!("/api/v1/publish/jobs/{job_id}/process")
             }
-            Self::RewriteArticle => "/api/v1/editor/rewrite".to_owned(),
+            Self::RewriteArticleStream => "/api/v1/editor/rewrite/stream".to_owned(),
             Self::GenerateImage => "/api/v1/images/generate".to_owned(),
             Self::ExtractTemplate => "/api/v1/templates/extract".to_owned(),
             Self::Connections => "/api/v1/connections".to_owned(),
@@ -932,10 +955,18 @@ struct CreatePublishPlanRequestWire<'a> {
 
 #[derive(Debug, Serialize)]
 struct RewriteArticleRequestWire<'a> {
+    article_id: &'a str,
+    request_id: &'a str,
     markdown: &'a str,
     instruction: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_text: Option<&'a str>,
+    selected_texts: Vec<&'a str>,
+    conversation: Vec<RewriteConversationMessageWire<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct RewriteConversationMessageWire<'a> {
+    role: &'a str,
+    text: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1552,7 +1583,9 @@ impl PythonSidecarSupervisor {
                 .json::<HealthResponseWire>()
                 .ok()
                 .is_some_and(|body| {
-                    body.status == "ok" && body.database == "ok" && body.publisher_mode == "dry_run"
+                    body.status == "ok"
+                        && body.database == "ok"
+                        && body.publisher_mode == "dry_run_and_wechat_sync_draft"
                 }),
             _ => false,
         }
@@ -1585,6 +1618,103 @@ impl PythonSidecarSupervisor {
         response
             .json()
             .map_err(|_| "local Python runtime returned an invalid response".to_owned())
+    }
+
+    fn post_rewrite_stream(
+        &self,
+        connection: &PrivateConnection,
+        request: &RewriteArticleRequestWire<'_>,
+        article_id: &str,
+        request_id: &str,
+        on_event: &mut dyn FnMut(RewriteStreamEvent),
+    ) -> Result<RewriteArticleSummary, String> {
+        let response = self
+            .client
+            .post(connection.url(ApiRoute::RewriteArticleStream))
+            .bearer_auth(&connection.token)
+            .json(request)
+            .send()
+            .map_err(|error| {
+                if error.is_timeout() {
+                    "local Python runtime request timed out".to_owned()
+                } else {
+                    "local Python runtime connection failed".to_owned()
+                }
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(safe_http_error(status, response.json::<Value>().ok()));
+        }
+
+        let mut event_type = String::new();
+        let mut data_lines: Vec<String> = Vec::new();
+        let mut reader = BufReader::new(response);
+        loop {
+            let mut line = String::new();
+            let bytes_read = reader
+                .read_line(&mut line)
+                .map_err(|_| "local Python runtime stream failed".to_owned())?;
+            if bytes_read == 0 {
+                break;
+            }
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                if event_type.is_empty() || data_lines.is_empty() {
+                    event_type.clear();
+                    data_lines.clear();
+                    continue;
+                }
+                let payload = data_lines.join("\n");
+                match event_type.as_str() {
+                    "status" => {
+                        let detail = serde_json::from_str::<Value>(&payload)
+                            .ok()
+                            .and_then(|value| value.get("detail")?.as_str().map(str::to_owned))
+                            .filter(|detail| !detail.trim().is_empty())
+                            .unwrap_or_else(|| "AI 正在处理修改请求".to_owned());
+                        on_event(RewriteStreamEvent {
+                            article_id: article_id.to_owned(),
+                            request_id: request_id.to_owned(),
+                            event_type: "status".to_owned(),
+                            detail: Some(detail),
+                            delta: None,
+                        });
+                    }
+                    "delta" => {
+                        let delta = serde_json::from_str::<Value>(&payload)
+                            .ok()
+                            .and_then(|value| value.get("delta")?.as_str().map(str::to_owned));
+                        if let Some(delta) = delta.filter(|value| !value.is_empty()) {
+                            on_event(RewriteStreamEvent {
+                                article_id: article_id.to_owned(),
+                                request_id: request_id.to_owned(),
+                                event_type: "delta".to_owned(),
+                                detail: None,
+                                delta: Some(delta),
+                            });
+                        }
+                    }
+                    "completed" => {
+                        return serde_json::from_str(&payload).map_err(|_| {
+                            "local Python runtime returned an invalid rewrite response".to_owned()
+                        });
+                    }
+                    "error" => {
+                        return Err("文章修改失败，请检查模型配置后重试。".to_owned());
+                    }
+                    _ => {}
+                }
+                event_type.clear();
+                data_lines.clear();
+                continue;
+            }
+            if let Some(value) = line.strip_prefix("event:") {
+                event_type = value.trim().to_owned();
+            } else if let Some(value) = line.strip_prefix("data:") {
+                data_lines.push(value.trim_start().to_owned());
+            }
+        }
+        Err("local Python runtime ended the rewrite stream unexpectedly".to_owned())
     }
 
     fn get_json<TResponse: DeserializeOwned>(
@@ -2313,6 +2443,7 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
     fn rewrite_article(
         &self,
         request: RewriteArticleRequest,
+        on_event: &mut dyn FnMut(RewriteStreamEvent),
     ) -> Result<RewriteArticleSummary, String> {
         validate_rewrite_article_request(&request)?;
         let mut state = self.lock_state()?;
@@ -2322,11 +2453,27 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             .clone()
             .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
         let payload = RewriteArticleRequestWire {
+            article_id: &request.article_id,
+            request_id: &request.request_id,
             markdown: &request.markdown,
             instruction: &request.instruction,
-            selected_text: request.selected_text.as_deref(),
+            selected_texts: request.selected_texts.iter().map(String::as_str).collect(),
+            conversation: request
+                .conversation
+                .iter()
+                .map(|message| RewriteConversationMessageWire {
+                    role: &message.role,
+                    text: &message.text,
+                })
+                .collect(),
         };
-        self.post_json(&connection, ApiRoute::RewriteArticle, &payload)
+        self.post_rewrite_stream(
+            &connection,
+            &payload,
+            &request.article_id,
+            &request.request_id,
+            on_event,
+        )
     }
 
     fn generate_image(
@@ -3058,10 +3205,36 @@ fn validate_process_publish_job_request(request: &ProcessPublishJobRequest) -> R
 }
 
 fn validate_rewrite_article_request(request: &RewriteArticleRequest) -> Result<(), String> {
+    if request.article_id.trim().is_empty() || request.article_id.len() > 256 {
+        return Err("articleId must contain between 1 and 256 bytes".to_owned());
+    }
+    if request.request_id.trim().is_empty()
+        || request.request_id.len() > 256
+        || request.request_id.chars().any(char::is_control)
+    {
+        return Err("rewrite request id is invalid".to_owned());
+    }
     validate_instruction_text(&request.markdown, "文章正文", 200_000)?;
     validate_instruction_text(&request.instruction, "修改要求", 4_000)?;
-    if let Some(selected_text) = &request.selected_text {
+    if request.selected_texts.len() > 12 {
+        return Err("一次最多修改 12 个文本片段。".to_owned());
+    }
+    let mut selected_total = 0usize;
+    for selected_text in &request.selected_texts {
         validate_instruction_text(selected_text, "选中文本", 40_000)?;
+        selected_total += selected_text.len();
+    }
+    if selected_total > 80_000 {
+        return Err("选中文本总长度不能超过 80000 个字符。".to_owned());
+    }
+    if request.conversation.len() > 24 {
+        return Err("文章修改会话历史过长。".to_owned());
+    }
+    for message in &request.conversation {
+        if !matches!(message.role.as_str(), "user" | "assistant") {
+            return Err("文章修改会话包含无效角色。".to_owned());
+        }
+        validate_instruction_text(&message.text, "文章修改会话内容", 8_000)?;
     }
     Ok(())
 }
@@ -4145,9 +4318,10 @@ mod tests {
         GenerateImageResponseWire, GenerateImagesRequestWire, HealthResponseWire, IdWire,
         InMemorySecretStore, PersistedModelConfiguration, ProcessPublishJobRequest,
         ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
-        PythonSidecarSupervisor, RewriteArticleRequestWire, RunDetailWire, RunWorkflowRequest,
-        RuntimeEventWire, SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire,
-        StartRunRequestWire, VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
+        PythonSidecarSupervisor, RewriteArticleRequest, RewriteArticleRequestWire,
+        RewriteConversationMessageWire, RunDetailWire, RunWorkflowRequest, RuntimeEventWire,
+        SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire,
+        VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
         WorkflowSkillInstruction, WorkflowWire, MODEL_API_KEY_SECRET, TAVILY_API_KEY_SECRET,
     };
 
@@ -4235,9 +4409,15 @@ mod tests {
         );
 
         let rewrite = RewriteArticleRequestWire {
+            article_id: "article-desktop",
+            request_id: "rewrite-contract-1",
             markdown: "# Desktop draft\n\n需要压缩的内容。",
             instruction: "表达更简洁",
-            selected_text: Some("需要压缩的内容。"),
+            selected_texts: vec!["需要压缩的内容。"],
+            conversation: vec![RewriteConversationMessageWire {
+                role: "user",
+                text: "此前请保留技术口吻。",
+            }],
         };
         assert_eq!(
             serde_json::to_value(rewrite).expect("serialize rewrite request"),
@@ -4905,6 +5085,29 @@ mod tests {
             })
             .expect("draft persists");
         assert_eq!(saved.persistence, "local_database");
+
+        let mut rewrite_events = Vec::new();
+        let rewrite = supervisor
+            .rewrite_article(
+                RewriteArticleRequest {
+                    article_id: "desktop-smoke".to_owned(),
+                    request_id: "rewrite-smoke-1".to_owned(),
+                    markdown: "# Desktop smoke\n\nThe canonical draft is persisted.".to_owned(),
+                    instruction: "表达更简洁".to_owned(),
+                    selected_texts: vec!["The canonical draft is persisted.".to_owned()],
+                    conversation: Vec::new(),
+                },
+                &mut |event| rewrite_events.push(event),
+            )
+            .expect("rewrite stream completes");
+        assert_eq!(rewrite.replacements.len(), 1);
+        assert!(rewrite.mocked);
+        assert!(rewrite_events
+            .iter()
+            .any(|event| event.event_type == "status"));
+        assert!(rewrite_events
+            .iter()
+            .any(|event| event.event_type == "delta"));
 
         let profile = supervisor
             .create_connection_profile(CreateConnectionProfileRequest {

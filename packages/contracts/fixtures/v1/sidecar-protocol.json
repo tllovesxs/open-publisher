@@ -231,12 +231,25 @@
     ]
   },
   "RewriteArticleRequest": {
+    "article_id": "article-desktop",
+    "request_id": "rewrite-contract-1",
     "markdown": "# Desktop draft\n\n需要压缩的内容。",
     "instruction": "表达更简洁",
-    "selected_text": "需要压缩的内容。"
+    "selected_texts": [
+      "需要压缩的内容。"
+    ],
+    "conversation": [
+      {
+        "role": "user",
+        "text": "此前请保留技术口吻。"
+      }
+    ]
   },
   "RewriteArticleResponse": {
-    "replacement": "需要压缩的内容。",
+    "replacements": [
+      "需要压缩的内容。"
+    ],
+    "summary": "已根据本次要求检查表达，并保持原有 Markdown 结构与事实边界。",
     "provider": "mock",
     "model": "deterministic-mock-v1",
     "mocked": true

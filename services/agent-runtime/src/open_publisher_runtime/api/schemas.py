@@ -288,14 +288,32 @@ class PublishTargetRequest(ApiModel):
     delivery_mode: Literal["dry_run", "wechat_sync_draft"] = "dry_run"
 
 
+class RewriteConversationMessage(ApiModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1, max_length=8_000)
+
+
 class RewriteArticleRequest(ApiModel):
+    article_id: str = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=1, max_length=200)
     markdown: str = Field(min_length=1, max_length=200_000)
     instruction: str = Field(min_length=1, max_length=4_000)
-    selected_text: str | None = Field(default=None, max_length=40_000)
+    selected_texts: list[str] = Field(default_factory=list, max_length=12)
+    conversation: list[RewriteConversationMessage] = Field(default_factory=list, max_length=24)
+
+    @field_validator("selected_texts")
+    @classmethod
+    def validate_selected_texts(cls, value: list[str]) -> list[str]:
+        if any(not text.strip() or len(text) > 40_000 for text in value):
+            raise ValueError("selected_texts must contain non-empty text up to 40000 characters")
+        if sum(len(text) for text in value) > 80_000:
+            raise ValueError("selected_texts exceeds the combined 80000 character limit")
+        return value
 
 
 class RewriteArticleResponse(ApiModel):
-    replacement: str
+    replacements: list[str]
+    summary: str
     provider: str
     model: str
     mocked: bool

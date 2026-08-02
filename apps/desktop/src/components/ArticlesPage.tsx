@@ -10,7 +10,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CreationLogEntry } from "./CreatePage";
 import {
   ArticleAssistant,
@@ -73,9 +73,13 @@ interface ArticlesPageProps {
   onPublishToPlatforms: (platforms: PlatformId[]) => Promise<void>;
   onRewriteArticle: (
     instruction: string,
-    selection: MarkdownSelection | null,
+    selections: MarkdownSelection[],
+    conversation: Array<{ role: "user" | "assistant"; text: string }>,
+    requestId: string,
   ) => Promise<RewriteArticleSummary>;
   onApplyRewriteCandidate: (candidate: RewriteCandidate) => Promise<void>;
+  canUndoRewrite: boolean;
+  onUndoRewrite: () => Promise<void>;
 }
 
 const statusLabel: Record<Article["status"], string> = {
@@ -121,12 +125,18 @@ export function ArticlesPage({
   onPublishToPlatforms,
   onRewriteArticle,
   onApplyRewriteCandidate,
+  canUndoRewrite,
+  onUndoRewrite,
 }: ArticlesPageProps) {
   const [query, setQuery] = useState("");
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [pendingImageInsertion, setPendingImageInsertion] = useState<ImageInsertion | null>(null);
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
-  const [selection, setSelection] = useState<MarkdownSelection | null>(null);
+  const [selections, setSelections] = useState<MarkdownSelection[]>([]);
+  useEffect(() => {
+    if (!selectedArticle?.id) return;
+    setSelections([]);
+  }, [selectedArticle?.id]);
   const filteredArticles = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return articles;
@@ -282,7 +292,17 @@ export function ArticlesPage({
             onEditorModeChange={onEditorModeChange}
             onMarkdownChange={onMarkdownChange}
             onImageFileDrop={onImageFileDrop}
-            onRequestSelectionRewrite={(nextSelection) => setSelection(nextSelection)}
+            onRequestSelectionRewrite={(nextSelection) => {
+              setSelections((current) => {
+                const exists = current.some(
+                  (selection) =>
+                    selection.start === nextSelection.start &&
+                    selection.end === nextSelection.end &&
+                    selection.text === nextSelection.text,
+                );
+                return exists ? current : [...current, nextSelection];
+              });
+            }}
             onPendingImageInsertionHandled={() => setPendingImageInsertion(null)}
             onRequestImageInsert={() => setImageDialogOpen(true)}
             onPlatformChange={onPlatformChange}
@@ -290,14 +310,24 @@ export function ArticlesPage({
             platforms={platforms}
             selectedPlatform={selectedPlatform}
             pendingImageInsertion={pendingImageInsertion}
-            onSelectionChange={setSelection}
             streaming={writerStreaming}
           />
           <ArticleAssistant
+            articleId={selectedArticle.id}
             onApplyCandidate={onApplyRewriteCandidate}
-            onClearSelection={() => setSelection(null)}
+            canUndo={canUndoRewrite}
+            onClearSelections={() => setSelections([])}
+            onRemoveSelection={(selection) => {
+              setSelections((current) => current.filter(
+                (candidate) =>
+                  candidate.start !== selection.start ||
+                  candidate.end !== selection.end ||
+                  candidate.text !== selection.text,
+              ));
+            }}
             onRewrite={onRewriteArticle}
-            selection={selection}
+            onUndoLastRewrite={onUndoRewrite}
+            selections={selections}
           />
           <WorkflowWorkspace
             onRetry={onRetryWorkflow}

@@ -11,7 +11,7 @@ import {
   Quote,
   WandSparkles,
 } from "lucide-react";
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MarkdownSelection } from "./ArticleAssistant";
 import type { MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { MarkdownPreview } from "./MarkdownPreview";
@@ -21,6 +21,11 @@ export type EditorMode = "edit" | "split" | "preview";
 export interface ImageInsertion {
   alt: string;
   src: string;
+}
+
+interface SelectionActionPosition {
+  left: number;
+  top: number;
 }
 
 interface MarkdownWorkbenchProps {
@@ -53,6 +58,58 @@ const editorModes: Array<{
   { id: "preview", label: "预览", icon: Eye },
 ];
 
+function positionSelectionAction(editor: HTMLTextAreaElement): SelectionActionPosition {
+  const selectionEnd = editor.selectionEnd;
+  const document = editor.ownerDocument;
+  const mirror = document.createElement("div");
+  const marker = document.createElement("span");
+  const computed = window.getComputedStyle(editor);
+  const rect = editor.getBoundingClientRect();
+  const copiedStyles = [
+    "boxSizing",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "letterSpacing",
+    "lineHeight",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "tabSize",
+    "textTransform",
+    "wordSpacing",
+  ] as const;
+  Object.assign(mirror.style, {
+    position: "fixed",
+    visibility: "hidden",
+    overflow: "hidden",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "break-word",
+    wordBreak: "break-word",
+    top: `${rect.top - editor.scrollTop}px`,
+    left: `${rect.left - editor.scrollLeft}px`,
+    width: `${editor.clientWidth}px`,
+  });
+  copiedStyles.forEach((property) => {
+    mirror.style[property] = computed[property];
+  });
+  mirror.textContent = editor.value.slice(0, selectionEnd);
+  marker.textContent = editor.value.slice(selectionEnd, selectionEnd + 1) || "\u200b";
+  mirror.append(marker);
+  document.body.append(mirror);
+  const markerRect = marker.getBoundingClientRect();
+  mirror.remove();
+  return {
+    left: Math.max(8, Math.min(markerRect.right + 10, window.innerWidth - 205)),
+    top: Math.max(8, Math.min(markerRect.bottom + 10, window.innerHeight - 42)),
+  };
+}
+
 export function MarkdownWorkbench({
   markdown,
   onMarkdownChange,
@@ -74,11 +131,11 @@ export function MarkdownWorkbench({
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const selectionRef = useRef({ start: 0, end: 0 });
-  const deferredPreviewMarkdown = useDeferredValue(markdown);
   const [isDroppingImage, setIsDroppingImage] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [imageDropError, setImageDropError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState<MarkdownSelection | null>(null);
+  const [selectionActionPosition, setSelectionActionPosition] = useState<SelectionActionPosition | null>(null);
   const lines = markdown.split("\n").length;
   const characters = markdown.replace(/\s/g, "").length;
 
@@ -178,7 +235,13 @@ export function MarkdownWorkbench({
     selectionRef.current = selection;
     const next = selection.text.trim() ? selection : null;
     setSelectedText(next);
+    setSelectionActionPosition(next ? positionSelectionAction(editor) : null);
     onSelectionChange?.(next);
+  };
+
+  const updateSelectionActionPosition = (editor: HTMLTextAreaElement) => {
+    if (!selectedText?.text.trim()) return;
+    setSelectionActionPosition(positionSelectionAction(editor));
   };
 
   return (
@@ -302,6 +365,7 @@ export function MarkdownWorkbench({
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleDrop}
               onPaste={handlePaste}
+              onScroll={(event) => updateSelectionActionPosition(event.currentTarget)}
               onSelect={(event) => {
                 captureSelection(event.currentTarget);
               }}
@@ -315,11 +379,16 @@ export function MarkdownWorkbench({
               spellCheck="false"
               value={markdown}
             />
-            {selectedText && onRequestSelectionRewrite && (
+            {selectedText && selectionActionPosition && onRequestSelectionRewrite && (
               <button
                 className="selection-rewrite-button"
-                onClick={() => onRequestSelectionRewrite(selectedText)}
+                onClick={() => {
+                  onRequestSelectionRewrite(selectedText);
+                  setSelectedText(null);
+                  setSelectionActionPosition(null);
+                }}
                 onPointerDown={(event) => event.preventDefault()}
+                style={selectionActionPosition}
                 type="button"
               >
                 <WandSparkles size={14} /> AI 修改选中内容
@@ -336,7 +405,7 @@ export function MarkdownWorkbench({
               </strong>
             </div>
             <MarkdownPreview
-              markdown={streaming ? deferredPreviewMarkdown : markdown}
+              markdown={markdown}
               mediaAssets={mediaAssets}
             />
           </div>

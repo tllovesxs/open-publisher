@@ -165,14 +165,26 @@ class MockTextProvider:
                 naturalized = f"{source}\n\n> 本稿已完成自然表达整理，事实边界保持不变。"
             text = naturalized
         elif request.purpose == "editor-rewrite":
-            source = str(request.context.get("source_markdown") or source).strip()
+            selected_texts = request.context.get("selected_texts")
+            sources = (
+                [str(item).strip() for item in selected_texts if str(item).strip()]
+                if isinstance(selected_texts, list)
+                else [str(request.context.get("source_markdown") or source).strip()]
+            )
             instruction = str(request.context.get("instruction") or "").strip()
-            if "精简" in instruction or "简洁" in instruction:
-                text = re.sub(r"[ \t]{2,}", " ", source)
-            elif "标题" in instruction and source.startswith("#"):
-                text = source.replace("# ", "# ", 1)
-            else:
-                text = source
+            replacements = []
+            for index, candidate in enumerate(sources):
+                if "精简" in instruction or "简洁" in instruction:
+                    rewritten = re.sub(r"[ \t]{2,}", " ", candidate)
+                elif "标题" in instruction and candidate.startswith("#"):
+                    rewritten = candidate.replace("# ", "# ", 1)
+                else:
+                    rewritten = candidate
+                replacements.append({"index": index, "markdown": rewritten})
+            text = (
+                "<editorial_note>已根据本次要求检查表达，并保持原有 Markdown 结构与事实边界。</editorial_note>\n"
+                f"<replacements>{json.dumps(replacements, ensure_ascii=False)}</replacements>"
+            )
         elif request.purpose == "review":
             text = (
                 "## 审核结果\n\n"

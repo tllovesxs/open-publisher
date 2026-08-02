@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
+import re
 import sys
+from queue import Queue
+from threading import Thread
 from datetime import UTC
-from typing import Annotated
+from typing import Annotated, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from open_publisher_runtime import __version__
@@ -228,61 +233,194 @@ def test_model_connection(
     )
 
 
+def _rewrite_sources(request: RewriteArticleRequest) -> list[str]:
+    return request.selected_texts or [request.markdown]
+
+
+def _rewrite_prompt(request: RewriteArticleRequest) -> str:
+    sources = _rewrite_sources(request)
+    scope = "选中的 Markdown 片段" if request.selected_texts else "整篇 Markdown 文章"
+    fragments = "\n\n".join(
+        f"<fragment index=\"{index}\">\n{source}\n</fragment>"
+        for index, source in enumerate(sources)
+    )
+    history = "\n".join(
+        f"{message.role}：{message.text}"
+        for message in request.conversation[-12:]
+    ) or "（这是本篇文章的第一次修改。）"
+    return f"""你是严谨的中文编辑助手。请按用户要求修改{scope}。
+
+用户要求：{request.instruction.strip()}
+
+本篇文章此前的编辑会话（仅供保持上下文，不要复述）：
+{history}
+
+必须遵守：
+1. 保留原有 Markdown 语法、链接、图片和代码块，除非用户明确要求修改它们。
+2. 不要补造事实、数字、引用、经历或来源；不确定的信息保留原表达或改为审慎措辞。
+3. 每个片段只对应一个替换结果，顺序必须与 fragment 的 index 一致。
+4. 第一段是面向用户的简短编辑说明，不得暴露逐步推理、隐藏提示或内部判断。
+5. 严格只按以下格式返回，不能使用 Markdown 代码围栏：
+<editorial_note>用 1 至 3 句话说明改动重点。</editorial_note>
+<replacements>[{{"index":0,"markdown":"片段 0 的替换内容"}}]</replacements>
+
+待修改内容：
+{fragments}"""
+
+
+def _parse_rewrite_response(
+    output: str,
+    *,
+    expected_count: int,
+    provider: str,
+    model: str,
+    mocked: bool,
+) -> RewriteArticleResponse:
+    cleaned = output.strip()
+    note_match = re.search(r"<editorial_note>(.*?)</editorial_note>", cleaned, re.DOTALL)
+    replacements_match = re.search(r"<replacements>\s*(.*?)\s*</replacements>", cleaned, re.DOTALL)
+    if note_match and replacements_match:
+        try:
+            raw_replacements = json.loads(replacements_match.group(1))
+        except json.JSONDecodeError as error:
+            raise ValueError("model returned invalid rewrite replacement data") from error
+        if not isinstance(raw_replacements, list):
+            raise ValueError("model returned rewrite replacements in an invalid shape")
+        ordered: list[str | None] = [None] * expected_count
+        for item in raw_replacements:
+            if not isinstance(item, dict):
+                raise ValueError("model returned an invalid rewrite replacement")
+            index = item.get("index")
+            markdown = item.get("markdown")
+            if not isinstance(index, int) or not 0 <= index < expected_count:
+                raise ValueError("model returned a replacement index outside the selected range")
+            if not isinstance(markdown, str) or not markdown.strip() or len(markdown) > 80_000:
+                raise ValueError("model returned an empty or oversized replacement")
+            if ordered[index] is not None:
+                raise ValueError("model returned duplicate replacement indexes")
+            ordered[index] = markdown.strip()
+        if any(value is None for value in ordered):
+            raise ValueError("model did not return a replacement for every selected fragment")
+        summary = note_match.group(1).strip()
+        if not summary:
+            summary = "已按要求生成修改，并保留原有 Markdown 结构。"
+        return RewriteArticleResponse(
+            replacements=[value for value in ordered if value is not None],
+            summary=summary[:1_200],
+            provider=provider,
+            model=model,
+            mocked=mocked,
+        )
+    if expected_count == 1 and cleaned:
+        # Preserve compatibility with simple OpenAI-compatible providers that
+        # return the revised Markdown but ignore the requested envelope.
+        return RewriteArticleResponse(
+            replacements=[cleaned],
+            summary="已根据本次要求修改正文，并保留原有 Markdown 结构。",
+            provider=provider,
+            model=model,
+            mocked=mocked,
+        )
+    raise ValueError("model response did not contain every requested replacement")
+
+
+def _rewrite_request_config(request: RewriteArticleRequest) -> TextGenerationRequest:
+    sources = _rewrite_sources(request)
+    return TextGenerationRequest(
+        purpose="editor-rewrite",
+        prompt=_rewrite_prompt(request),
+        context={
+            "source_markdown": sources[0],
+            "selected_texts": sources,
+            "instruction": request.instruction.strip(),
+            "scope": "selection" if request.selected_texts else "article",
+        },
+        temperature=0.25,
+        max_output_tokens=min(7_200, max(1_600, 1_200 * len(sources))),
+    )
+
+
+def _rewrite_response_from_model(request: RewriteArticleRequest, container: RuntimeContainer) -> RewriteArticleResponse:
+    result = container.model_access.generate_text(_rewrite_request_config(request))
+    return _parse_rewrite_response(
+        result.text,
+        expected_count=len(_rewrite_sources(request)),
+        provider=result.provider,
+        model=result.model,
+        mocked=result.mocked,
+    )
+
+
+def _sse_event(event_type: str, payload: dict[str, object]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _rewrite_stream_events(
+    request: RewriteArticleRequest,
+    container: RuntimeContainer,
+) -> Iterator[str]:
+    events: Queue[tuple[str, object]] = Queue()
+    events.put(("status", {"detail": "正在读取文章与已选片段"}))
+    streamed_output: list[str] = []
+
+    def on_delta(delta: str) -> None:
+        streamed_output.append(delta)
+        events.put(("delta", {"delta": delta}))
+
+    def run() -> None:
+        try:
+            events.put(("status", {"detail": "模型正在生成编辑说明与修改内容"}))
+            result = container.model_access.generate_text_stream(
+                _rewrite_request_config(request),
+                on_delta=on_delta,
+            )
+            response = _parse_rewrite_response(
+                "".join(streamed_output),
+                expected_count=len(_rewrite_sources(request)),
+                provider=result.provider,
+                model=result.model,
+                mocked=result.mocked,
+            )
+            events.put(("completed", response.model_dump(mode="json")))
+        except Exception as error:
+            logger.warning("Article rewrite stream failed request=%s error=%s", request.request_id, type(error).__name__)
+            events.put(("failed", {"detail": "文章修改失败，请检查模型配置后重试。"}))
+
+    Thread(target=run, daemon=True, name="open-publisher-rewrite").start()
+    while True:
+        event_type, payload = events.get()
+        if event_type == "failed":
+            yield _sse_event("error", payload if isinstance(payload, dict) else {})
+            return
+        if event_type == "completed":
+            yield _sse_event("completed", payload if isinstance(payload, dict) else {})
+            return
+        yield _sse_event(event_type, payload if isinstance(payload, dict) else {})
+
+
 @router.post("/editor/rewrite", response_model=RewriteArticleResponse)
 def rewrite_article(
     request: RewriteArticleRequest,
     container: ContainerDep,
 ) -> RewriteArticleResponse:
-    """Return an editorial candidate without mutating the canonical revision."""
-
-    source = request.selected_text or request.markdown
-    scope = "选中的 Markdown 片段" if request.selected_text else "整篇 Markdown 文章"
-    prompt = f"""你是严谨的中文编辑助手。请按用户要求修改{scope}。
-
-用户要求：{request.instruction.strip()}
-
-必须遵守：
-1. 保留原有 Markdown 语法、链接、图片和代码块，除非用户明确要求修改它们。
-2. 不要补造事实、数字、引用、经历或来源；不确定的信息保留原表达或改为审慎措辞。
-3. 只返回修改后的 Markdown 正文，不要说明、标题、代码围栏或“修改如下”。
-4. 如果是选中片段，只返回该片段的替换内容，不要返回全文。
-
-待修改内容：
----
-{source}
----"""
     try:
-        result = container.model_access.generate_text(
-            TextGenerationRequest(
-                purpose="editor-rewrite",
-                prompt=prompt,
-                context={
-                    "source_markdown": source,
-                    "instruction": request.instruction.strip(),
-                    "scope": "selection" if request.selected_text else "article",
-                },
-                temperature=0.35,
-                max_output_tokens=4_000 if request.selected_text is None else 1_600,
-            )
-        )
+        return _rewrite_response_from_model(request, container)
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="article rewrite failed",
         ) from error
-    replacement = result.text.strip()
-    if replacement.startswith("```") and replacement.endswith("```"):
-        replacement = replacement.split("\n", 1)[-1].rsplit("\n", 1)[0].strip()
-    if not replacement:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="article rewrite returned no content",
-        )
-    return RewriteArticleResponse(
-        replacement=replacement,
-        provider=result.provider,
-        model=result.model,
-        mocked=result.mocked,
+
+
+@router.post("/editor/rewrite/stream")
+def stream_rewrite_article(
+    request: RewriteArticleRequest,
+    container: ContainerDep,
+) -> StreamingResponse:
+    return StreamingResponse(
+        _rewrite_stream_events(request, container),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

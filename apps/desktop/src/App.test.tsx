@@ -440,6 +440,7 @@ describe("desktop product flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
     const editor = (await screen.findByLabelText("Markdown 正文")) as HTMLTextAreaElement;
+    await screen.findByText(/文章已生成 · 修订/);
     fireEvent.change(editor, {
       target: { value: `# 内嵌图片迁移\n\n![旧图片](${image})` },
     });
@@ -448,6 +449,7 @@ describe("desktop product flow", () => {
       expect(editor.value).toMatch(/!\[旧图片\]\(asset:\/\/media-/);
     });
     expect(editor.value).not.toContain("data:image/");
+    fireEvent.click(screen.getByRole("button", { name: "预览" }));
     expect(await screen.findByRole("img", { name: "旧图片" })).toHaveAttribute("src", image);
   });
 

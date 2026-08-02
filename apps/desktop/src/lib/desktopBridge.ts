@@ -307,16 +307,33 @@ export interface ProcessPublishJobSummary {
 }
 
 export interface RewriteArticleRequest {
+  articleId: string;
+  requestId: string;
   markdown: string;
   instruction: string;
-  selectedText?: string | null;
+  selectedTexts: string[];
+  conversation: RewriteConversationMessage[];
+}
+
+export interface RewriteConversationMessage {
+  role: "user" | "assistant";
+  text: string;
 }
 
 export interface RewriteArticleSummary {
-  replacement: string;
+  replacements: string[];
+  summary: string;
   provider: string;
   model: string;
   mocked: boolean;
+}
+
+export interface RewriteStreamEvent {
+  articleId: string;
+  requestId: string;
+  eventType: "status" | "delta";
+  detail: string | null;
+  delta: string | null;
 }
 
 export interface GenerateImageRequest {
@@ -896,9 +913,10 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
     };
   },
   async rewriteArticle(request) {
-    const source = request.selectedText?.trim() || request.markdown;
+    const sources = request.selectedTexts.length ? request.selectedTexts : [request.markdown];
     return {
-      replacement: source,
+      replacements: sources,
+      summary: "本地演示模型保留了原文，未做实际语义改写。",
       provider: "mock",
       model: "deterministic-mock-v1",
       mocked: true,
@@ -1125,6 +1143,14 @@ export function setDesktopBridgeForTests(bridge: DesktopBridge | null) {
 
 const activeBridge = () =>
   testBridgeOverride ?? (isTauriHost() ? tauriBridge : browserPreviewBridge);
+
+export async function subscribeToRewriteEvents(
+  listener: (event: RewriteStreamEvent) => void,
+): Promise<() => void> {
+  if (!isTauriHost()) return () => undefined;
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<RewriteStreamEvent>("article-rewrite-stream", (event) => listener(event.payload));
+}
 
 /**
  * React only sees this narrow Rust command surface. It receives neither a Python

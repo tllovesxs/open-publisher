@@ -118,6 +118,24 @@ def test_live_sidecar_responses_match_canonical_rust_projections(client) -> None
     assert rewrite.status_code == 200, rewrite.text
     validate_definition("RewriteArticleResponse", rewrite.json())
 
+    rewrite_stream = client.post(
+        "/api/v1/editor/rewrite/stream", json=FIXTURES["RewriteArticleRequest"]
+    )
+    assert rewrite_stream.status_code == 200, rewrite_stream.text
+    assert "event: status" in rewrite_stream.text
+    assert "event: delta" in rewrite_stream.text
+    assert "event: completed" in rewrite_stream.text
+
+    multi_rewrite = client.post(
+        "/api/v1/editor/rewrite",
+        json={
+            **FIXTURES["RewriteArticleRequest"],
+            "selected_texts": ["第一段内容。", "第二段内容。"],
+        },
+    )
+    assert multi_rewrite.status_code == 200, multi_rewrite.text
+    assert multi_rewrite.json()["replacements"] == ["第一段内容。", "第二段内容。"]
+
     connection = client.post(
         "/api/v1/connections",
         json=FIXTURES["CreateConnectionProfileRequest"],

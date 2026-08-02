@@ -35,6 +35,7 @@ import {
   type PublishPlanSummary,
   type PublishReceiptSummary,
   type RewriteArticleSummary,
+  type RewriteConversationMessage,
   type RuntimeSnapshot,
   type VisualCompositionPlanSummary,
   type VisualCompositionRequest,
@@ -920,6 +921,8 @@ export default function App() {
   const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
   const [articleProgress, setArticleProgress] = useState<ArticleProgress | null>(null);
   const [articleContentReplacing, setArticleContentReplacing] = useState(false);
+  const [rewriteUndoArticleId, setRewriteUndoArticleId] = useState<string | null>(null);
+  const rewriteUndoRef = useRef<Record<string, { before: string; after: string }>>({});
   const dismissedWorkflowProgressArticleIds = useRef(new Set<string>());
   const lastWorkflowActivityAt = useRef(Date.now());
 
@@ -1240,7 +1243,15 @@ export default function App() {
           await saveMediaAssetsToDatabase(legacyAssets);
           window.localStorage.removeItem(MEDIA_STORAGE_KEY);
         }
-        if (!cancelled) setMediaAssets(assets);
+        if (!cancelled) {
+          // Imports can finish before IndexedDB hydration. Preserve those
+          // in-memory assets instead of replacing them with an older snapshot.
+          setMediaAssets((current) => {
+            const combined = new Map(assets.map((asset) => [asset.id, asset]));
+            current.forEach((asset) => combined.set(asset.id, asset));
+            return [...combined.values()];
+          });
+        }
       } catch (error) {
         if (!cancelled) {
           const detail = error instanceof Error ? error.message : String(error);
@@ -2286,7 +2297,9 @@ export default function App() {
 
   const rewriteCurrentArticle = async (
     instruction: string,
-    selection: MarkdownSelection | null,
+    selections: MarkdownSelection[],
+    conversation: RewriteConversationMessage[],
+    requestId: string,
   ): Promise<RewriteArticleSummary> => {
     if (!selectedArticle || workflowRunning || saving) {
       throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
@@ -2295,9 +2308,12 @@ export default function App() {
       throw new Error("请先完成文本模型配置。");
     }
     return desktopBridge.rewriteArticle({
+      articleId: selectedArticle.id,
+      requestId,
       markdown: currentMarkdown,
       instruction,
-      selectedText: selection?.text ?? null,
+      selectedTexts: selections.map((selection) => selection.text),
+      conversation,
     });
   };
 
@@ -2305,21 +2321,33 @@ export default function App() {
     if (!selectedArticle || workflowRunning || saving) {
       throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
     }
-    const selected = candidate.selection;
-    if (
-      selected &&
-      currentMarkdown.slice(selected.start, selected.end) !== selected.text
-    ) {
-      throw new Error("选中的原文已经变化，请重新选择后再生成修改建议。");
+    if (candidate.replacements.length !== (candidate.selections.length || 1)) {
+      throw new Error("AI 返回的修改片段数量不匹配，请重新生成修改建议。");
     }
-    const nextMarkdown = selected
-      ? `${currentMarkdown.slice(0, selected.start)}${candidate.replacement}${currentMarkdown.slice(selected.end)}`
-      : candidate.replacement;
+    let nextMarkdown = currentMarkdown;
+    if (candidate.selections.length) {
+      const replacements = candidate.selections
+        .map((selection, index) => ({ selection, replacement: candidate.replacements[index]! }))
+        .sort((left, right) => right.selection.start - left.selection.start);
+      for (const { selection, replacement } of replacements) {
+        if (currentMarkdown.slice(selection.start, selection.end) !== selection.text) {
+          throw new Error("选中的原文已经变化，请重新选择后再生成修改建议。");
+        }
+        nextMarkdown = `${nextMarkdown.slice(0, selection.start)}${replacement}${nextMarkdown.slice(selection.end)}`;
+      }
+    } else {
+      nextMarkdown = candidate.replacements[0] ?? "";
+    }
     if (!nextMarkdown.trim()) throw new Error("AI 返回了空内容，未修改文章。");
 
     setArticleContentReplacing(true);
     try {
       const revisionId = await persistRevision(selectedArticle.id, nextMarkdown, false);
+      rewriteUndoRef.current[selectedArticle.id] = {
+        before: currentMarkdown,
+        after: nextMarkdown,
+      };
+      setRewriteUndoArticleId(selectedArticle.id);
       setArticleItems((current) =>
         current.map((article) =>
           article.id === selectedArticle.id
@@ -2328,6 +2356,27 @@ export default function App() {
         ),
       );
       setToast(`AI 修改已保存 · ${candidate.model}`);
+    } finally {
+      window.setTimeout(() => setArticleContentReplacing(false), 260);
+    }
+  };
+
+  const undoLastArticleRewrite = async () => {
+    if (!selectedArticle || workflowRunning || saving) {
+      throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
+    }
+    const undo = rewriteUndoRef.current[selectedArticle.id];
+    if (!undo || currentMarkdown !== undo.after) {
+      throw new Error("正文已有新的手动修改，无法自动撤销这次 AI 修改。");
+    }
+    setArticleContentReplacing(true);
+    try {
+      await persistRevision(selectedArticle.id, undo.before, false);
+      delete rewriteUndoRef.current[selectedArticle.id];
+      setRewriteUndoArticleId((current) =>
+        current === selectedArticle.id ? null : current,
+      );
+      setToast("已撤销上一次 AI 修改");
     } finally {
       window.setTimeout(() => setArticleContentReplacing(false), 260);
     }
@@ -2696,6 +2745,10 @@ export default function App() {
             onDismissWorkflowProgress={dismissArticleProgress}
             onEditorModeChange={setEditorMode}
             onApplyRewriteCandidate={applyArticleRewrite}
+            canUndoRewrite={
+              Boolean(selectedArticle && rewriteUndoArticleId === selectedArticle.id &&
+                rewriteUndoRef.current[selectedArticle.id]?.after === currentMarkdown)
+            }
             onGenerateImage={() => void generateImage()}
             onImageFileDrop={importImageIntoArticle}
             onMarkdownChange={updateArticleMarkdown}
@@ -2703,6 +2756,7 @@ export default function App() {
             onPublishToPlatforms={publishCurrentArticleToWechatSync}
             onRefreshWechatSync={() => void refreshWechatSyncStatus()}
             onRewriteArticle={rewriteCurrentArticle}
+            onUndoRewrite={undoLastArticleRewrite}
             onRunWorkflow={() => void improveCurrentArticle()}
             onSave={() => void saveCurrentArticle()}
             onSelect={selectArticle}

@@ -13,7 +13,7 @@ use supervisor::{
     SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor, StoredArticleSummary,
     TemplateExtractionSummary, WechatSyncBridgeStatus, WorkflowActivitySummary,
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 struct DesktopState {
     supervisor: Arc<PythonSidecarSupervisor>,
@@ -211,11 +211,16 @@ async fn process_publish_job(
 async fn rewrite_article(
     request: RewriteArticleRequest,
     state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
 ) -> Result<RewriteArticleSummary, String> {
     let supervisor = Arc::clone(&state.supervisor);
-    tauri::async_runtime::spawn_blocking(move || supervisor.rewrite_article(request))
-        .await
-        .map_err(|_| "article rewrite task was cancelled".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        supervisor.rewrite_article(request, &mut |event| {
+            let _ = app.emit("article-rewrite-stream", event);
+        })
+    })
+    .await
+    .map_err(|_| "article rewrite task was cancelled".to_owned())?
 }
 
 #[tauri::command]
