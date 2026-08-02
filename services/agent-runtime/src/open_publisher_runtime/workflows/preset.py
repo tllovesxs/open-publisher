@@ -331,6 +331,8 @@ class PresetArticleWorkflow:
                     f"为《{state['title']}》直接生成完整的 Markdown 正文。"
                     "请自行规划清晰的标题层级和叙述节奏，不输出写作过程、元说明或代码围栏。"
                     "创作要求中的篇幅是交付约束：必须完成结尾，不能在段落、列表或小节中途停止。"
+                    "如果作者素材中包含‘写作模板规范’，必须把其中的文风、结构和排版规则当作硬约束；"
+                    "模板固定片段由桌面端在生成后确定性插入，严禁在正文中自行输出固定片段或花括号占位符。"
                     f"\n\n主题：\n{state['topic']}\n\n"
                     f"作者素材、模板或参考资料：\n{state['source_markdown']}"
                     f"{search_instruction}{self._agent_guidance(state, 'draft')}"

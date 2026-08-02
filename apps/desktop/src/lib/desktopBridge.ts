@@ -337,6 +337,38 @@ export interface TemplateExtractionSummary {
   description: string;
   category: string;
   markdown: string;
+  styleProfile: {
+    tone: string;
+    audience: string;
+    perspective: string;
+    sentenceStyle: string;
+    pacing: string;
+    density: string;
+  };
+  structureProfile: {
+    openingPattern: string;
+    sectionPattern: string;
+    conclusionPattern: string;
+    headingDepth: string;
+    paragraphPattern: string;
+  };
+  layoutProfile: {
+    useLists: boolean;
+    useTables: boolean;
+    useBlockquotes: boolean;
+    useCodeBlocks: boolean;
+    imagePlacement: string;
+    emphasisRules: string;
+  };
+  fixedBlocks: Array<{
+    id: string;
+    label: string;
+    enabled: boolean;
+    content: string;
+    position: "before_title" | "after_intro" | "before_closing" | "after_article";
+  }>;
+  variables: string[];
+  usageInstructions: string;
   provider: string;
   model: string;
   mocked: boolean;
@@ -875,6 +907,32 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       description: "从原文层级提取的可复用 Markdown 结构。",
       category: "自定义文章",
       markdown: mockTemplateMarkdown(request.sourceMarkdown),
+      styleProfile: {
+        tone: "专业、清晰",
+        audience: "关注主题的读者",
+        perspective: "作者解释视角",
+        sentenceStyle: "短段落，先结论后解释",
+        pacing: "按章节递进",
+        density: "中等",
+      },
+      structureProfile: {
+        openingPattern: "先给结论和背景",
+        sectionPattern: "按主题拆分章节",
+        conclusionPattern: "总结并给出下一步",
+        headingDepth: "二级标题承载章节",
+        paragraphPattern: "每段表达一个要点",
+      },
+      layoutProfile: {
+        useLists: true,
+        useTables: false,
+        useBlockquotes: false,
+        useCodeBlocks: false,
+        imagePlacement: "放在相关小节之后",
+        emphasisRules: "适度强调关键词",
+      },
+      fixedBlocks: [],
+      variables: ["title", "lead", "closing"],
+      usageInstructions: "保持原文结构，替换具体事实。",
       provider: "mock",
       model: mockModelConfiguration?.textModel ?? "deterministic-mock-v1",
       mocked: true,

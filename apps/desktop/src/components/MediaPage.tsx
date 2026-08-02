@@ -73,7 +73,7 @@ export function MediaPage({
         <div>
           <span className="page-kicker">文章图片资产</span>
           <h1>素材库</h1>
-          <p>选中图片后，可以直接插入正在编辑的文章；也可以带回创作页。图片介绍会帮助不具备视觉能力的模型判断合适位置。</p>
+          <p>选中图片后，可以直接插入正在编辑的文章；也可以带回创作页。内容描述和使用场景会帮助不具备视觉能力的模型判断合适位置。</p>
         </div>
         <div className="page-heading__actions">
           <button className="button button--quiet" disabled={uploading} onClick={() => inputRef.current?.click()} type="button"><Upload aria-hidden="true" size={16} />{uploading ? "导入中" : "上传图片"}</button>
@@ -104,17 +104,41 @@ export function MediaPage({
               <strong>{asset.name}</strong>
               <span>{asset.source === "generated" ? "AI 生成" : "本地上传"} · {asset.createdAt}</span>
               <label className="media-card__description">
-                <span>给 AI 的图片介绍</span>
+                <span>图片内容描述</span>
                 <textarea
-                  aria-label={`${asset.name}的图片介绍`}
+                  aria-label={`${asset.name}的图片内容描述`}
                   maxLength={600}
-                  onChange={(event) => onUpdate({ ...asset, description: event.target.value })}
+                  onChange={(event) => onUpdate({ ...asset, visualDescription: event.target.value, descriptionSource: "manual" })}
                   onDragStart={(event) => event.stopPropagation()}
-                  placeholder="例如：展示三个模块间的数据流向，适合放在实践章节。"
+                  placeholder="例如：三个模块通过事件总线传递任务状态。"
                   rows={2}
-                  value={asset.description}
+                  value={asset.visualDescription || ""}
                 />
               </label>
+              <label className="media-card__description">
+                <span>使用场景</span>
+                <textarea
+                  aria-label={`${asset.name}的使用场景`}
+                  maxLength={600}
+                  onChange={(event) => onUpdate({ ...asset, usageHint: event.target.value })}
+                  onDragStart={(event) => event.stopPropagation()}
+                  placeholder="例如：放在介绍工作流节点关系的小节之后。"
+                  rows={2}
+                  value={asset.usageHint || ""}
+                />
+              </label>
+              <label className="media-card__description">
+                <span>标签（用逗号分隔）</span>
+                <input
+                  aria-label={`${asset.name}的标签`}
+                  maxLength={240}
+                  onChange={(event) => onUpdate({ ...asset, tags: event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 24) })}
+                  onDragStart={(event) => event.stopPropagation()}
+                  placeholder="流程图, 架构, 教程"
+                  value={(asset.tags ?? []).join(", ")}
+                />
+              </label>
+              {asset.generationPrompt && <small>生图提示词：{asset.generationPrompt}</small>}
               <small>拖入文章即可插入</small>
             </div>
           </article>

@@ -56,12 +56,58 @@ export interface StudioAgent {
   runtimeNodeId?: string;
 }
 
+export interface TemplateStyleProfile {
+  tone: string;
+  audience: string;
+  perspective: string;
+  sentenceStyle: string;
+  pacing: string;
+  density: string;
+}
+
+export interface TemplateStructureProfile {
+  openingPattern: string;
+  sectionPattern: string;
+  conclusionPattern: string;
+  headingDepth: string;
+  paragraphPattern: string;
+}
+
+export interface TemplateLayoutProfile {
+  useLists: boolean;
+  useTables: boolean;
+  useBlockquotes: boolean;
+  useCodeBlocks: boolean;
+  imagePlacement: string;
+  emphasisRules: string;
+}
+
+export type TemplateFixedBlockPosition =
+  | "before_title"
+  | "after_intro"
+  | "before_closing"
+  | "after_article";
+
+export interface TemplateFixedBlock {
+  id: string;
+  label: string;
+  enabled: boolean;
+  content: string;
+  position: TemplateFixedBlockPosition;
+}
+
 export interface MarkdownTemplate {
   id: string;
   name: string;
   description: string;
   category: string;
   markdown: string;
+  styleProfile: TemplateStyleProfile;
+  structureProfile: TemplateStructureProfile;
+  layoutProfile: TemplateLayoutProfile;
+  fixedBlocks: TemplateFixedBlock[];
+  variables: string[];
+  usageInstructions: string;
   isBuiltIn: boolean;
 }
 
@@ -69,8 +115,16 @@ export interface MediaAsset {
   id: string;
   name: string;
   alt: string;
-  /** Optional author-written context for text-only visual planning. */
+  /** Legacy field retained for one-version migration. New UI writes usageHint. */
   description: string;
+  /** What the image visibly contains, independent of its original prompt. */
+  visualDescription?: string;
+  /** Where or why the image should be used in an article. */
+  usageHint?: string;
+  /** Prompt used when the image was generated, when available. */
+  generationPrompt?: string;
+  tags?: string[];
+  descriptionSource?: "manual" | "generation_prompt" | "vision";
   src: string;
   source: "uploaded" | "generated";
   createdAt: string;

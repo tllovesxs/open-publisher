@@ -77,6 +77,12 @@ class TemplateExtractionResponse(ApiModel):
     description: str = Field(min_length=1, max_length=300)
     category: str = Field(min_length=1, max_length=60)
     markdown: str = Field(min_length=1, max_length=32_768)
+    style_profile: dict[str, Any] = Field(default_factory=dict)
+    structure_profile: dict[str, Any] = Field(default_factory=dict)
+    layout_profile: dict[str, Any] = Field(default_factory=dict)
+    fixed_blocks: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    variables: list[str] = Field(default_factory=list, max_length=64)
+    usage_instructions: str = Field(default="", max_length=4_000)
     provider: str = Field(min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=200)
     mocked: bool

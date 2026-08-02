@@ -39,6 +39,8 @@ def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) ->
     assert payload["provider"] == "mock"
     assert payload["mocked"] is True
     assert "{{title}}" in payload["markdown"]
+    assert payload["style_profile"]["tone"] == ""
+    assert "title" in payload["variables"]
     assert "Wandao" not in payload["markdown"]
     assert "example.invalid" not in payload["markdown"]
     assert "source_markdown" not in payload
@@ -47,6 +49,12 @@ def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) ->
         "description",
         "category",
         "markdown",
+        "style_profile",
+        "structure_profile",
+        "layout_profile",
+        "fixed_blocks",
+        "variables",
+        "usage_instructions",
         "provider",
         "model",
         "mocked",
@@ -61,6 +69,12 @@ def test_template_extraction_rejects_concrete_links_from_model_output(client) ->
                 "description": "包含不该保留的链接。",
                 "category": "测试",
                 "markdown": "# {{title}}\n\n[原文](https://example.invalid/private)",
+                "style_profile": {},
+                "structure_profile": {},
+                "layout_profile": {},
+                "fixed_blocks": [],
+                "variables": ["title"],
+                "usage_instructions": "",
             },
             ensure_ascii=False,
         )
@@ -86,6 +100,12 @@ def test_template_extraction_rejects_a_repeated_source_title(client) -> None:
                 "description": "可复用的更新结构。",
                 "category": "测试",
                 "markdown": "# Wandao 体积下降 42%\n\n{{lead}}",
+                "style_profile": {},
+                "structure_profile": {},
+                "layout_profile": {},
+                "fixed_blocks": [],
+                "variables": ["lead"],
+                "usage_instructions": "",
             },
             ensure_ascii=False,
         )

@@ -57,6 +57,10 @@ import type {
   PlatformId,
   StudioAgent,
   StudioSkill,
+  TemplateFixedBlock,
+  TemplateLayoutProfile,
+  TemplateStructureProfile,
+  TemplateStyleProfile,
 } from "./types";
 
 type Theme = "light" | "dark";
@@ -253,6 +257,11 @@ function isStoredMediaAsset(value: unknown): value is MediaAsset {
     typeof asset.name === "string" &&
     typeof asset.alt === "string" &&
     (asset.description === undefined || typeof asset.description === "string") &&
+    (asset.visualDescription === undefined || typeof asset.visualDescription === "string") &&
+    (asset.usageHint === undefined || typeof asset.usageHint === "string") &&
+    (asset.generationPrompt === undefined || typeof asset.generationPrompt === "string") &&
+    (asset.tags === undefined || Array.isArray(asset.tags)) &&
+    (asset.descriptionSource === undefined || ["manual", "generation_prompt", "vision"].includes(asset.descriptionSource)) &&
     typeof asset.src === "string" &&
     (asset.source === "uploaded" || asset.source === "generated") &&
     typeof asset.createdAt === "string"
@@ -262,11 +271,97 @@ function isStoredMediaAsset(value: unknown): value is MediaAsset {
 function loadMediaAssets() {
   const stored = loadStudioValue<unknown>(MEDIA_STORAGE_KEY, []);
   return Array.isArray(stored)
-    ? stored.filter(isStoredMediaAsset).map((asset) => ({
-        ...asset,
-        description: asset.description ?? "",
-      }))
+    ? stored.filter(isStoredMediaAsset).map(normalizeMediaAsset)
     : [];
+}
+
+function normalizeMediaAsset(asset: MediaAsset): MediaAsset {
+  return {
+    ...asset,
+    description: asset.description ?? "",
+    visualDescription: asset.visualDescription ?? "",
+    usageHint: asset.usageHint ?? asset.description ?? "",
+    generationPrompt: asset.generationPrompt ?? "",
+    tags: Array.isArray(asset.tags)
+      ? asset.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 24)
+      : [],
+    descriptionSource: asset.descriptionSource ?? "manual",
+  };
+}
+
+const emptyStyleProfile = (): TemplateStyleProfile => ({
+  tone: "",
+  audience: "",
+  perspective: "",
+  sentenceStyle: "",
+  pacing: "",
+  density: "",
+});
+
+const emptyStructureProfile = (): TemplateStructureProfile => ({
+  openingPattern: "",
+  sectionPattern: "",
+  conclusionPattern: "",
+  headingDepth: "",
+  paragraphPattern: "",
+});
+
+const emptyLayoutProfile = (): TemplateLayoutProfile => ({
+  useLists: true,
+  useTables: false,
+  useBlockquotes: false,
+  useCodeBlocks: false,
+  imagePlacement: "",
+  emphasisRules: "",
+});
+
+export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<MarkdownTemplate>;
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.description !== "string" ||
+    typeof candidate.category !== "string" ||
+    typeof candidate.markdown !== "string"
+  ) return null;
+  const blocks = Array.isArray(candidate.fixedBlocks)
+    ? candidate.fixedBlocks
+        .filter((block): block is TemplateFixedBlock => Boolean(block && typeof block === "object" && typeof (block as TemplateFixedBlock).content === "string"))
+        .map((block, index) => ({
+          id: typeof block.id === "string" ? block.id : `${candidate.id}-block-${index + 1}`,
+          label: typeof block.label === "string" ? block.label : "固定片段",
+          enabled: block.enabled !== false,
+          content: block.content.slice(0, 4_000),
+          position: ["before_title", "after_intro", "before_closing", "after_article"].includes(block.position)
+            ? block.position
+            : "after_article",
+        }))
+    : [];
+  return {
+    id: candidate.id,
+    name: candidate.name.slice(0, 120),
+    description: candidate.description.slice(0, 500),
+    category: candidate.category.slice(0, 80),
+    markdown: candidate.markdown,
+    styleProfile: { ...emptyStyleProfile(), ...(candidate.styleProfile ?? {}) },
+    structureProfile: { ...emptyStructureProfile(), ...(candidate.structureProfile ?? {}) },
+    layoutProfile: { ...emptyLayoutProfile(), ...(candidate.layoutProfile ?? {}) },
+    fixedBlocks: blocks,
+    variables: Array.isArray(candidate.variables)
+      ? candidate.variables.filter((variable): variable is string => typeof variable === "string").slice(0, 64)
+      : [],
+    usageInstructions: typeof candidate.usageInstructions === "string" ? candidate.usageInstructions.slice(0, 4_000) : "",
+    isBuiltIn: candidate.isBuiltIn === true,
+  };
+}
+
+function loadTemplates() {
+  const stored = loadStudioValue<unknown>(TEMPLATES_STORAGE_KEY, defaultTemplates);
+  const normalized = Array.isArray(stored)
+    ? stored.map(normalizeTemplate).filter((template): template is MarkdownTemplate => Boolean(template))
+    : [];
+  return normalized.length > 0 ? normalized : defaultTemplates;
 }
 
 function newLocalId(prefix: string) {
@@ -318,6 +413,11 @@ function compactInlineDataImages(markdown: string, knownAssets: MediaAsset[]) {
           name: assetAlt,
           alt: assetAlt,
           description: "从历史 Markdown 的内嵌图片迁入本机素材库。",
+          visualDescription: "",
+          usageHint: "从历史 Markdown 的内嵌图片迁入本机素材库。",
+          generationPrompt: "",
+          tags: [],
+          descriptionSource: "manual",
           src,
           source: "uploaded",
           createdAt: "刚刚迁入",
@@ -334,13 +434,28 @@ function compactInlineDataImages(markdown: string, knownAssets: MediaAsset[]) {
 function visualCompositionFromCreation(
   request: CreationRequest,
 ): VisualCompositionRequest {
+  const visualAssetDescription = (asset: MediaAsset) => {
+    const hasStructuredDescription = Boolean(
+      asset.visualDescription?.trim() ||
+        asset.generationPrompt?.trim() ||
+        (asset.tags && asset.tags.length > 0) ||
+        (asset.usageHint?.trim() && asset.usageHint.trim() !== asset.description.trim()),
+    );
+    if (!hasStructuredDescription) return asset.description.trim().slice(0, 600);
+    return [
+      asset.visualDescription?.trim() && `图片内容：${asset.visualDescription.trim()}`,
+      asset.usageHint?.trim() && `使用场景：${asset.usageHint.trim()}`,
+      asset.generationPrompt?.trim() && `生成提示词：${asset.generationPrompt.trim()}`,
+      asset.tags && asset.tags.length > 0 && `标签：${asset.tags.join("、")}`,
+    ].filter(Boolean).join("\n").slice(0, 1_200);
+  };
   return {
     mode: request.imagePlan.mode,
     targetCount: request.imagePlan.targetCount,
     assets: request.imageAssets.slice(0, 6).map((asset) => ({
       id: asset.id,
       alt: asset.alt.trim().slice(0, 160) || asset.name.slice(0, 160),
-      description: asset.description.trim().slice(0, 600),
+      description: visualAssetDescription(asset),
     })),
   };
 }
@@ -668,7 +783,7 @@ function buildCreationSeed(request: CreationRequest) {
         .filter((heading) => heading !== title)
     : [];
   const template = request.template
-    ? `\n\n## 写作结构\n\n请按「${request.template.name}」的章节组织正文。不要输出花括号占位符、模板说明或创作要求。\n\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}`
+    ? `\n\n## 写作模板规范（只作为内部规则，不要把本节原样输出）\n\n模板名称：${request.template.name}\n\n文风：\n${Object.entries(request.template.styleProfile).map(([key, value]) => `- ${key}：${value}`).join("\n")}\n\n结构：\n${Object.entries(request.template.structureProfile).map(([key, value]) => `- ${key}：${value}`).join("\n")}\n\n排版：\n${Object.entries(request.template.layoutProfile).map(([key, value]) => `- ${key}：${String(value)}`).join("\n")}\n\n模板骨架章节：\n${templateHeadings.map((heading) => `- ${heading}`).join("\n")}\n\n使用说明：${request.template.usageInstructions || "遵守模板结构，结合主题替换所有占位内容。"}\n\n固定片段（由程序在生成后插入，写作 Agent 不要输出）：\n${request.template.fixedBlocks.filter((block) => block.enabled && block.content.trim()).map((block) => `- ${block.position}：${block.content}`).join("\n") || "- 无"}`
     : "";
   return `# ${title}
 
@@ -679,6 +794,51 @@ function buildCreationSeed(request: CreationRequest) {
 - 风格：${request.tone}
 - 篇幅：${request.length}
 ${references}${template}`.trim();
+}
+
+function renderFixedBlock(content: string, article: Article, request: CreationRequest) {
+  return content
+    .replace(/\{\{title\}\}/g, article.title || request.title || request.topic)
+    .replace(/\{\{topic\}\}/g, request.topic)
+    .replace(/\{\{lead\}\}/g, request.topic)
+    .replace(/\{\{project_name\}\}/g, "")
+    .replace(/\{\{project_intro\}\}/g, "")
+    .replace(/\{\{project_link\}\}/g, "")
+    .replace(/\{\{star_cta\}\}/g, "")
+    .replace(/\{\{[a-z][a-z0-9_]*\}\}/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function applyTemplateFixedBlocks(markdown: string, template: MarkdownTemplate | null, article: Article, request: CreationRequest) {
+  if (!template) return markdown;
+  let result = markdown.trim();
+  const enabledBlocks = template.fixedBlocks.filter((block) => block.enabled && block.content.trim());
+  for (const block of enabledBlocks) {
+    const content = renderFixedBlock(block.content, article, request);
+    if (!content || result.includes(content)) continue;
+    const lines = result.split("\n");
+    if (block.position === "before_title") {
+      result = `${content}\n\n${result}`;
+    } else if (block.position === "after_intro") {
+      const titleIndex = lines.findIndex((line) => /^#\s+/.test(line));
+      let insertion = titleIndex >= 0 ? titleIndex + 1 : 0;
+      while (insertion < lines.length && !lines[insertion].trim()) insertion += 1;
+      while (insertion < lines.length && lines[insertion].trim() && !/^#{1,6}\s+/.test(lines[insertion])) insertion += 1;
+      lines.splice(insertion, 0, "", content, "");
+      result = lines.join("\n");
+    } else if (block.position === "before_closing") {
+      const closingIndex = lines.map((line, index) => ({ line, index })).filter(({ line }) => /^#{1,6}\s+/.test(line) && /(结语|结论|总结|下一步|closing)/i.test(line)).at(-1)?.index;
+      if (closingIndex === undefined) result = `${result}\n\n${content}`;
+      else {
+        lines.splice(closingIndex, 0, content, "");
+        result = lines.join("\n");
+      }
+    } else {
+      result = `${result}\n\n${content}`;
+    }
+  }
+  return result.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
 export default function App() {
@@ -739,7 +899,7 @@ export default function App() {
   );
   const [customSkills, setCustomSkills] = useState<StudioSkill[]>(loadCustomSkills);
   const [templates, setTemplates] = useState<MarkdownTemplate[]>(() =>
-    loadStudioValue(TEMPLATES_STORAGE_KEY, defaultTemplates),
+    loadTemplates(),
   );
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(() => {
     const stored = loadStudioValue<unknown>(SELECTED_TEMPLATE_STORAGE_KEY, null);
@@ -1070,7 +1230,7 @@ export default function App() {
     const loadMedia = async () => {
       try {
         const legacyAssets = loadMediaAssets();
-        const databaseAssets = await loadMediaAssetsFromDatabase();
+        const databaseAssets = (await loadMediaAssetsFromDatabase()).map(normalizeMediaAsset);
         const merged = new Map(databaseAssets.map((asset) => [asset.id, asset]));
         for (const asset of legacyAssets) merged.set(asset.id, asset);
         const assets = [...merged.values()];
@@ -1459,6 +1619,11 @@ export default function App() {
       name,
       alt: name,
       description: "",
+      visualDescription: "",
+      usageHint: "",
+      generationPrompt: "",
+      tags: [],
+      descriptionSource: "manual",
       src,
       source: "uploaded",
       createdAt: "刚刚导入",
@@ -1696,6 +1861,11 @@ export default function App() {
           name: `${article.title} 正文配图 ${index + 1}`.slice(0, 120),
           alt: escapeImageAlt(placement.alt),
           description: `由 AI 根据文章小节“${placement.afterHeading ?? "文章核心观点"}”生成。`,
+          visualDescription: placement.alt,
+          usageHint: `适合插入“${placement.afterHeading ?? "文章核心观点"}”之后，用于补充正文说明。`,
+          generationPrompt: placement.generationPrompt,
+          tags: ["AI 生成", "正文配图"],
+          descriptionSource: "generation_prompt",
           src: image.dataUrl,
           source: "generated",
           createdAt: "刚刚生成",
@@ -1925,11 +2095,17 @@ export default function App() {
         stopActivityPolling();
       }
       clearWriterTypewriter(article.id);
-      completeWorkflowWorkspace(article.id, summary);
+      const templatedSummary = request.template
+        ? {
+            ...summary,
+            outputMarkdown: applyTemplateFixedBlocks(summary.outputMarkdown, request.template, article, request),
+          }
+        : summary;
+      completeWorkflowWorkspace(article.id, templatedSummary);
       setArticleContentReplacing(true);
-      applyWorkflowResult(article.id, summary, request.platforms);
+      applyWorkflowResult(article.id, templatedSummary, request.platforms);
       window.setTimeout(() => setArticleContentReplacing(false), 260);
-      const composed = await composeVisualPlan(article, summary, request, startedAt);
+      const composed = await composeVisualPlan(article, templatedSummary, request, startedAt);
       setRuntime(await desktopBridge.runtimeSnapshot());
       setCreationActivity((current) =>
         current
@@ -1945,7 +2121,7 @@ export default function App() {
                 ...current.logs,
                 activityLog(
                   `workflow-completed-${startedAt}`,
-                  `工作流已完成并生成修订 ${composed.revisionNumber}`,
+                  `工作流已完成，已按模板合成固定片段并生成修订 ${composed.revisionNumber}`,
                   "success",
                 ),
               ],
@@ -2123,6 +2299,11 @@ export default function App() {
         name: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 120),
         alt: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 160),
         description: "AI 生成的文章配图。",
+        visualDescription: `${selectedArticle.title} 的文章配图。`,
+        usageHint: "适合在文章中补充核心观点或作为封面使用。",
+        generationPrompt: `为《${selectedArticle.title}》生成清晰克制的文章封面，不使用品牌标识。主题：${selectedArticle.deck}`,
+        tags: ["AI 生成", "文章配图"],
+        descriptionSource: "generation_prompt" as const,
         src: image.dataUrl,
         source: "generated" as const,
         createdAt: "刚刚生成",
@@ -2165,12 +2346,41 @@ export default function App() {
           ? "已提取本地演示模板，请检查后保存"
           : `已提取模板结构 · ${result.model} · 请检查后保存`,
       );
+      const styleProfile = result.styleProfile as unknown as Record<string, unknown>;
+      const structureProfile = result.structureProfile as unknown as Record<string, unknown>;
+      const layoutProfile = result.layoutProfile as unknown as Record<string, unknown>;
       return {
         id: `template-${Date.now()}`,
         name: result.name,
         description: result.description,
         category: result.category,
         markdown: result.markdown,
+        styleProfile: {
+          tone: String(styleProfile.tone ?? ""),
+          audience: String(styleProfile.audience ?? ""),
+          perspective: String(styleProfile.perspective ?? ""),
+          sentenceStyle: String(styleProfile.sentenceStyle ?? styleProfile.sentence_style ?? ""),
+          pacing: String(styleProfile.pacing ?? ""),
+          density: String(styleProfile.density ?? ""),
+        },
+        structureProfile: {
+          openingPattern: String(structureProfile.openingPattern ?? structureProfile.opening_pattern ?? ""),
+          sectionPattern: String(structureProfile.sectionPattern ?? structureProfile.section_pattern ?? ""),
+          conclusionPattern: String(structureProfile.conclusionPattern ?? structureProfile.conclusion_pattern ?? ""),
+          headingDepth: String(structureProfile.headingDepth ?? structureProfile.heading_depth ?? ""),
+          paragraphPattern: String(structureProfile.paragraphPattern ?? structureProfile.paragraph_pattern ?? ""),
+        },
+        layoutProfile: {
+          useLists: Boolean(layoutProfile.useLists ?? layoutProfile.use_lists ?? true),
+          useTables: Boolean(layoutProfile.useTables ?? layoutProfile.use_tables),
+          useBlockquotes: Boolean(layoutProfile.useBlockquotes ?? layoutProfile.use_blockquotes),
+          useCodeBlocks: Boolean(layoutProfile.useCodeBlocks ?? layoutProfile.use_code_blocks),
+          imagePlacement: String(layoutProfile.imagePlacement ?? layoutProfile.image_placement ?? ""),
+          emphasisRules: String(layoutProfile.emphasisRules ?? layoutProfile.emphasis_rules ?? ""),
+        },
+        fixedBlocks: result.fixedBlocks,
+        variables: result.variables,
+        usageInstructions: result.usageInstructions,
         isBuiltIn: false,
       } satisfies MarkdownTemplate;
     } catch (error) {

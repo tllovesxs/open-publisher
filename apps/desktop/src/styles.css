@@ -2863,6 +2863,13 @@ p {
   gap: 8px;
 }
 
+.template-preview__profiles { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 10px 22px; border-top: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 11px; }
+.template-editor__fieldset { display: grid; gap: 12px; margin: 0; padding: 14px; border: 1px solid var(--border); border-radius: 7px; }
+.template-editor__fieldset legend { padding: 0 6px; color: var(--ink-soft); font-size: 12px; font-weight: 650; }
+.template-editor__toggles { display: flex; flex-wrap: wrap; gap: 12px 18px; color: var(--muted); font-size: 12px; }
+.template-editor__toggles label { display: inline-flex; align-items: center; gap: 6px; }
+.template-fixed-block { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+
 .template-extractor {
   width: min(720px, 100%);
 }
@@ -2964,6 +2971,19 @@ p {
   font: inherit;
   font-size: 11px;
   line-height: 1.45;
+}
+
+.media-card__description input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
 }
 
 .media-card__description textarea::placeholder {

@@ -58,7 +58,7 @@ export function ImageInsertDialog({
         </div>
         {source === "library" ? (
           <div className="image-insert-dialog__library" role="tabpanel">
-            {assets.length === 0 ? <p>素材库暂无图片。选择“本地文件”导入后会自动加入素材库。</p> : assets.map((asset) => <button key={asset.id} onClick={() => { onInsert({ alt: asset.alt || asset.name, src: mediaMarkdownReference(asset) }); onClose(); }} type="button"><img alt="" src={asset.src} /><span><strong>{asset.name}</strong><small>{asset.description || "未填写图片说明"}</small></span><ImagePlus aria-hidden="true" size={16} /></button>)}
+            {assets.length === 0 ? <p>素材库暂无图片。选择“本地文件”导入后会自动加入素材库。</p> : assets.map((asset) => <button key={asset.id} onClick={() => { onInsert({ alt: asset.alt || asset.name, src: mediaMarkdownReference(asset) }); onClose(); }} type="button"><img alt="" src={asset.src} /><span><strong>{asset.name}</strong><small>{asset.visualDescription || asset.usageHint || "未填写图片描述"}</small></span><ImagePlus aria-hidden="true" size={16} /></button>)}
           </div>
         ) : (
           <div className="image-insert-dialog__file" role="tabpanel">

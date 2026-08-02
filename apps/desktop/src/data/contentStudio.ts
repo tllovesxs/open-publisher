@@ -149,6 +149,32 @@ export const defaultTemplates: MarkdownTemplate[] = [
 ## 结语
 
 {{closing}}`,
+    styleProfile: {
+      tone: "专业、清晰、克制",
+      audience: "希望快速理解技术变化的开发者",
+      perspective: "作者解释者视角",
+      sentenceStyle: "长短句交替，先结论后解释",
+      pacing: "每节一个重点，段落之间有明确递进",
+      density: "中等信息密度，避免连续堆砌术语",
+    },
+    structureProfile: {
+      openingPattern: "开头先给出背景和一句可执行的结论",
+      sectionPattern: "结论 -> 背景 -> 实现细节 -> 取舍",
+      conclusionPattern: "用一段话总结影响，并给出下一步建议",
+      headingDepth: "一级标题用于题目，二级标题用于主要章节",
+      paragraphPattern: "每段 2-5 句，复杂内容拆成列表",
+    },
+    layoutProfile: {
+      useLists: true,
+      useTables: false,
+      useBlockquotes: false,
+      useCodeBlocks: true,
+      imagePlacement: "放在解释核心概念的小节正文之后",
+      emphasisRules: "只强调关键名词或结论，不连续加粗",
+    },
+    fixedBlocks: [],
+    variables: ["title", "lead", "key_takeaway", "context", "details", "closing"],
+    usageInstructions: "保留技术事实和限制条件，不要把模板占位符原样输出。",
     isBuiltIn: true,
   },
   {
@@ -177,6 +203,32 @@ export const defaultTemplates: MarkdownTemplate[] = [
 ## 常见问题
 
 {{faq}}`,
+    styleProfile: {
+      tone: "耐心、直接、可操作",
+      audience: "需要跟着步骤完成任务的实践者",
+      perspective: "带读者完成任务的教练视角",
+      sentenceStyle: "短句为主，每一步只表达一个动作",
+      pacing: "准备 -> 操作 -> 验证 -> 排错",
+      density: "步骤密度高，但每步留出验证提示",
+    },
+    structureProfile: {
+      openingPattern: "先说明读者将完成什么，以及适用范围",
+      sectionPattern: "前置条件后按编号步骤展开，每步包含动作和结果",
+      conclusionPattern: "用常见问题收束，并提示可继续探索的方向",
+      headingDepth: "二级标题作为步骤章节，三级标题只用于排错",
+      paragraphPattern: "步骤短段落配合编号列表，避免大段叙述",
+    },
+    layoutProfile: {
+      useLists: true,
+      useTables: true,
+      useBlockquotes: true,
+      useCodeBlocks: true,
+      imagePlacement: "放在需要观察界面或输出结果的步骤之后",
+      emphasisRules: "命令、按钮和关键参数使用代码或加粗",
+    },
+    fixedBlocks: [],
+    variables: ["title", "lead", "audience", "prerequisites", "step_one", "step_two", "step_three", "faq"],
+    usageInstructions: "每一步都要可复现，并说明如何确认执行成功。",
     isBuiltIn: true,
   },
   {
@@ -203,6 +255,32 @@ export const defaultTemplates: MarkdownTemplate[] = [
 ## 结论
 
 {{closing}}`,
+    styleProfile: {
+      tone: "坦率、有立场、允许保留意见",
+      audience: "希望了解判断依据的读者",
+      perspective: "第一人称判断，兼顾反例",
+      sentenceStyle: "关键判断用短句，论据用完整解释",
+      pacing: "先亮明判断，再逐层补充证据与限制",
+      density: "中等密度，观点与事实明确分开",
+    },
+    structureProfile: {
+      openingPattern: "开头直接给出核心判断，不先铺陈空泛背景",
+      sectionPattern: "判断 -> 事实依据 -> 反例或限制",
+      conclusionPattern: "重申判断边界，避免把观点写成绝对结论",
+      headingDepth: "二级标题承载观点分支",
+      paragraphPattern: "一个段落只推进一个论点",
+    },
+    layoutProfile: {
+      useLists: true,
+      useTables: false,
+      useBlockquotes: true,
+      useCodeBlocks: false,
+      imagePlacement: "仅在图像能支撑论点时插入",
+      emphasisRules: "只强调判断句和关键概念",
+    },
+    fixedBlocks: [],
+    variables: ["title", "opening_view", "argument", "evidence", "limitations", "closing"],
+    usageInstructions: "明确区分事实、推断和个人判断，主动承认限制。",
     isBuiltIn: true,
   },
   {
@@ -231,6 +309,32 @@ export const defaultTemplates: MarkdownTemplate[] = [
 ## 已知限制
 
 {{limits}}`,
+    styleProfile: {
+      tone: "简洁、透明、面向用户",
+      audience: "关心版本变化和实际影响的产品使用者",
+      perspective: "产品团队说明视角",
+      sentenceStyle: "先说影响，再给细节和操作建议",
+      pacing: "问题 -> 变化 -> 使用 -> 限制",
+      density: "高信息密度，但每条变化独立成段",
+    },
+    structureProfile: {
+      openingPattern: "开头用一段话说明本次更新对谁有帮助",
+      sectionPattern: "先描述解决的问题，再列出具体变化",
+      conclusionPattern: "给出升级或使用建议，并说明已知限制",
+      headingDepth: "二级标题对应更新主题",
+      paragraphPattern: "变化使用列表，影响和建议使用短段落",
+    },
+    layoutProfile: {
+      useLists: true,
+      useTables: false,
+      useBlockquotes: false,
+      useCodeBlocks: true,
+      imagePlacement: "放在展示新功能或界面变化的小节之后",
+      emphasisRules: "版本号、功能名和用户收益可适度加粗",
+    },
+    fixedBlocks: [],
+    variables: ["title", "summary", "problem", "change_one", "change_two", "change_three", "guidance", "limits"],
+    usageInstructions: "只写已经确认的变化，不夸大收益，不省略已知限制。",
     isBuiltIn: true,
   },
 ];

@@ -271,7 +271,7 @@ export function CreatePage(props: CreatePageProps) {
                   <img alt="" src={asset.src} />
                   <span>
                     <strong>{asset.name}</strong>
-                    <small>{asset.description || "未填写图片说明"}</small>
+                    <small>{asset.visualDescription || asset.usageHint || "未填写图片描述"}</small>
                   </span>
                   {selectedIds.has(asset.id) && <Check size={16} />}
                 </button>

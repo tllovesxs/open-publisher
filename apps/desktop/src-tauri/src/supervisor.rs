@@ -479,6 +479,12 @@ pub struct TemplateExtractionSummary {
     pub description: String,
     pub category: String,
     pub markdown: String,
+    pub style_profile: Value,
+    pub structure_profile: Value,
+    pub layout_profile: Value,
+    pub fixed_blocks: Vec<Value>,
+    pub variables: Vec<String>,
+    pub usage_instructions: String,
     pub provider: String,
     pub model: String,
     pub mocked: bool,
@@ -1143,6 +1149,18 @@ struct ExtractTemplateResponseWire {
     description: String,
     category: String,
     markdown: String,
+    #[serde(default)]
+    style_profile: Value,
+    #[serde(default)]
+    structure_profile: Value,
+    #[serde(default)]
+    layout_profile: Value,
+    #[serde(default)]
+    fixed_blocks: Vec<Value>,
+    #[serde(default)]
+    variables: Vec<String>,
+    #[serde(default)]
+    usage_instructions: String,
     provider: String,
     model: String,
     mocked: bool,
@@ -4020,6 +4038,12 @@ fn summarize_template_extraction(
         description,
         category,
         markdown,
+        style_profile: response.style_profile,
+        structure_profile: response.structure_profile,
+        layout_profile: response.layout_profile,
+        fixed_blocks: response.fixed_blocks,
+        variables: response.variables,
+        usage_instructions: response.usage_instructions,
         provider,
         model,
         mocked: response.mocked,
@@ -4029,6 +4053,8 @@ fn summarize_template_extraction(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use serde_json::Value;
 
     use super::{
         load_database_secret, model_configuration_path, model_secrets_database_path,
@@ -4585,6 +4611,12 @@ mod tests {
             description: "适合技术文章的通用结构。".to_owned(),
             category: "技术文章".to_owned(),
             markdown: "# {{title}}\n\n{{lead}}".to_owned(),
+            style_profile: Value::Object(Default::default()),
+            structure_profile: Value::Object(Default::default()),
+            layout_profile: Value::Object(Default::default()),
+            fixed_blocks: Vec::new(),
+            variables: vec!["title".to_owned()],
+            usage_instructions: String::new(),
             provider: "mock".to_owned(),
             model: "deterministic-mock-v1".to_owned(),
             mocked: true,
@@ -4598,6 +4630,12 @@ mod tests {
             description: "不应保留原始链接。".to_owned(),
             category: "测试".to_owned(),
             markdown: "# {{title}}\n\nhttps://example.invalid/private".to_owned(),
+            style_profile: Value::Object(Default::default()),
+            structure_profile: Value::Object(Default::default()),
+            layout_profile: Value::Object(Default::default()),
+            fixed_blocks: Vec::new(),
+            variables: Vec::new(),
+            usage_instructions: String::new(),
             provider: "mock".to_owned(),
             model: "deterministic-mock-v1".to_owned(),
             mocked: true,

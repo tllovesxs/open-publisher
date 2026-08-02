@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
-import App, { normalizeStudioAgents } from "./App";
+import App, { applyTemplateFixedBlocks, normalizeStudioAgents, normalizeTemplate } from "./App";
 import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
   type DesktopBridge,
@@ -54,6 +54,28 @@ describe("desktop product flow", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     setDesktopBridgeForTests(null);
+  });
+
+  it("migrates legacy templates and inserts enabled fixed blocks exactly once", () => {
+    const template = normalizeTemplate({
+      id: "legacy-template",
+      name: "旧模板",
+      description: "旧数据",
+      category: "测试",
+      markdown: "# {{title}}\n\n{{lead}}",
+      isBuiltIn: false,
+    });
+    expect(template?.styleProfile).toEqual(expect.objectContaining({ tone: "" }));
+    expect(template?.fixedBlocks).toEqual([]);
+    const withBlock = {
+      ...template!,
+      fixedBlocks: [{ id: "intro", label: "项目介绍", enabled: true, content: "项目：{{title}}", position: "before_title" as const }],
+    };
+    const request = { title: "新文章", topic: "主题" } as Parameters<typeof applyTemplateFixedBlocks>[3];
+    const article = { title: "新文章" } as Parameters<typeof applyTemplateFixedBlocks>[2];
+    const once = applyTemplateFixedBlocks("# 新文章\n\n正文", withBlock, article, request);
+    expect(once).toContain("项目：新文章");
+    expect(applyTemplateFixedBlocks(once, withBlock, article, request).match(/项目：新文章/g)).toHaveLength(1);
   });
 
   it("uses the built-in Baoyu article-illustration Skill and migrates the retired visual Skill", () => {

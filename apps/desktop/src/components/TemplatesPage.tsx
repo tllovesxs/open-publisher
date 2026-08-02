@@ -17,7 +17,11 @@ import {
   useRef,
   useState,
 } from "react";
-import type { MarkdownTemplate } from "../types";
+import type {
+  MarkdownTemplate,
+  TemplateFixedBlock,
+  TemplateFixedBlockPosition,
+} from "../types";
 
 interface TemplatesPageProps {
   selectedTemplateId: string | null;
@@ -39,8 +43,41 @@ const blankTemplate = (): MarkdownTemplate => ({
   description: "自定义 Markdown 写作模板。",
   category: "自定义",
   markdown: "# {{title}}\n\n{{lead}}\n",
+  styleProfile: {
+    tone: "",
+    audience: "",
+    perspective: "",
+    sentenceStyle: "",
+    pacing: "",
+    density: "",
+  },
+  structureProfile: {
+    openingPattern: "",
+    sectionPattern: "",
+    conclusionPattern: "",
+    headingDepth: "",
+    paragraphPattern: "",
+  },
+  layoutProfile: {
+    useLists: true,
+    useTables: false,
+    useBlockquotes: false,
+    useCodeBlocks: false,
+    imagePlacement: "",
+    emphasisRules: "",
+  },
+  fixedBlocks: [],
+  variables: ["title", "lead", "closing"],
+  usageInstructions: "",
   isBuiltIn: false,
 });
+
+const fixedPositions: Array<{ value: TemplateFixedBlockPosition; label: string }> = [
+  { value: "before_title", label: "标题之前" },
+  { value: "after_intro", label: "导语之后" },
+  { value: "before_closing", label: "结语之前" },
+  { value: "after_article", label: "全文之后" },
+];
 
 function errorMessage(error: unknown) {
   const detail = error instanceof Error ? error.message : String(error);
@@ -244,6 +281,11 @@ export function TemplatesPage({
               </button>
             </header>
             <pre>{selected.markdown}</pre>
+            <div className="template-preview__profiles">
+              <span>文风：{selected.styleProfile.tone || "未设置"}</span>
+              <span>结构：{selected.structureProfile.sectionPattern || "按 Markdown 骨架"}</span>
+              <span>固定片段：{selected.fixedBlocks.filter((block) => block.enabled && block.content.trim()).length} 个</span>
+            </div>
             <footer>
               <span>{selected.isBuiltIn ? "内置模板" : "自定义模板"}</span>
               <button className="button button--primary" onClick={onStartCreating} type="button">
@@ -406,6 +448,85 @@ export function TemplatesPage({
                   value={editing.markdown}
                 />
               </label>
+              <fieldset className="template-editor__fieldset">
+                <legend>文风规范</legend>
+                <div className="form-grid form-grid--two">
+                  {([
+                    ["tone", "整体语气"],
+                    ["audience", "目标读者"],
+                    ["perspective", "叙述视角"],
+                    ["sentenceStyle", "句式习惯"],
+                    ["pacing", "节奏"],
+                    ["density", "信息密度"],
+                  ] as const).map(([key, label]) => (
+                    <label className="field" key={key}>
+                      <span>{label}</span>
+                      <input
+                        onChange={(event) => setEditing({ ...editing, styleProfile: { ...editing.styleProfile, [key]: event.target.value } })}
+                        value={editing.styleProfile[key]}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="template-editor__fieldset">
+                <legend>结构与排版</legend>
+                <div className="form-grid form-grid--two">
+                  {([
+                    ["openingPattern", "开头方式"],
+                    ["sectionPattern", "章节组织"],
+                    ["conclusionPattern", "结尾方式"],
+                    ["headingDepth", "标题层级"],
+                    ["paragraphPattern", "段落习惯"],
+                    ["imagePlacement", "图片位置"],
+                    ["emphasisRules", "强调规则"],
+                  ] as const).map(([key, label]) => (
+                    <label className="field" key={key}>
+                      <span>{label}</span>
+                      <input
+                        onChange={(event) => setEditing({
+                          ...editing,
+                          ...(key === "imagePlacement" || key === "emphasisRules"
+                            ? { layoutProfile: { ...editing.layoutProfile, [key]: event.target.value } }
+                            : { structureProfile: { ...editing.structureProfile, [key]: event.target.value } }),
+                        })}
+                        value={String(key === "imagePlacement" || key === "emphasisRules"
+                          ? editing.layoutProfile[key as keyof typeof editing.layoutProfile]
+                          : editing.structureProfile[key as keyof typeof editing.structureProfile])}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="template-editor__toggles">
+                  {([
+                    ["useLists", "列表"],
+                    ["useTables", "表格"],
+                    ["useBlockquotes", "引用"],
+                    ["useCodeBlocks", "代码块"],
+                  ] as const).map(([key, label]) => (
+                    <label key={key}><input checked={editing.layoutProfile[key]} onChange={(event) => setEditing({ ...editing, layoutProfile: { ...editing.layoutProfile, [key]: event.target.checked } })} type="checkbox" />{label}</label>
+                  ))}
+                </div>
+              </fieldset>
+              <label className="field">
+                <span>使用说明</span>
+                <textarea maxLength={4000} onChange={(event) => setEditing({ ...editing, usageInstructions: event.target.value })} placeholder="告诉 Agent 哪些规则必须保持，以及哪些内容需要替换。" rows={3} value={editing.usageInstructions} />
+              </label>
+              <fieldset className="template-editor__fieldset">
+                <legend>固定片段</legend>
+                <p className="template-extractor__note">固定片段由程序在文章生成后插入，不会被模型改写或删除。可直接填写项目介绍、项目地址和求 Star 文案；{"{{title}}"}、{"{{topic}}"} 会自动替换。</p>
+                {editing.fixedBlocks.map((block, index) => (
+                  <div className="template-fixed-block" key={block.id}>
+                    <div className="form-grid form-grid--two">
+                      <label className="field"><span>名称</span><input value={block.label} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} /></label>
+                      <label className="field"><span>位置</span><select value={block.position} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, position: event.target.value as TemplateFixedBlockPosition } : item) })}>{fixedPositions.map((position) => <option key={position.value} value={position.value}>{position.label}</option>)}</select></label>
+                    </div>
+                    <label className="field"><span><input checked={block.enabled} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item) })} type="checkbox" /> 启用</span><textarea maxLength={4000} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, content: event.target.value } : item) })} placeholder="例如：项目地址：{{project_link}}\n如果有帮助，欢迎 Star。" rows={3} value={block.content} /></label>
+                    <button className="text-button" onClick={() => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.filter((_, itemIndex) => itemIndex !== index) })} type="button">删除片段</button>
+                  </div>
+                ))}
+                <button className="button button--quiet" onClick={() => { const block: TemplateFixedBlock = { id: `block-${Date.now()}`, label: "新固定片段", enabled: true, content: "", position: "after_article" }; setEditing({ ...editing, fixedBlocks: [...editing.fixedBlocks, block] }); }} type="button">添加固定片段</button>
+              </fieldset>
             </div>
             <footer>
               <button className="button button--quiet" onClick={() => setEditing(null)} type="button">
