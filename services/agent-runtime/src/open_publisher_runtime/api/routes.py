@@ -233,7 +233,7 @@ def extract_template(
     except TemplateExtractionError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="model did not return a reusable template; retry extraction",
+            detail=f"model did not return a reusable template; retry extraction ({error})",
         ) from error
     except Exception as error:
         raise HTTPException(

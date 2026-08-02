@@ -28,7 +28,7 @@ class TemplateExtractionError(ValueError):
 
 
 class _StyleProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     tone: str = ""
     audience: str = ""
@@ -39,7 +39,7 @@ class _StyleProfile(BaseModel):
 
 
 class _StructureProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     opening_pattern: str = ""
     section_pattern: str = ""
@@ -49,7 +49,7 @@ class _StructureProfile(BaseModel):
 
 
 class _LayoutProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     use_lists: bool = True
     use_tables: bool = False
@@ -60,7 +60,7 @@ class _LayoutProfile(BaseModel):
 
 
 class _FixedBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str = "fixed-block"
     label: str = "固定片段"
@@ -72,7 +72,7 @@ class _FixedBlock(BaseModel):
 
 
 class _TemplateCandidate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(min_length=1, max_length=300)
@@ -169,11 +169,79 @@ def _source_primary_heading(source_markdown: str) -> str:
     return ""
 
 
+def _source_heading_text(source_markdown: str) -> str:
+    for line in source_markdown.splitlines():
+        match = PRIMARY_HEADING_PATTERN.match(line)
+        if match:
+            return match.group("title").strip()
+    return ""
+
+
+def _sanitize_reusable_text(value: str, source_title: str, *, fixed_block: bool = False) -> str:
+    """Remove article-specific links and replace them with reusable slots."""
+
+    sanitized = re.sub(
+        r"!\[([^\]\r\n]*)\]\([^\)\r\n]+\)",
+        r"![\1]({{image_url}})",
+        value,
+    )
+    sanitized = re.sub(
+        r"\[([^\]\r\n]+)\]\([^\)\r\n]+\)",
+        r"[\1]({{reference_url}})",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?:https?://|www\.)[^\s)]+",
+        "{{project_link}}" if fixed_block else "{{reference_url}}",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    if source_title and len(_normalized_comparison_text(source_title)) >= 6:
+        sanitized = sanitized.replace(source_title, "{{title}}")
+    return sanitized
+
+
+def _fallback_markdown(source_markdown: str) -> str:
+    headings = [
+        (match.group(1), match.group(2).strip())
+        for line in source_markdown.splitlines()
+        if (match := re.match(r"^(#{1,6})\s+(.+?)\s*$", line))
+    ]
+    sections = headings[1:9] or [("##", "内容章节")]
+    lines = ["# {{title}}", "", "{{lead}}", ""]
+    for index, (depth, _heading) in enumerate(sections, start=1):
+        lines.extend(
+            [
+                f"{depth} {{{{section_{index}_heading}}}}",
+                "",
+                f"{{{{section_{index}_content}}}}",
+                "",
+            ]
+        )
+    lines.extend(["## {{closing_heading}}", "", "{{closing}}"])
+    return "\n".join(lines)
+
+
 def _validate_template(
     candidate: _TemplateCandidate,
     *,
     source_markdown: str,
 ) -> _TemplateCandidate:
+    source_title = _source_heading_text(source_markdown)
+    sanitized_markdown = _sanitize_reusable_text(candidate.markdown, source_title)
+    sanitized_blocks = [
+        block.model_copy(
+            update={
+                "content": _sanitize_reusable_text(
+                    block.content, source_title, fixed_block=True
+                )
+            }
+        )
+        for block in candidate.fixed_blocks
+    ]
+    candidate = candidate.model_copy(
+        update={"markdown": sanitized_markdown, "fixed_blocks": sanitized_blocks}
+    )
     if not PLACEHOLDER_PATTERN.search(candidate.markdown):
         raise TemplateExtractionError("template markdown does not contain a reusable placeholder")
     if RAW_URL_PATTERN.search(candidate.markdown):
@@ -222,6 +290,7 @@ class TemplateExtractionService:
 
     def extract(self, *, source_markdown: str) -> ExtractedTemplate:
         source = _normalized_source(source_markdown)
+        generated = None
         try:
             generated = self.model_access.generate_text(
                 TextGenerationRequest(
@@ -235,9 +304,24 @@ class TemplateExtractionService:
             candidate = _TemplateCandidate.model_validate(_extract_json_object(generated.text))
             template = _validate_template(candidate, source_markdown=source)
         except TemplateExtractionError:
-            raise
-        except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as error:
-            raise TemplateExtractionError("model returned an invalid template structure") from error
+            if generated is None:
+                raise
+            template = _TemplateCandidate(
+                name="通用文章结构模板",
+                description="模型结果未能直接复用，已根据原文标题层级生成可编辑结构。",
+                category="自动提取",
+                markdown=_fallback_markdown(source),
+            )
+        except (ValidationError, ValueError, TypeError, json.JSONDecodeError):
+            if generated is None:
+                raise
+            template = _TemplateCandidate(
+                name="通用文章结构模板",
+                description="模型结果未能直接复用，已根据原文标题层级生成可编辑结构。",
+                category="自动提取",
+                markdown=_fallback_markdown(source),
+            )
+        assert generated is not None
         variables = template.variables or sorted(
             {match.group(1) for match in PLACEHOLDER_PATTERN.finditer(template.markdown)}
         )

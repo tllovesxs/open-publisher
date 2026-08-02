@@ -61,7 +61,7 @@ def test_template_extraction_uses_local_mock_and_does_not_echo_source(client) ->
     }
 
 
-def test_template_extraction_rejects_concrete_links_from_model_output(client) -> None:
+def test_template_extraction_sanitizes_concrete_links_from_model_output(client) -> None:
     client.app.state.container.model_access.text_provider = StaticTextProvider(
         json.dumps(
             {
@@ -85,14 +85,12 @@ def test_template_extraction_rejects_concrete_links_from_model_output(client) ->
         json={"source_markdown": "# 原文\n\n不能保留链接"},
     )
 
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "model did not return a reusable template; retry extraction"
-    }
+    assert response.status_code == 200, response.text
+    assert "{{reference_url}}" in response.json()["markdown"]
     assert "example.invalid" not in response.text
 
 
-def test_template_extraction_rejects_a_repeated_source_title(client) -> None:
+def test_template_extraction_replaces_a_repeated_source_title(client) -> None:
     client.app.state.container.model_access.text_provider = StaticTextProvider(
         json.dumps(
             {
@@ -116,7 +114,7 @@ def test_template_extraction_rejects_a_repeated_source_title(client) -> None:
         json={"source_markdown": "# Wandao 体积下降 42%\n\n文章正文"},
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 200, response.text
     assert "Wandao" not in response.text
 
 
