@@ -133,7 +133,7 @@ export type DisabledOptionalNodeId =
   | "review"
   | "visual";
 
-export type WorkflowNodeId = DisabledOptionalNodeId | "draft" | "reference-safety" | "risk";
+export type WorkflowNodeId = DisabledOptionalNodeId | "draft" | "risk";
 
 /** A text-only Skill snapshot. The desktop bridge never executes Skill code. */
 export interface WorkflowSkillInstruction {
@@ -430,15 +430,6 @@ export interface TemplateExtractionSummary {
   }>;
   variables: string[];
   usageInstructions: string;
-  contentAtomLedger: {
-    claims: string[];
-    facts: string[];
-    examples: string[];
-    quotes: string[];
-    namedEntities: string[];
-    caveats: string[];
-  };
-  phraseBlacklist: string[];
   analysisVersion: string;
   sourceFingerprint: string;
   provider: string;
@@ -1049,11 +1040,7 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       },
       fixedBlocks: [],
       variables: ["title", "lead", "closing"],
-      usageInstructions: "复用结构和表达节奏，不复用文章中的事实或表达。",
-      contentAtomLedger: {
-        claims: [], facts: [], examples: [], quotes: [], namedEntities: [], caveats: [],
-      },
-      phraseBlacklist: [],
+      usageInstructions: "复用结构、表达节奏和排版，根据新的主题完成文章。",
       analysisVersion: "reference-template.v1",
       sourceFingerprint: `sha256:${mockHash(request.sourceMarkdown)}`,
       provider: "mock",

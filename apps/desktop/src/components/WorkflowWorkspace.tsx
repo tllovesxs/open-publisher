@@ -46,7 +46,6 @@ const nodeLabel: Record<WorkflowNodeId, string> = {
   outline: "大纲规划",
   draft: "正文撰写",
   "natural-style": "自然表达",
-  "reference-safety": "原创表达检查",
   review: "内容审阅",
   risk: "风险检查",
   visual: "配图规划",
@@ -120,7 +119,7 @@ function eventIcon(event: WorkflowActivityEvent) {
   if (event.eventType === "run.node_completed" || event.eventType === "run.completed") return Check;
   if (event.nodeId === "draft") return FileText;
   if (event.nodeId === "visual") return Image;
-  if (event.nodeId === "review" || event.nodeId === "reference-safety" || event.nodeId === "risk") return ShieldCheck;
+  if (event.nodeId === "review" || event.nodeId === "risk") return ShieldCheck;
   if (event.nodeId === "research" || event.nodeId === "outline") return Sparkles;
   return LoaderCircle;
 }

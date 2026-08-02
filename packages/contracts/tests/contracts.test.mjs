@@ -60,10 +60,6 @@ test("template extraction keeps source input private and returns a high-fidelity
     description: "适合按结论、背景和实践展开的文章。",
     category: "技术文章",
     markdown: "# {{title}}\n\n{{lead}}\n\n## {{section_heading}}\n\n{{section_content}}",
-    content_atom_ledger: {
-      claims: [], facts: [], examples: [], quotes: [], named_entities: [], caveats: [],
-    },
-    phrase_blacklist: [],
     analysis_version: "reference-template.v1",
     source_fingerprint: `sha256:${"a".repeat(64)}`,
     provider: "mock",

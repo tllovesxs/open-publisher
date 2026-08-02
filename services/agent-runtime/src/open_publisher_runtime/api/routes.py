@@ -462,8 +462,6 @@ def extract_template(
         fixed_blocks=result.fixed_blocks,
         variables=result.variables,
         usage_instructions=result.usage_instructions,
-        content_atom_ledger=result.content_atom_ledger,
-        phrase_blacklist=result.phrase_blacklist,
         analysis_version=result.analysis_version,
         source_fingerprint=result.source_fingerprint,
         provider=result.provider,

@@ -17,7 +17,6 @@ WorkflowNodeId = Literal[
     "draft",
     "natural-style",
     "review",
-    "reference-safety",
     "risk",
     "visual",
 ]
@@ -180,7 +179,9 @@ class RunPolicy(BaseModel):
     max_model_calls: int = Field(default=8, ge=1, le=32)
     max_parallel: int = Field(default=4, ge=1, le=8)
     web_search_mode: WebSearchMode = "auto"
-    max_web_search_calls: int = Field(default=2, ge=0, le=3)
+    # One search followed by one repository inspection is the most useful
+    # evidence chain for a writing request. Keep the ReAct surface bounded.
+    max_web_search_calls: int = Field(default=2, ge=0, le=2)
     max_wall_clock_seconds: int = Field(default=300, ge=1, le=3600)
     allow_remote_publish: bool = False
     disabled_optional_node_ids: list[OptionalWorkflowNodeId] = Field(

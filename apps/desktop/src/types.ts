@@ -97,15 +97,6 @@ export interface TemplateFixedBlock {
 
 export type TemplateMode = "scaffold" | "reference";
 
-export interface TemplateContentAtomLedger {
-  claims: string[];
-  facts: string[];
-  examples: string[];
-  quotes: string[];
-  namedEntities: string[];
-  caveats: string[];
-}
-
 export interface MarkdownTemplate {
   id: string;
   name: string;
@@ -124,8 +115,6 @@ export interface MarkdownTemplate {
   referenceMarkdown?: string;
   sourceFingerprint?: string;
   analysisVersion?: string;
-  contentAtomLedger?: TemplateContentAtomLedger;
-  phraseBlacklist?: string[];
   rightsConfirmed?: boolean;
 }
 

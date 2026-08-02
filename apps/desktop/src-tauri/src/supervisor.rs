@@ -600,8 +600,6 @@ pub struct TemplateExtractionSummary {
     pub fixed_blocks: Vec<Value>,
     pub variables: Vec<String>,
     pub usage_instructions: String,
-    pub content_atom_ledger: Value,
-    pub phrase_blacklist: Vec<String>,
     pub analysis_version: String,
     pub source_fingerprint: String,
     pub provider: String,
@@ -1310,10 +1308,6 @@ struct ExtractTemplateResponseWire {
     variables: Vec<String>,
     #[serde(default)]
     usage_instructions: String,
-    #[serde(default)]
-    content_atom_ledger: Value,
-    #[serde(default)]
-    phrase_blacklist: Vec<String>,
     analysis_version: String,
     source_fingerprint: String,
     provider: String,
@@ -3093,8 +3087,8 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
     ) {
         return Err("workflow web search mode is invalid".to_owned());
     }
-    if request.max_web_search_calls > 3 {
-        return Err("workflow can make at most three web searches".to_owned());
+    if request.max_web_search_calls > 2 {
+        return Err("workflow can make at most two research tool calls".to_owned());
     }
     if request.web_search_mode == "required" && request.max_web_search_calls == 0 {
         return Err("required web search needs at least one allowed call".to_owned());
@@ -3129,14 +3123,7 @@ fn validate_workflow_request(request: &RunWorkflowRequest) -> Result<(), String>
         validate_instruction_text(&agent.prompt, "Agent prompt", 6_000)?;
         if !matches!(
             agent.node_id.as_str(),
-            "research"
-                | "outline"
-                | "draft"
-                | "natural-style"
-                | "review"
-                | "reference-safety"
-                | "risk"
-                | "visual"
+            "research" | "outline" | "draft" | "natural-style" | "review" | "risk" | "visual"
         ) {
             return Err("workflow Agent node assignment is invalid".to_owned());
         }
@@ -4598,22 +4585,6 @@ fn summarize_template_extraction(
     {
         return Err("local Python runtime returned a template with a concrete URL".to_owned());
     }
-    if !response.content_atom_ledger.is_object() {
-        return Err("local Python runtime returned an invalid reference content ledger".to_owned());
-    }
-    let mut phrase_blacklist = Vec::with_capacity(response.phrase_blacklist.len());
-    if response.phrase_blacklist.len() > 48 {
-        return Err(
-            "local Python runtime returned too many protected reference phrases".to_owned(),
-        );
-    }
-    for phrase in response.phrase_blacklist {
-        phrase_blacklist.push(
-            normalize_public_option(Some(phrase), "参考文章禁用表达", 180)?.ok_or_else(|| {
-                "local Python runtime returned an empty protected phrase".to_owned()
-            })?,
-        );
-    }
     let analysis_version =
         normalize_public_option(Some(response.analysis_version), "参考模板分析版本", 80)?
             .ok_or_else(|| "local Python runtime returned an empty analysis version".to_owned())?;
@@ -4639,8 +4610,6 @@ fn summarize_template_extraction(
         fixed_blocks: response.fixed_blocks,
         variables: response.variables,
         usage_instructions: response.usage_instructions,
-        content_atom_ledger: response.content_atom_ledger,
-        phrase_blacklist,
         analysis_version,
         source_fingerprint: response.source_fingerprint,
         provider,
@@ -5243,8 +5212,6 @@ mod tests {
             fixed_blocks: Vec::new(),
             variables: vec!["title".to_owned()],
             usage_instructions: String::new(),
-            content_atom_ledger: Value::Object(Default::default()),
-            phrase_blacklist: Vec::new(),
             analysis_version: "reference-template.v1".to_owned(),
             source_fingerprint: format!("sha256:{}", "a".repeat(64)),
             provider: "mock".to_owned(),
@@ -5266,8 +5233,6 @@ mod tests {
             fixed_blocks: Vec::new(),
             variables: Vec::new(),
             usage_instructions: String::new(),
-            content_atom_ledger: Value::Object(Default::default()),
-            phrase_blacklist: Vec::new(),
             analysis_version: "reference-template.v1".to_owned(),
             source_fingerprint: format!("sha256:{}", "a".repeat(64)),
             provider: "mock".to_owned(),

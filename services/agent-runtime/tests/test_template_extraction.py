@@ -44,15 +44,6 @@ def test_template_extraction_creates_reference_analysis_without_echoing_source(c
     assert "Wandao" not in payload["markdown"]
     assert "example.invalid" not in payload["markdown"]
     assert "source_markdown" not in payload
-    assert payload["content_atom_ledger"] == {
-        "claims": [],
-        "facts": [],
-        "examples": [],
-        "quotes": [],
-        "named_entities": [],
-        "caveats": [],
-    }
-    assert payload["phrase_blacklist"] == []
     assert payload["analysis_version"] == "reference-template.v1"
     assert payload["source_fingerprint"].startswith("sha256:")
     assert set(payload) == {
@@ -66,8 +57,6 @@ def test_template_extraction_creates_reference_analysis_without_echoing_source(c
         "fixed_blocks",
         "variables",
         "usage_instructions",
-        "content_atom_ledger",
-        "phrase_blacklist",
         "analysis_version",
         "source_fingerprint",
         "provider",

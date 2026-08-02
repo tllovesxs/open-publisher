@@ -204,7 +204,7 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         for event_type, node_id in node_events
         if event_type == "run.node_completed"
     }
-    assert started_nodes == {"draft", "reference-safety", "risk"}
+    assert started_nodes == {"draft", "risk"}
     assert completed_nodes == started_nodes
     assert all(event_type != "run.node_failed" for event_type, _ in node_events)
     draft_checkpoints = [
@@ -295,8 +295,6 @@ def test_reference_template_keeps_source_private_and_applies_style_context(clien
                 "style_profile": {"tone": "直接、有判断"},
                 "structure_profile": {"openingPattern": "先抛出误区"},
                 "layout_profile": {"useLists": True},
-                "content_atom_ledger": {"examples": ["原文案例"]},
-                "phrase_blacklist": ["独特原文表达"],
             },
             ensure_ascii=False,
         )
@@ -343,10 +341,11 @@ def test_reference_template_keeps_source_private_and_applies_style_context(clien
     with client.app.state.container.database.session() as session:
         repository = SqlAlchemyRuntimeRepository(session)
         artifacts = ArtifactService(repository, client.app.state.container.blob_store)
-        final_markdown = artifacts.read_text(output["state_json"]["raw_draft_artifact_id"])
         risk_report = artifacts.read_text(output["state_json"]["risk_artifact_id"])
-    assert "独特原文表达不应出现在新文章里" not in final_markdown
-    assert "高保真参考检查" in risk_report
+    assert "不得复用其标题" not in draft_request.prompt
+    assert "高保真参考检查" not in risk_report
+    assert output["state_json"]["budget"]["model_calls_reserved"] == 1
+    assert "reference_safety_called" not in output["state_json"]
 
 
 def test_active_run_endpoint_exposes_durable_node_activity(client, article_payload) -> None:
@@ -640,39 +639,32 @@ def test_wall_clock_budget_fails_after_preserving_consumed_call_claim(
 
 def test_preset_definition_matches_required_chain_and_fanout(client) -> None:
     current = client.get("/api/v1/workflows").json()[0]
-    assert current["version"] == "1.3.0"
+    assert current["version"] == "1.5.0"
     workflow = current["definition_json"]
     nodes = {node["id"]: node for node in workflow["nodes"]}
-    assert workflow["required_model_calls"] == 6
-    assert nodes["draft"]["default_enabled"] is True
-    assert nodes["draft"]["required"] is True
-    assert nodes["draft"]["skippable"] is False
-    assert nodes["risk"]["default_enabled"] is True
-    assert nodes["risk"]["type"] == "rule_check"
-    assert nodes["reference-safety"] == {
-        "id": "reference-safety",
-        "type": "rule_check",
-        "mode": "conditional_model_rewrite",
+    assert workflow["required_model_calls"] == 1
+    assert nodes["draft"] == {
+        "id": "draft",
+        "type": "agent",
+        "mode": "react_writer",
+        "tool_observation_limit": 2,
+        "tool_call_limit": 2,
         "required": True,
         "skippable": False,
         "default_enabled": True,
     }
-    for node_id in ("research", "outline", "natural-style", "review", "visual"):
-        assert nodes[node_id]["default_enabled"] is False
-        assert nodes[node_id]["required"] is False
-        assert nodes[node_id]["skippable"] is True
-    assert nodes["review"]["mode"] == "read_only"
+    assert nodes["risk"]["default_enabled"] is True
+    assert nodes["risk"]["type"] == "rule_check"
+    assert set(nodes) == {"draft", "risk", "visual", "approval"}
     assert nodes["risk"]["mode"] == "read_only"
     assert nodes["visual"]["mode"] == "read_only"
-    assert ["natural-style", "reference-safety"] in workflow["edges"]
-    assert ["reference-safety", "review"] in workflow["edges"]
-    assert ["reference-safety", "risk"] in workflow["edges"]
-    assert ["reference-safety", "visual"] in workflow["edges"]
+    assert ["draft", "risk"] in workflow["edges"]
+    assert ["draft", "visual"] in workflow["edges"]
     assert workflow["joins"] == [
         {
             "target": "approval",
             "strategy": "all_enabled",
-            "branches": ["review", "risk", "visual"],
+            "branches": ["risk", "visual"],
         }
     ]
 
@@ -689,13 +681,13 @@ def test_demo_uses_current_preset_when_a_legacy_definition_exists(client) -> Non
         )
 
     workflows = client.get("/api/v1/workflows").json()
-    assert [workflow["version"] for workflow in workflows[:2]] == ["1.3.0", "1.0.0"]
+    assert [workflow["version"] for workflow in workflows[:2]] == ["1.5.0", "1.0.0"]
     response = client.post(
         "/api/v1/demo/complete",
         json={"platforms": ["csdn"]},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["run"]["workflow_snapshot_json"]["version"] == "1.3.0"
+    assert response.json()["run"]["workflow_snapshot_json"]["version"] == "1.5.0"
 
 
 def test_workflow_has_deterministic_sequential_fallback(
@@ -781,7 +773,6 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
         "enabled_node_ids": ["draft"],
         "disabled_optional_node_ids": disabled,
         "required_model_calls": 1,
-        "reference_safety_reservation": 0,
     }
     assert run["workflow_snapshot_json"]["policy"][
         "disabled_optional_node_ids"

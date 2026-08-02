@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 from collections.abc import Iterator
 
 import httpx
@@ -157,6 +158,110 @@ def test_text_provider_streams_delta_content_and_rejects_empty_stream(
             TextGenerationRequest(purpose="draft", prompt="write"),
             lambda _: None,
         )
+
+
+def test_text_provider_observes_two_tool_rounds_then_streams_only_final_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "search-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": '{"query":"Wandao GitHub"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "repository-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "github_repository",
+                                        "arguments": '{"repository":"example/wandao"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+    post_payloads: list[dict[str, object]] = []
+    stream_payloads: list[dict[str, object]] = []
+    executed: list[tuple[str, dict[str, object]]] = []
+
+    def post(*_args: object, **kwargs: object) -> _JsonResponse:
+        payload = kwargs["json"]
+        assert isinstance(payload, dict)
+        post_payloads.append(copy.deepcopy(payload))
+        return _JsonResponse(next(responses))
+
+    def stream(*_args: object, **kwargs: object) -> _TextStreamResponse:
+        payload = kwargs["json"]
+        assert isinstance(payload, dict)
+        stream_payloads.append(copy.deepcopy(payload))
+        return _TextStreamResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"# 最终文章"}}]}',
+                'data: {"choices":[{"delta":{"content":"\\n\\n正文"}}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "stream", stream)
+    provider = OpenAICompatibleTextProvider(
+        base_url="https://models.example/v1",
+        api_key="not-a-real-secret",
+        default_model="text-model",
+    )
+    deltas: list[str] = []
+    response = provider.generate_with_tools_stream(
+        TextGenerationRequest(purpose="draft", prompt="write"),
+        tools=[
+            {"type": "function", "function": {"name": "web_search"}},
+            {"type": "function", "function": {"name": "github_repository"}},
+        ],
+        execute_tool=lambda name, arguments: (
+            executed.append((name, arguments)) or '{"sources":[]}'
+        ),
+        on_delta=deltas.append,
+        max_tool_calls=2,
+    )
+
+    assert executed == [
+        ("web_search", {"query": "Wandao GitHub"}),
+        ("github_repository", {"repository": "example/wandao"}),
+    ]
+    assert len(post_payloads) == 2
+    assert all(payload["tool_choice"] == "auto" for payload in post_payloads)
+    assert post_payloads[1]["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "search-1",
+        "content": '{"sources":[]}',
+    }
+    assert len(stream_payloads) == 1
+    assert "tools" not in stream_payloads[0]
+    assert stream_payloads[0]["messages"][-1]["role"] == "user"
+    assert deltas == ["# 最终文章", "\n\n正文"]
+    assert response.text == "# 最终文章\n\n正文"
 
 
 def test_image_provider_accepts_siliconflow_shape_and_downloads_allowlisted_url(

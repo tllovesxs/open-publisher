@@ -60,7 +60,6 @@ import type {
   StudioAgent,
   StudioSkill,
   TemplateFixedBlock,
-  TemplateContentAtomLedger,
   TemplateLayoutProfile,
   TemplateStructureProfile,
   TemplateStyleProfile,
@@ -147,7 +146,7 @@ function isOptionalWorkflowNodeId(
 }
 
 function isWorkflowNodeId(value: string | undefined): value is WorkflowNodeId {
-  return value === "draft" || value === "reference-safety" || value === "risk" || isOptionalWorkflowNodeId(value);
+  return value === "draft" || value === "risk" || isOptionalWorkflowNodeId(value);
 }
 
 function creationAgentLabels(
@@ -263,36 +262,6 @@ const emptyLayoutProfile = (): TemplateLayoutProfile => ({
   emphasisRules: "",
 });
 
-const emptyContentAtomLedger = (): TemplateContentAtomLedger => ({
-  claims: [],
-  facts: [],
-  examples: [],
-  quotes: [],
-  namedEntities: [],
-  caveats: [],
-});
-
-function normalizeTemplateLedger(value: unknown): TemplateContentAtomLedger {
-  const candidate = value && typeof value === "object"
-    ? value as Record<string, unknown>
-    : {};
-  const list = (key: string, alternate?: string) => {
-    const raw = candidate[key] ?? (alternate ? candidate[alternate] : undefined);
-    return Array.isArray(raw)
-      ? raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        .map((item) => item.trim().slice(0, 320)).slice(0, 48)
-      : [];
-  };
-  return {
-    claims: list("claims"),
-    facts: list("facts"),
-    examples: list("examples"),
-    quotes: list("quotes"),
-    namedEntities: list("namedEntities", "named_entities"),
-    caveats: list("caveats"),
-  };
-}
-
 export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<MarkdownTemplate>;
@@ -344,11 +313,6 @@ export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
     analysisVersion: typeof candidate.analysisVersion === "string"
       ? candidate.analysisVersion.slice(0, 80)
       : undefined,
-    contentAtomLedger: normalizeTemplateLedger(candidate.contentAtomLedger),
-    phraseBlacklist: Array.isArray(candidate.phraseBlacklist)
-      ? candidate.phraseBlacklist.filter((phrase): phrase is string => typeof phrase === "string" && phrase.trim().length > 0)
-        .map((phrase) => phrase.trim().slice(0, 180)).slice(0, 48)
-      : [],
     rightsConfirmed: mode === "reference" && candidate.rightsConfirmed === true,
   };
 }
@@ -616,7 +580,6 @@ const workflowNodeLabel: Record<WorkflowNodeId, string> = {
   outline: "大纲规划",
   draft: "正文撰写",
   "natural-style": "自然表达",
-  "reference-safety": "原创表达检查",
   review: "内容审阅",
   risk: "风险检查",
   visual: "配图规划",
@@ -672,7 +635,7 @@ function describeWorkflowActivity(
     case "run.node_skipped":
       return {
         message: `${agent} 已按当前设置跳过${node}`,
-        phase: "多 Agent 工作流正在执行",
+        phase: "主写作 Agent 正在执行",
         tone: "info",
       };
     case "run.interrupted":
@@ -809,8 +772,6 @@ function highFidelityReferenceBlock(template: MarkdownTemplate) {
     style_profile: template.styleProfile,
     structure_profile: template.structureProfile,
     layout_profile: template.layoutProfile,
-    content_atom_ledger: template.contentAtomLedger ?? emptyContentAtomLedger(),
-    phrase_blacklist: template.phraseBlacklist ?? [],
   }));
   return [
     `<!-- open-publisher-reference-template:v1:${metadata} -->`,
@@ -2205,7 +2166,7 @@ export default function App() {
                 ),
                 activityLog(
                   `workflow-started-${startedAt}`,
-                  "已向本地 Agent 运行时提交工作流",
+                  "已向本地主写作 Agent 提交创作请求",
                 ),
               ],
             }
@@ -2707,8 +2668,6 @@ export default function App() {
         referenceMarkdown: sourceMarkdown.replace(/\r\n?/g, "\n").trim(),
         sourceFingerprint: result.sourceFingerprint,
         analysisVersion: result.analysisVersion,
-        contentAtomLedger: normalizeTemplateLedger(result.contentAtomLedger),
-        phraseBlacklist: result.phraseBlacklist,
         rightsConfirmed: true,
         isBuiltIn: false,
       } satisfies MarkdownTemplate;

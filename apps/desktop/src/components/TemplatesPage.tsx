@@ -19,7 +19,6 @@ import {
 } from "react";
 import type {
   MarkdownTemplate,
-  TemplateContentAtomLedger,
   TemplateFixedBlock,
   TemplateFixedBlockPosition,
 } from "../types";
@@ -208,23 +207,6 @@ export function TemplatesPage({
     } finally {
       setExtracting(false);
     }
-  };
-
-  const updateLedger = (
-    key: keyof TemplateContentAtomLedger,
-    value: string,
-  ) => {
-    if (!editing) return;
-    const current = editing.contentAtomLedger ?? {
-      claims: [], facts: [], examples: [], quotes: [], namedEntities: [], caveats: [],
-    };
-    setEditing({
-      ...editing,
-      contentAtomLedger: {
-        ...current,
-        [key]: value.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, 48),
-      },
-    });
   };
 
   return (
@@ -559,44 +541,6 @@ export function TemplatesPage({
                 <span>使用说明</span>
                 <textarea maxLength={4000} onChange={(event) => setEditing({ ...editing, usageInstructions: event.target.value })} placeholder="告诉 Agent 哪些规则必须保持，以及哪些内容需要替换。" rows={3} value={editing.usageInstructions} />
               </label>
-              {editing.mode === "reference" && (
-                <fieldset className="template-editor__fieldset">
-                  <legend>原创保护</legend>
-                  <p className="template-extractor__note">这些内容用于提醒写作 Agent 不可挪用。每行一项，可以按你的判断删改。</p>
-                  <div className="form-grid form-grid--two">
-                    {([
-                      ["claims", "原文观点"],
-                      ["facts", "原文事实与数据"],
-                      ["examples", "原文案例"],
-                      ["quotes", "原文引语"],
-                      ["namedEntities", "人物、产品与机构"],
-                      ["caveats", "原文限制条件"],
-                    ] as const).map(([key, label]) => (
-                      <label className="field" key={key}>
-                        <span>{label}</span>
-                        <textarea
-                          onChange={(event) => updateLedger(key, event.target.value)}
-                          placeholder="每行一项"
-                          rows={3}
-                          value={(editing.contentAtomLedger?.[key] ?? []).join("\n")}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <label className="field">
-                    <span>禁止复用表达</span>
-                    <textarea
-                      onChange={(event) => setEditing({
-                        ...editing,
-                        phraseBlacklist: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean).slice(0, 48),
-                      })}
-                      placeholder="每行一条标志性表达"
-                      rows={4}
-                      value={(editing.phraseBlacklist ?? []).join("\n")}
-                    />
-                  </label>
-                </fieldset>
-              )}
               <fieldset className="template-editor__fieldset">
                 <legend>固定片段</legend>
                 <p className="template-extractor__note">固定片段由程序在文章生成后插入，不会被模型改写或删除。可直接填写项目介绍、项目地址和求 Star 文案；{"{{title}}"}、{"{{topic}}"} 会自动替换。</p>

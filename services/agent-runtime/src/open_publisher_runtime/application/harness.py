@@ -17,7 +17,6 @@ from open_publisher_runtime.domain.entities import (
 from open_publisher_runtime.domain.enums import ApprovalStatus, RunStatus
 from open_publisher_runtime.domain.policies import RunPolicy
 from open_publisher_runtime.workflows.preset import (
-    REFERENCE_TEMPLATE_MARKER,
     PresetArticleWorkflow,
     PresetWorkflowInput,
     preset_definition,
@@ -67,7 +66,7 @@ NodeEventRecorder = Callable[[str, str, str, dict[str, object] | None], None]
 
 class WorkflowService:
     PRESET_NAME = "mock-article"
-    PRESET_VERSION = "1.3.0"
+    PRESET_VERSION = "1.5.0"
 
     def __init__(self, repository: RuntimeRepository) -> None:
         self.repository = repository
@@ -181,10 +180,7 @@ class RunController:
         base_required_model_calls = self.workflow_runner.required_model_calls_for(
             disabled_optional_node_ids
         )
-        reference_safety_reservation = int(
-            REFERENCE_TEMPLATE_MARKER in revision.markdown
-        )
-        required_model_calls = base_required_model_calls + reference_safety_reservation
+        required_model_calls = base_required_model_calls
         run = WorkflowRun(
             workflow_id=workflow.id,
             article_id=article.id,
@@ -206,7 +202,6 @@ class RunController:
                     "enabled_node_ids": list(enabled_model_node_ids),
                     "disabled_optional_node_ids": list(disabled_optional_node_ids),
                     "required_model_calls": required_model_calls,
-                    "reference_safety_reservation": reference_safety_reservation,
                 },
             },
             state_json={
@@ -295,9 +290,7 @@ class RunController:
                 ),
             )
             elapsed_seconds = monotonic() - workflow_started
-            budget_state["model_calls_used"] = (
-                base_required_model_calls + int(output.reference_safety_called)
-            )
+            budget_state["model_calls_used"] = base_required_model_calls
             run.state_json = {**run.state_json, "budget": budget_state}
             self.repository.update_run(run)
             # Preserve consumed budget even if later artifact validation or the deadline fails.
@@ -318,7 +311,6 @@ class RunController:
                 "enabled_node_ids": list(enabled_model_node_ids),
                 "disabled_optional_node_ids": list(disabled_optional_node_ids),
                 "required_model_calls": required_model_calls,
-                "reference_safety_called": output.reference_safety_called,
                 "input_revision_hash": revision.content_hash,
                 "budget": budget_state,
             }

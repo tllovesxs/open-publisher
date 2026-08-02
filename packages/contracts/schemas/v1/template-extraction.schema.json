@@ -27,8 +27,6 @@
         "description",
         "category",
         "markdown",
-        "content_atom_ledger",
-        "phrase_blacklist",
         "analysis_version",
         "source_fingerprint",
         "provider",
@@ -86,23 +84,6 @@
           "type": "string",
           "maxLength": 4000
         },
-        "content_atom_ledger": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "claims": { "$ref": "#/$defs/AtomList" },
-            "facts": { "$ref": "#/$defs/AtomList" },
-            "examples": { "$ref": "#/$defs/AtomList" },
-            "quotes": { "$ref": "#/$defs/AtomList" },
-            "named_entities": { "$ref": "#/$defs/AtomList" },
-            "caveats": { "$ref": "#/$defs/AtomList" }
-          }
-        },
-        "phrase_blacklist": {
-          "type": "array",
-          "maxItems": 48,
-          "items": { "type": "string", "minLength": 1, "maxLength": 180 }
-        },
         "analysis_version": {
           "type": "string",
           "minLength": 1,
@@ -129,15 +110,6 @@
         "mocked": {
           "type": "boolean"
         }
-      }
-    },
-    "AtomList": {
-      "type": "array",
-      "maxItems": 48,
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 320
       }
     }
   }

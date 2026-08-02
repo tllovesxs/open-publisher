@@ -91,8 +91,6 @@ describe("desktop product flow", () => {
       referenceMarkdown: "# 参考原文\n\n独特的参考表达只用于分析。",
       sourceFingerprint: `sha256:${"a".repeat(64)}`,
       rightsConfirmed: true,
-      phraseBlacklist: ["独特的参考表达"],
-      contentAtomLedger: { claims: [], facts: [], examples: [], quotes: [], namedEntities: [], caveats: [] },
     });
     const seed = buildCreationSeed({
       topic: "新的写作主题",
@@ -112,7 +110,7 @@ describe("desktop product flow", () => {
 
     expect(seed).toContain("open-publisher-reference-template:v1:");
     expect(seed).toContain("独特的参考表达只用于分析。");
-    expect(seed).toContain("phrase_blacklist");
+    expect(seed).not.toContain("phrase_blacklist");
   });
 
   it("uses the built-in Baoyu article-illustration Skill for the fixed visual workflow", () => {
