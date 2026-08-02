@@ -14,7 +14,7 @@ import type {
   WebSearchMode,
   WorkflowAgentInstruction,
 } from "../lib/desktopBridge";
-import type { MarkdownTemplate, MediaAsset, PlatformId, StudioAgent } from "../types";
+import type { MarkdownTemplate, MediaAsset, PlatformId } from "../types";
 
 export interface CreationRequest {
   topic: string;
@@ -29,7 +29,6 @@ export interface CreationRequest {
   template: MarkdownTemplate | null;
   imageAssets: MediaAsset[];
   imagePlan: ImagePlanPreference;
-  agents: StudioAgent[];
   agentInstructions?: WorkflowAgentInstruction[];
   webSearchMode: WebSearchMode;
 }
@@ -84,7 +83,6 @@ interface CreatePageProps {
   mediaAssets: MediaAsset[];
   selectedMedia: MediaAsset[];
   onMediaChange: (assetIds: string[]) => void;
-  agents: StudioAgent[];
 }
 
 const CREATION_DRAFT_STORAGE_KEY = "open-publisher-creation-draft-v3";
@@ -182,7 +180,6 @@ export function CreatePage(props: CreatePageProps) {
         ? { mode: "fixed", targetCount: imageCount }
         : { mode: imagePlanMode, targetCount: 0 },
       webSearchMode,
-      agents: props.agents,
     };
   };
 

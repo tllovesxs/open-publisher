@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
-import App, { applyTemplateFixedBlocks, normalizeStudioAgents, normalizeTemplate } from "./App";
+import App, { applyTemplateFixedBlocks, normalizeTemplate } from "./App";
 import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
   type DesktopBridge,
@@ -78,7 +78,7 @@ describe("desktop product flow", () => {
     expect(applyTemplateFixedBlocks(once, withBlock, article, request).match(/项目：新文章/g)).toHaveLength(1);
   });
 
-  it("uses the built-in Baoyu article-illustration Skill and migrates the retired visual Skill", () => {
+  it("uses the built-in Baoyu article-illustration Skill for the fixed visual workflow", () => {
     expect(availableSkills).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "baoyu-article-illustrator", isBuiltIn: true }),
@@ -88,22 +88,6 @@ describe("desktop product flow", () => {
     expect(defaultAgents.find((agent) => agent.id === "visual")?.skillIds).toEqual([
       "baoyu-article-illustrator",
     ]);
-
-    const migrated = normalizeStudioAgents([
-      {
-        id: "visual",
-        name: "旧配图 Agent",
-        role: "视觉编辑",
-        description: "旧配置",
-        prompt: "旧提示词",
-        skillIds: ["image-planning"],
-        enabled: true,
-      },
-    ]);
-
-    expect(migrated.find((agent) => agent.id === "visual")?.skillIds).toEqual([
-      "baoyu-article-illustrator",
-    ]);
   });
 
   it("exposes the focused content-production areas", async () => {
@@ -111,16 +95,16 @@ describe("desktop product flow", () => {
 
     expect(screen.getByRole("heading", { name: "开始创作" })).toBeVisible();
     const navigation = screen.getByRole("navigation", { name: "主导航" });
-    expect(within(navigation).getAllByRole("button")).toHaveLength(6);
+    expect(within(navigation).getAllByRole("button")).toHaveLength(5);
     expect(within(navigation).getByRole("button", { name: "创作" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "文章" })).toBeVisible();
-    expect(within(navigation).getByRole("button", { name: "智能体" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "模板" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "素材库" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "设置" })).toBeVisible();
     expect(within(navigation).queryByRole("button", { name: "发布" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "工作流" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "Skill" })).toBeNull();
+    expect(within(navigation).queryByRole("button", { name: "智能体" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "批量" })).toBeNull();
 
     fireEvent.click(within(navigation).getByRole("button", { name: "文章" }));
@@ -473,12 +457,8 @@ describe("desktop product flow", () => {
     expect(screen.getByRole("button", { name: "已保存" })).toBeDisabled();
   });
 
-  it("keeps agent, template, and image configuration in dedicated pages", async () => {
+  it("keeps templates and image assets in dedicated pages", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能体" }));
-    expect(await screen.findByRole("heading", { name: "智能体" })).toBeVisible();
-    expect(screen.getByLabelText("系统提示词")).toBeVisible();
-
     fireEvent.click(screen.getByRole("button", { name: "模板" }));
     expect(await screen.findByRole("heading", { name: "模板" })).toBeVisible();
     expect(screen.getByRole("button", { name: "用此模板创作" })).toBeVisible();

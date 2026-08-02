@@ -1,7 +1,6 @@
 import { Menu, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
-import { AgentsPage } from "./components/AgentsPage";
 import { ArticlesPage } from "./components/ArticlesPage";
 import type { MarkdownSelection, RewriteCandidate } from "./components/ArticleAssistant";
 import {
@@ -89,8 +88,6 @@ interface ArticleProgress {
 
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
 const FAILED_CREATION_STORAGE_KEY = "open-publisher-failed-creation";
-const AGENTS_STORAGE_KEY = "open-publisher-studio-agents";
-const SKILLS_STORAGE_KEY = "open-publisher-studio-skills";
 const TEMPLATES_STORAGE_KEY = "open-publisher-studio-templates";
 const MEDIA_STORAGE_KEY = "open-publisher-studio-media";
 const SELECTED_TEMPLATE_STORAGE_KEY = "open-publisher-studio-selected-template";
@@ -118,10 +115,6 @@ const OPTIONAL_WORKFLOW_NODE_IDS: DisabledOptionalNodeId[] = [
   "review",
   "visual",
 ];
-
-const LEGACY_BUILT_IN_SKILL_ID_MIGRATIONS: Readonly<Record<string, string>> = {
-  "image-planning": "baoyu-article-illustrator",
-};
 
 function requestWriterFrame(callback: FrameRequestCallback): number {
   if (typeof window.requestAnimationFrame === "function") {
@@ -195,61 +188,6 @@ function loadWorkflowWorkspaces(): Record<string, WorkflowWorkspaceSnapshot> {
       .filter(([articleId, snapshot]) => articleId.length <= 120 && isStoredWorkflowWorkspace(snapshot))
       .slice(-24),
   ) as Record<string, WorkflowWorkspaceSnapshot>;
-}
-
-function isStoredSkill(value: unknown): value is StudioSkill {
-  if (!value || typeof value !== "object") return false;
-  const skill = value as Partial<StudioSkill>;
-  return (
-    typeof skill.id === "string" &&
-    typeof skill.name === "string" &&
-    typeof skill.description === "string" &&
-    typeof skill.instructions === "string" &&
-    typeof skill.source === "string" &&
-    skill.isBuiltIn === false
-  );
-}
-
-function loadCustomSkills() {
-  const stored = loadStudioValue<unknown>(SKILLS_STORAGE_KEY, []);
-  return Array.isArray(stored) ? stored.filter(isStoredSkill) : [];
-}
-
-function normalizeSavedSkillIds(value: unknown, fallback: string[]): string[] {
-  if (!Array.isArray(value)) return [...fallback];
-  const normalized = value
-    .filter((id): id is string => typeof id === "string")
-    .map((id) => LEGACY_BUILT_IN_SKILL_ID_MIGRATIONS[id] ?? id)
-    .slice(0, 12);
-  return [...new Set(normalized)];
-}
-
-export function normalizeStudioAgents(value: unknown): StudioAgent[] {
-  const stored = Array.isArray(value) ? value : [];
-  const byId = new Map(
-    stored
-      .filter((agent): agent is StudioAgent => Boolean(agent && typeof agent === "object" && typeof (agent as StudioAgent).id === "string"))
-      .map((agent) => [agent.id, agent]),
-  );
-  return defaultAgents.map((defaultAgent) => {
-    const saved = byId.get(defaultAgent.id);
-    if (!saved) return { ...defaultAgent, skillIds: [...defaultAgent.skillIds] };
-    return {
-      ...defaultAgent,
-      name: typeof saved.name === "string" ? saved.name.slice(0, 120) : defaultAgent.name,
-      role: typeof saved.role === "string" ? saved.role.slice(0, 120) : defaultAgent.role,
-      description:
-        typeof saved.description === "string"
-          ? saved.description.slice(0, 500)
-          : defaultAgent.description,
-      prompt:
-        typeof saved.prompt === "string" ? saved.prompt.slice(0, 6000) : defaultAgent.prompt,
-      skillIds: normalizeSavedSkillIds(saved.skillIds, defaultAgent.skillIds),
-      enabled: typeof saved.enabled === "boolean" ? saved.enabled : defaultAgent.enabled,
-      // Node ownership is a fixed workflow contract, not a user-editable field.
-      runtimeNodeId: defaultAgent.runtimeNodeId,
-    };
-  });
 }
 
 function isStoredMediaAsset(value: unknown): value is MediaAsset {
@@ -897,10 +835,10 @@ export default function App() {
   const [workflowWorkspaces, setWorkflowWorkspaces] =
     useState<Record<string, WorkflowWorkspaceSnapshot>>(loadWorkflowWorkspaces);
   const [toast, setToast] = useState<string | null>(null);
-  const [studioAgents, setStudioAgents] = useState<StudioAgent[]>(() =>
-    normalizeStudioAgents(loadStudioValue<unknown>(AGENTS_STORAGE_KEY, defaultAgents)),
-  );
-  const [customSkills, setCustomSkills] = useState<StudioSkill[]>(loadCustomSkills);
+  // Workflow roles are product internals. Users control enabled stages from Settings,
+  // rather than managing prompts and Skill wiring as a separate workspace.
+  const studioAgents = defaultAgents;
+  const studioSkills = availableSkills;
   const [templates, setTemplates] = useState<MarkdownTemplate[]>(() =>
     loadTemplates(),
   );
@@ -1014,11 +952,6 @@ export default function App() {
       };
     });
   };
-
-  const studioSkills = useMemo(
-    () => [...availableSkills, ...customSkills],
-    [customSkills],
-  );
 
   const configuredPlatforms = useMemo(
     () =>
@@ -1191,14 +1124,6 @@ export default function App() {
       JSON.stringify(failedCreationContext),
     );
   }, [failedCreationContext]);
-
-  useEffect(() => {
-    window.localStorage.setItem(AGENTS_STORAGE_KEY, JSON.stringify(studioAgents));
-  }, [studioAgents]);
-
-  useEffect(() => {
-    window.localStorage.setItem(SKILLS_STORAGE_KEY, JSON.stringify(customSkills));
-  }, [customSkills]);
 
   useEffect(() => {
     window.localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
@@ -2719,7 +2644,6 @@ export default function App() {
             modelLabel={modelConfiguration?.textModel ?? "配置模型"}
             onCreate={(request) => void createFromBrief(request)}
             onOpenSettings={() => navigate("settings")}
-            agents={studioAgents}
             mediaAssets={mediaAssets}
             onMediaChange={setSelectedMediaIds}
             onTemplateChange={setSelectedTemplateId}
@@ -2809,15 +2733,6 @@ export default function App() {
             stale={publishSessionStale}
           />
         );
-      case "agents":
-        return (
-          <AgentsPage
-            agents={studioAgents}
-            onChange={setStudioAgents}
-            onSkillsChange={(skills) => setCustomSkills(skills.filter(isStoredSkill))}
-            skills={studioSkills}
-          />
-        );
       case "templates":
         return (
           <TemplatesPage
@@ -2895,15 +2810,13 @@ export default function App() {
               ? "创作"
               : activeNav === "articles"
                 ? "文章"
-                : activeNav === "agents"
-                  ? "智能体"
-                  : activeNav === "templates"
-                    ? "模板"
-                    : activeNav === "media"
-                      ? "素材库"
-                      : activeNav === "publish"
-                        ? "发布"
-                        : "设置"}
+              : activeNav === "templates"
+                ? "模板"
+                : activeNav === "media"
+                  ? "素材库"
+                  : activeNav === "publish"
+                    ? "发布"
+                    : "设置"}
           </strong>
           <span className="workspace-topbar__spacer" />
           {runtime?.bridgeMode === "interface_only" && (
