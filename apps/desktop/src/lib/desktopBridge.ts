@@ -238,7 +238,7 @@ export interface WorkflowActivityEvent {
   /** Bounded text chunk emitted only by the writing Agent. */
   draftDelta?: string;
   /** Present only when the writer called a reviewed workflow tool. */
-  toolName?: "web_search";
+  toolName?: "web_search" | "github_repository";
   toolQuery?: string;
   sources?: WorkflowSourceSummary[];
 }
@@ -480,6 +480,7 @@ export interface ConfigureModelRequest {
   imageModel: string | null;
   imageTrustedHosts: string[];
   tavilyApiKey: string;
+  githubToken: string;
   timeoutSeconds: number;
 }
 
@@ -493,6 +494,7 @@ export interface ModelConfigurationSummary {
   timeoutSeconds: number;
   secretConfigured: boolean;
   webSearchConfigured: boolean;
+  githubConfigured: boolean;
   persistence: "encrypted_local_database";
 }
 
@@ -1092,6 +1094,7 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       timeoutSeconds: request.timeoutSeconds,
       secretConfigured: Boolean(request.apiKey.trim()),
       webSearchConfigured: Boolean(request.tavilyApiKey.trim()),
+      githubConfigured: Boolean(request.githubToken.trim()),
       persistence: "encrypted_local_database",
     };
     return { ...mockModelConfiguration };

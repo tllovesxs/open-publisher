@@ -124,6 +124,7 @@ export function SettingsPage({
   const [baseUrl, setBaseUrl] = useState(initialModelDraft.baseUrl);
   const [apiKey, setApiKey] = useState("");
   const [tavilyApiKey, setTavilyApiKey] = useState("");
+  const [githubToken, setGithubToken] = useState("");
   const [textModel, setTextModel] = useState(initialModelDraft.textModel);
   const [imageBaseUrl, setImageBaseUrl] = useState(initialModelDraft.imageBaseUrl);
   const [imageModel, setImageModel] = useState(initialModelDraft.imageModel);
@@ -131,6 +132,7 @@ export function SettingsPage({
   const [timeoutSeconds, setTimeoutSeconds] = useState(initialModelDraft.timeoutSeconds);
   const [showKey, setShowKey] = useState(false);
   const [showTavilyKey, setShowTavilyKey] = useState(false);
+  const [showGithubToken, setShowGithubToken] = useState(false);
   const [validation, setValidation] = useState<string | null>(null);
 
   useEffect(() => {
@@ -176,6 +178,7 @@ export function SettingsPage({
       imageModel: imageModel.trim() || null,
       imageTrustedHosts: splitHosts(trustedHosts),
       tavilyApiKey: tavilyApiKey.trim(),
+      githubToken: githubToken.trim(),
       timeoutSeconds,
     });
   };
@@ -364,6 +367,34 @@ export function SettingsPage({
                       </button>
                     </span>
                     <small>写作 Agent 会自行判断是否检索；密钥保存于本机加密数据库。</small>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="github-token">
+                      GitHub Token（可选）
+                      {modelConfiguration?.githubConfigured && <small> 已配置</small>}
+                    </label>
+                    <span className="secret-input">
+                      <input
+                        autoComplete="off"
+                        id="github-token"
+                        onChange={(event) => setGithubToken(event.target.value)}
+                        placeholder={
+                          modelConfiguration?.githubConfigured
+                            ? "留空则继续使用已保存的 Token"
+                            : "公开仓库无需填写；私有仓库或提高限额时填写"
+                        }
+                        type={showGithubToken ? "text" : "password"}
+                        value={githubToken}
+                      />
+                      <button
+                        aria-label={showGithubToken ? "隐藏 GitHub Token" : "显示 GitHub Token"}
+                        onClick={() => setShowGithubToken((current) => !current)}
+                        type="button"
+                      >
+                        {showGithubToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </span>
+                    <small>写文 Agent 只读取仓库简介、README、Release 和近期提交；Token 仅保存在本机加密数据库。</small>
                   </div>
                 </details>
 

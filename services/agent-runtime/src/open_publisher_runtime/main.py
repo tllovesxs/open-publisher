@@ -17,6 +17,7 @@ from open_publisher_runtime.api.schemas import HealthResponse
 from open_publisher_runtime.application.articles import ArticleService
 from open_publisher_runtime.application.artifacts import ArtifactService
 from open_publisher_runtime.application.batch_generation import BatchGenerationService
+from open_publisher_runtime.application.github_repository import GitHubRepositoryTool
 from open_publisher_runtime.application.harness import RunController, WorkflowService
 from open_publisher_runtime.application.model_access import ModelAccessLayer
 from open_publisher_runtime.application.publishing import (
@@ -47,6 +48,7 @@ IMAGE_MODEL_ENV = "OPEN_PUBLISHER_IMAGE_MODEL"
 IMAGE_TRUSTED_HOSTS_ENV = "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS"
 MODEL_TIMEOUT_SECONDS_ENV = "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS"
 TAVILY_API_KEY_ENV = "OPEN_PUBLISHER_TAVILY_API_KEY"
+GITHUB_TOKEN_ENV = "OPEN_PUBLISHER_GITHUB_TOKEN"
 LOCAL_DEMO_ENV = "OPEN_PUBLISHER_LOCAL_DEMO"
 MODEL_ENV_VARIABLES = (
     MODEL_API_KEY_ENV,
@@ -58,6 +60,7 @@ MODEL_ENV_VARIABLES = (
     IMAGE_TRUSTED_HOSTS_ENV,
     MODEL_TIMEOUT_SECONDS_ENV,
     TAVILY_API_KEY_ENV,
+    GITHUB_TOKEN_ENV,
     LOCAL_DEMO_ENV,
 )
 
@@ -107,6 +110,13 @@ def web_search_tool_from_env(
     values = os.environ if environment is None else environment
     api_key = _environment_value(values, TAVILY_API_KEY_ENV)
     return TavilySearchTool(api_key=api_key) if api_key is not None else None
+
+
+def github_repository_tool_from_env(
+    environment: Mapping[str, str] | None = None,
+) -> GitHubRepositoryTool:
+    values = os.environ if environment is None else environment
+    return GitHubRepositoryTool(api_token=_environment_value(values, GITHUB_TOKEN_ENV))
 
 
 def model_access_from_env(
@@ -193,9 +203,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         blob_store = FileSystemArtifactStore(runtime_settings.artifact_dir)
         model_access = model_access_from_env()
         web_search_tool = web_search_tool_from_env()
+        github_repository_tool = github_repository_tool_from_env()
         workflow_runner = PresetArticleWorkflow(
             model_access,
             web_search_tool=web_search_tool,
+            github_repository_tool=github_repository_tool,
         )
         container = RuntimeContainer(
             database=database,

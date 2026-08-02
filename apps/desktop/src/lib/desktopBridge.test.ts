@@ -185,6 +185,7 @@ describe("desktopBridge browser preview boundary", () => {
       imageModel: null,
       imageTrustedHosts: [],
       tavilyApiKey: "",
+      githubToken: "",
       timeoutSeconds: 30,
     });
     expect(configuration).toMatchObject({

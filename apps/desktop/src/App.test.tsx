@@ -34,6 +34,7 @@ const nativeTestBridge: DesktopBridge = {
     timeoutSeconds: 30,
     secretConfigured: true,
     webSearchConfigured: false,
+    githubConfigured: false,
     persistence: "encrypted_local_database",
   }),
   testModelConnection: async () => ({

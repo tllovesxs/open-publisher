@@ -79,7 +79,9 @@ function eventLabel(event: WorkflowActivityEvent) {
     case "run.node_skipped":
       return `${node}已跳过`;
     case "run.node_tool_called":
-      return "正在检索公开来源";
+      return event.toolName === "github_repository"
+        ? "正在读取 GitHub 项目资料"
+        : "正在检索公开来源";
     case "run.node_precheck":
       return "正在检查配图设置和素材范围";
     case "run.node_outline_saved":
@@ -216,7 +218,7 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
                     <span className="workflow-timeline__icon" aria-hidden="true"><Icon className={state === "running" ? "spin" : undefined} size={14} /></span>
                     <div>
                       <strong>{eventLabel(event)}</strong>
-                      {event.eventType === "run.node_tool_called" && event.toolQuery && <small>检索：{event.toolQuery}</small>}
+                      {event.eventType === "run.node_tool_called" && event.toolQuery && <small>{event.toolName === "github_repository" ? "仓库：" : "检索："}{event.toolQuery}</small>}
                       {event.eventType === "run.node_tool_called" && <small>已整理 {event.sources?.length ?? 0} 个来源</small>}
                     </div>
                     <time dateTime={event.createdAt}>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(event.createdAt))}</time>

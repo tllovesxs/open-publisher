@@ -11,6 +11,7 @@ import open_publisher_runtime.application.harness as harness_module
 import open_publisher_runtime.workflows.preset as preset_module
 from open_publisher_runtime.application.artifacts import ArtifactService
 from open_publisher_runtime.application.model_access import TextGenerationResponse
+from open_publisher_runtime.application.web_search import SourceEvidence
 from open_publisher_runtime.domain.entities import RuntimeEvent, Workflow, WorkflowRun
 from open_publisher_runtime.domain.enums import RunStatus
 from open_publisher_runtime.infrastructure.orm import ArtifactORM, WorkflowRunORM
@@ -78,6 +79,65 @@ class BlockingStreamingDraftProvider(MockTextProvider):
             text=f"{first_delta}{second_delta}",
             provider="test-stream",
             model="test-stream",
+        )
+
+
+class GitHubToolCallingProvider(MockTextProvider):
+    def __init__(self) -> None:
+        self.tool_names: list[str] = []
+
+    def generate_with_tools_stream(
+        self,
+        _request,
+        *,
+        tools,
+        execute_tool,
+        on_delta,
+        max_tool_calls,
+    ):
+        self.tool_names = [tool["function"]["name"] for tool in tools]
+        assert max_tool_calls >= 1
+        tool_payload = execute_tool(
+            "github_repository",
+            {"repository": "example/wandao"},
+        )
+        assert "GitHub repository" in tool_payload
+        text = "# Wandao 更新\n\n安装包体积下降，启动与分发成本更轻。"
+        on_delta(text)
+        return TextGenerationResponse(
+            text=text,
+            provider="tool-test",
+            model="tool-test",
+        )
+
+
+class StubGitHubRepositoryTool:
+    name = "github_repository"
+
+    @staticmethod
+    def definition() -> dict[str, object]:
+        return {
+            "type": "function",
+            "function": {"name": "github_repository", "parameters": {"type": "object"}},
+        }
+
+    @staticmethod
+    def inspect(repository: str) -> list[SourceEvidence]:
+        assert repository == "example/wandao"
+        return [
+            SourceEvidence(
+                source_id="github-repository",
+                title="example/wandao · GitHub repository",
+                url="https://github.com/example/wandao",
+                content="A public project description for the current article.",
+            )
+        ]
+
+    @staticmethod
+    def tool_result(sources: list[SourceEvidence]) -> str:
+        return json.dumps(
+            {"sources": [source.prompt_card() for source in sources]},
+            ensure_ascii=False,
         )
 
 
@@ -168,6 +228,59 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         "max_parallel": 4,
         "max_wall_clock_seconds": 300,
     }
+
+
+def test_writer_registers_github_repository_as_a_bounded_research_tool(
+    client,
+    article_payload,
+) -> None:
+    provider = GitHubToolCallingProvider()
+    container = client.app.state.container
+    container.model_access.text_provider = provider
+    container.workflow_runner.github_repository_tool = StubGitHubRepositoryTool()
+    article = client.post(
+        "/api/v1/articles",
+        json={
+            **article_payload,
+            "markdown": (
+                "# 初稿\n\n项目仓库：https://github.com/example/wandao\n"
+                "请根据公开资料说明这次更新。"
+            ),
+        },
+    ).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "topic": "万能导最新更新",
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "completed"
+    assert provider.tool_names == ["github_repository"]
+    assert run["state_json"]["web_source_count"] == 1
+
+    detail = client.get(f"/api/v1/runs/{run['id']}").json()
+    tool_events = [
+        event for event in detail["events"] if event["event_type"] == "run.node_tool_called"
+    ]
+    assert tool_events[0]["payload_json"]["tool"] == "github_repository"
+    assert tool_events[0]["payload_json"]["sources"][0]["url"] == "https://github.com/example/wandao"
 
 
 def test_reference_template_keeps_source_private_and_applies_style_context(client) -> None:

@@ -66,7 +66,15 @@
       "visual_composition": {
         "mode": "none",
         "target_count": 0,
-        "assets": []
+        "assets": [],
+        "asset_scope": "selected_only",
+        "preferred_type": "infographic",
+        "density": "balanced",
+        "style": "sketch-notes",
+        "palette": "macaron",
+        "preferred_image_backend": "auto",
+        "generation_batch_size": 4,
+        "skip_confirmation": false
       },
       "agent_instructions": [
         {

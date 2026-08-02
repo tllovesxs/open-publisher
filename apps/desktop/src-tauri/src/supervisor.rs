@@ -23,6 +23,7 @@ const MODEL_SECRETS_DATABASE_FILE: &str = "model-secrets.sqlite3";
 const DESKTOP_KEYRING_SERVICE: &str = "io.openpublisher.desktop";
 const MODEL_API_KEY_SECRET: &str = "model-api-key";
 const TAVILY_API_KEY_SECRET: &str = "tavily-api-key";
+const GITHUB_TOKEN_SECRET: &str = "github-token";
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -648,6 +649,8 @@ pub struct ConfigureModelRequest {
     pub image_trusted_hosts: Vec<String>,
     #[serde(default)]
     pub tavily_api_key: String,
+    #[serde(default)]
+    pub github_token: String,
     pub timeout_seconds: u16,
 }
 
@@ -663,6 +666,7 @@ pub struct ModelConfigurationSummary {
     pub timeout_seconds: u16,
     pub secret_configured: bool,
     pub web_search_configured: bool,
+    pub github_configured: bool,
     pub persistence: &'static str,
 }
 
@@ -799,6 +803,7 @@ struct PrivateModelConfiguration {
     image_model: Option<String>,
     image_trusted_hosts: Vec<String>,
     tavily_api_key: String,
+    github_token: String,
     timeout_seconds: u16,
 }
 
@@ -814,6 +819,7 @@ impl PrivateModelConfiguration {
             timeout_seconds: self.timeout_seconds,
             secret_configured: !self.api_key.is_empty(),
             web_search_configured: !self.tavily_api_key.is_empty(),
+            github_configured: !self.github_token.is_empty(),
             persistence: "encrypted_local_database",
         }
     }
@@ -1606,6 +1612,7 @@ impl PythonSidecarSupervisor {
             "OPEN_PUBLISHER_IMAGE_TRUSTED_HOSTS",
             "OPEN_PUBLISHER_MODEL_TIMEOUT_SECONDS",
             "OPEN_PUBLISHER_TAVILY_API_KEY",
+            "OPEN_PUBLISHER_GITHUB_TOKEN",
             "OPEN_PUBLISHER_LOCAL_DEMO",
         ] {
             command.env_remove(variable);
@@ -1635,6 +1642,9 @@ impl PythonSidecarSupervisor {
             }
             if !model.tavily_api_key.is_empty() {
                 command.env("OPEN_PUBLISHER_TAVILY_API_KEY", &model.tavily_api_key);
+            }
+            if !model.github_token.is_empty() {
+                command.env("OPEN_PUBLISHER_GITHUB_TOKEN", &model.github_token);
             }
         } else if self.local_demo {
             command.env("OPEN_PUBLISHER_LOCAL_DEMO", "true");
@@ -2924,6 +2934,16 @@ fn load_model_configuration(
             value
         }
     };
+    let github_token = match load_database_secret(data_dir, GITHUB_TOKEN_SECRET)? {
+        Some(value) => value,
+        None => {
+            let value = secret_store.read(GITHUB_TOKEN_SECRET)?.unwrap_or_default();
+            if !value.is_empty() {
+                save_database_secret(data_dir, GITHUB_TOKEN_SECRET, &value)?;
+            }
+            value
+        }
+    };
     validate_model_configuration(
         ConfigureModelRequest {
             name: persisted.name,
@@ -2934,6 +2954,7 @@ fn load_model_configuration(
             image_model: persisted.image_model,
             image_trusted_hosts: persisted.image_trusted_hosts,
             tavily_api_key,
+            github_token,
             timeout_seconds: persisted.timeout_seconds,
         },
         None,
@@ -2952,6 +2973,7 @@ fn persist_model_configuration(
         TAVILY_API_KEY_SECRET,
         &configuration.tavily_api_key,
     )?;
+    save_database_secret(data_dir, GITHUB_TOKEN_SECRET, &configuration.github_token)?;
     fs::create_dir_all(data_dir).map_err(|_| "无法创建本地模型配置目录。".to_owned())?;
     let contents = serde_json::to_vec_pretty(&configuration.persisted())
         .map_err(|_| "无法序列化本地模型配置。".to_owned())?;
@@ -3465,6 +3487,21 @@ fn validate_model_configuration(
         }
         supplied_tavily_key.to_owned()
     };
+    let supplied_github_token = request.github_token.trim();
+    let github_token = if supplied_github_token.is_empty() {
+        existing
+            .map(|configuration| configuration.github_token.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("")
+            .to_owned()
+    } else {
+        if supplied_github_token.len() > 4_096
+            || supplied_github_token.chars().any(char::is_control)
+        {
+            return Err("GitHub Token 格式无效。".to_owned());
+        }
+        supplied_github_token.to_owned()
+    };
 
     let image_base_url = normalize_base_url(request.image_base_url)?;
     let image_model = normalize_public_option(request.image_model, "生图模型", 300)?;
@@ -3505,6 +3542,7 @@ fn validate_model_configuration(
         image_model,
         image_trusted_hosts,
         tavily_api_key,
+        github_token,
         timeout_seconds: request.timeout_seconds,
     })
 }
@@ -3876,7 +3914,7 @@ fn summarize_workflow_activity_event(
             .get("tool")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| *value == "web_search")
+            .filter(|value| matches!(*value, "web_search" | "github_repository"))
             .ok_or_else(|| "local Python runtime returned an unknown workflow tool".to_owned())?
             .to_owned();
         let tool_query = event
@@ -4941,6 +4979,7 @@ mod tests {
                 image_model: Some("example-image".to_owned()),
                 image_trusted_hosts: vec!["images.example".to_owned()],
                 tavily_api_key: "tavily-secret-kept-in-encrypted-database".to_owned(),
+                github_token: "github-secret-kept-in-encrypted-database".to_owned(),
                 timeout_seconds: 120,
             })
             .expect("persist model configuration");
@@ -4950,6 +4989,7 @@ mod tests {
             .expect("non-secret model configuration");
         assert!(!serialized.contains("model-secret-kept-in-encrypted-database"));
         assert!(!serialized.contains("tavily-secret-kept-in-encrypted-database"));
+        assert!(!serialized.contains("github-secret-kept-in-encrypted-database"));
         let encrypted_database = std::fs::read(model_secrets_database_path(data_dir.path()))
             .expect("encrypted local secrets database");
         assert!(!encrypted_database
@@ -4958,6 +4998,9 @@ mod tests {
         assert!(!encrypted_database
             .windows(b"tavily-secret-kept-in-encrypted-database".len())
             .any(|value| value == b"tavily-secret-kept-in-encrypted-database"));
+        assert!(!encrypted_database
+            .windows(b"github-secret-kept-in-encrypted-database".len())
+            .any(|value| value == b"github-secret-kept-in-encrypted-database"));
         drop(first);
 
         let restored = PythonSidecarSupervisor::new_with_local_demo_and_secret_store(
@@ -4972,6 +5015,7 @@ mod tests {
         assert_eq!(restored, initial);
         assert!(restored.secret_configured);
         assert!(restored.web_search_configured);
+        assert!(restored.github_configured);
     }
 
     #[cfg(windows)]
