@@ -11,7 +11,7 @@ from open_publisher_runtime.domain.entities import RuntimeEvent
 class LiveWorkflowActivityStore:
     """Thread-safe, bounded transport for progress that must reach the editor now."""
 
-    max_events_per_run: int = 160
+    max_events_per_run: int = 512
     _events_by_run: dict[str, deque[RuntimeEvent]] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 

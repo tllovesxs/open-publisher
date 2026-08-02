@@ -93,6 +93,7 @@ const WORKFLOW_NODES_STORAGE_KEY = "open-publisher-studio-workflow-nodes";
 const WORKFLOW_WORKSPACES_STORAGE_KEY = "open-publisher-studio-workflow-workspaces";
 const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
 const WORKFLOW_ACTIVITY_TIMEOUT_MS = 120_000;
+const WORKFLOW_ACTIVITY_POLL_INTERVAL_MS = 160;
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
 const INLINE_DATA_IMAGE_PATTERN =
   /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
@@ -114,6 +115,21 @@ const OPTIONAL_WORKFLOW_NODE_IDS: DisabledOptionalNodeId[] = [
 const LEGACY_BUILT_IN_SKILL_ID_MIGRATIONS: Readonly<Record<string, string>> = {
   "image-planning": "baoyu-article-illustrator",
 };
+
+function requestWriterFrame(callback: FrameRequestCallback): number {
+  if (typeof window.requestAnimationFrame === "function") {
+    return window.requestAnimationFrame(callback);
+  }
+  return window.setTimeout(() => callback(window.performance.now()), 16);
+}
+
+function cancelWriterFrame(frame: number): void {
+  if (typeof window.cancelAnimationFrame === "function") {
+    window.cancelAnimationFrame(frame);
+    return;
+  }
+  window.clearTimeout(frame);
+}
 
 function isOptionalWorkflowNodeId(
   value: string | undefined,
@@ -1156,8 +1172,8 @@ export default function App() {
   };
 
   const clearWriterTypewriter = (articleId: string, clearRendered = false) => {
-    const timer = writerTypewriterTimersRef.current[articleId];
-    if (timer !== undefined) window.clearTimeout(timer);
+    const frame = writerTypewriterTimersRef.current[articleId];
+    if (frame !== undefined) cancelWriterFrame(frame);
     delete writerTypewriterTimersRef.current[articleId];
     delete writerTypewriterQueueRef.current[articleId];
     writerDraftCompletedRef.current.delete(articleId);
@@ -1174,7 +1190,7 @@ export default function App() {
 
   const scheduleWriterTypewriter = (articleId: string) => {
     if (writerTypewriterTimersRef.current[articleId] !== undefined) return;
-    writerTypewriterTimersRef.current[articleId] = window.setTimeout(() => {
+    writerTypewriterTimersRef.current[articleId] = requestWriterFrame(() => {
       delete writerTypewriterTimersRef.current[articleId];
       const queued = writerTypewriterQueueRef.current[articleId] ?? "";
       if (!queued) {
@@ -1182,14 +1198,10 @@ export default function App() {
         return;
       }
 
-      // Keep the typewriter effect perceptible at the edge of the stream, then
-      // catch up when a provider or local polling delivers a larger backlog.
-      // This avoids making long-form output appear stalled after a burst.
       const characters = Array.from(queued);
-      const batchSize =
-        characters.length >= 900 ? 18 : characters.length >= 180 ? 8 : 3;
-      const renderedDelta = characters.slice(0, batchSize).join("");
-      writerTypewriterQueueRef.current[articleId] = characters.slice(batchSize).join("");
+      // Never turn an upstream delta into a paragraph-sized visual jump.
+      const renderedDelta = characters[0] ?? "";
+      writerTypewriterQueueRef.current[articleId] = characters.slice(1).join("");
       const markdown = `${writerStreamRef.current[articleId] ?? ""}${renderedDelta}`;
       writerStreamRef.current[articleId] = markdown;
       setDrafts((current) => ({ ...current, [articleId]: markdown }));
@@ -1208,13 +1220,13 @@ export default function App() {
       } else {
         completeWriterTypewriterIfDrained(articleId);
       }
-    }, 18);
+    });
   };
 
   useEffect(
     () => () => {
       Object.values(writerTypewriterTimersRef.current).forEach((timer) => {
-        if (timer !== undefined) window.clearTimeout(timer);
+        if (timer !== undefined) cancelWriterFrame(timer);
       });
       writerTypewriterTimersRef.current = {};
       writerTypewriterQueueRef.current = {};
@@ -1333,7 +1345,10 @@ export default function App() {
       }
     };
     void collect();
-    const interval = window.setInterval(() => void collect(), 1000);
+    const interval = window.setInterval(
+      () => void collect(),
+      WORKFLOW_ACTIVITY_POLL_INTERVAL_MS,
+    );
     return () => {
       stopped = true;
       window.clearInterval(interval);

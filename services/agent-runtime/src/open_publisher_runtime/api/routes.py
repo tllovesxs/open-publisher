@@ -127,7 +127,7 @@ def _services(
         phase: str,
         payload: dict[str, object] | None = None,
     ) -> None:
-        """Make node activity available before the SQLite audit write completes."""
+        """Split high-frequency editor output from durable workflow checkpoints."""
 
         event = RuntimeEvent(
             run_id=run_id,
@@ -136,7 +136,9 @@ def _services(
             event_type=f"run.node_{phase}",
             payload_json={"node_id": node_id, **(payload or {})},
         )
-        container.live_workflow_activity.append(event)
+        if phase == "output_delta":
+            container.live_workflow_activity.append(event)
+            return
 
         try:
             with container.database.session() as progress_session:
@@ -500,7 +502,14 @@ def get_active_run(
     live = container.live_workflow_activity.snapshot(run.id)
     events_by_id = {event.id: event for event in persisted}
     events_by_id.update({event.id: event for event in live})
-    events = sorted(events_by_id.values(), key=_workflow_event_sort_key)
+    events = sorted(
+        (
+            event
+            for event in events_by_id.values()
+            if event.event_type != "run.node_output_checkpoint"
+        ),
+        key=_workflow_event_sort_key,
+    )
     return RunDetail(run=run, events=events)
 
 

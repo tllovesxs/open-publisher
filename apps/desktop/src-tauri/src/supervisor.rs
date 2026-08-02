@@ -3378,7 +3378,7 @@ fn summarize_workflow_activity(detail: RunDetailWire) -> Result<WorkflowActivity
     if !matches!(status.as_str(), "queued" | "running") {
         return Err("local Python runtime returned a non-active workflow status".to_owned());
     }
-    if detail.events.len() > 256 {
+    if detail.events.len() > 640 {
         return Err("local Python runtime returned too many workflow activity events".to_owned());
     }
     let events = detail

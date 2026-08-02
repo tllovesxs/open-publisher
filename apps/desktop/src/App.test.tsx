@@ -222,7 +222,7 @@ describe("desktop product flow", () => {
     expect((editor as HTMLTextAreaElement).value.length).toBeLessThan(streamedMarkdown.length);
     await waitFor(
       () => expect((editor as HTMLTextAreaElement).value).toBe(streamedMarkdown),
-      { timeout: 3_000 },
+      { timeout: 5_000 },
     );
     fireEvent.click(await screen.findByRole("button", { name: "关闭进度提示" }));
     expect(screen.queryByRole("button", { name: "关闭进度提示" })).toBeNull();

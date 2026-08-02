@@ -235,32 +235,40 @@ class PresetArticleWorkflow:
         state: WorkflowState,
         on_node_event: NodeEventCallback | None,
     ) -> dict[str, str]:
-        buffered = ""
+        checkpoint_buffer = ""
 
-        def emit_buffer(*, force: bool) -> None:
-            nonlocal buffered
-            while buffered and (force or len(buffered) >= 160):
-                if force:
-                    end = len(buffered)
+        def persist_completed_paragraphs(*, force: bool) -> None:
+            """Persist recoverable draft checkpoints without blocking the live stream."""
+
+            nonlocal checkpoint_buffer
+            while checkpoint_buffer:
+                paragraph_end = checkpoint_buffer.find("\n\n")
+                if paragraph_end < 0:
+                    if not force:
+                        return
+                    end = len(checkpoint_buffer)
                 else:
-                    candidates = [
-                        buffered.rfind(marker, 48, 220)
-                        for marker in ("\n", "。", "！", "？", ".", "!", "?")
-                    ]
-                    end = max(candidates)
-                    if end < 48:
-                        end = min(len(buffered), 200)
-                    else:
-                        end += 1
-                delta = buffered[:end]
-                buffered = buffered[end:]
-                if delta and on_node_event is not None:
-                    on_node_event("draft", "output_delta", {"delta": delta})
+                    end = paragraph_end + 2
+                markdown = checkpoint_buffer[:end]
+                checkpoint_buffer = checkpoint_buffer[end:]
+                if markdown and on_node_event is not None:
+                    on_node_event(
+                        "draft",
+                        "output_checkpoint",
+                        {
+                            "markdown": markdown,
+                            "character_count": len(markdown),
+                        },
+                    )
 
         def on_delta(delta: str) -> None:
-            nonlocal buffered
-            buffered += delta
-            emit_buffer(force=False)
+            nonlocal checkpoint_buffer
+            # This is an in-memory transport event. The API records the same
+            # text only after a Markdown paragraph closes.
+            if on_node_event is not None:
+                on_node_event("draft", "output_delta", {"delta": delta})
+            checkpoint_buffer += delta
+            persist_completed_paragraphs(force=False)
 
         tools: list[dict[str, object]] = []
         source_evidence: list[SourceEvidence] = []
@@ -341,7 +349,7 @@ class PresetArticleWorkflow:
             on_delta=on_delta,
             max_tool_calls=state["max_web_search_calls"],
         )
-        emit_buffer(force=True)
+        persist_completed_paragraphs(force=True)
         return {"raw_draft": response.text, "source_evidence": source_evidence}
 
     def _naturalize(self, state: WorkflowState) -> dict[str, str]:

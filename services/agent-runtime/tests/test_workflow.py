@@ -145,14 +145,20 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
     assert started_nodes == {"draft", "risk"}
     assert completed_nodes == started_nodes
     assert all(event_type != "run.node_failed" for event_type, _ in node_events)
-    draft_deltas = [
+    draft_checkpoints = [
         event
         for event in events
-        if event["event_type"] == "run.node_output_delta"
+        if event["event_type"] == "run.node_output_checkpoint"
     ]
-    assert draft_deltas
-    assert all(event["payload_json"]["node_id"] == "draft" for event in draft_deltas)
-    assert all(event["payload_json"]["delta"] for event in draft_deltas)
+    assert draft_checkpoints
+    assert all(event["payload_json"]["node_id"] == "draft" for event in draft_checkpoints)
+    assert all(event["payload_json"]["markdown"] for event in draft_checkpoints)
+    assert "".join(
+        event["payload_json"]["markdown"] for event in draft_checkpoints
+    ) == raw_draft
+    assert not [
+        event for event in events if event["event_type"] == "run.node_output_delta"
+    ]
     assert run["state_json"]["budget"] == {
         "model_calls_limit": 8,
         "model_calls_reserved": 1,

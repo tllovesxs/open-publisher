@@ -10,7 +10,7 @@ import {
   MoreHorizontal,
   Quote,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import type { MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -68,6 +68,7 @@ export function MarkdownWorkbench({
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const selectionRef = useRef({ start: 0, end: 0 });
+  const deferredPreviewMarkdown = useDeferredValue(markdown);
   const [isDroppingImage, setIsDroppingImage] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [imageDropError, setImageDropError] = useState<string | null>(null);
@@ -308,7 +309,10 @@ export function MarkdownWorkbench({
                 {platforms.find((item) => item.id === selectedPlatform)?.name}
               </strong>
             </div>
-            <MarkdownPreview markdown={markdown} mediaAssets={mediaAssets} />
+            <MarkdownPreview
+              markdown={streaming ? deferredPreviewMarkdown : markdown}
+              mediaAssets={mediaAssets}
+            />
           </div>
         )}
       </div>
