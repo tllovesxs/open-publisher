@@ -80,7 +80,7 @@
           "const": "ok"
         },
         "publisher_mode": {
-          "const": "dry_run"
+          "const": "dry_run_and_wechat_sync_draft"
         }
       }
     },
@@ -877,6 +877,78 @@
             "retryable_failure",
             "terminal_failure"
           ]
+        },
+        "delivery_mode": {
+          "enum": [
+            "dry_run",
+            "wechat_sync_draft"
+          ]
+        }
+      }
+    },
+    "RewriteArticleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "markdown",
+        "instruction"
+      ],
+      "properties": {
+        "markdown": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000,
+          "pattern": ".*\\S.*"
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": ".*\\S.*"
+        },
+        "selected_text": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40000,
+              "pattern": ".*\\S.*"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "RewriteArticleResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replacement",
+        "provider",
+        "model",
+        "mocked"
+      ],
+      "properties": {
+        "replacement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000,
+          "pattern": ".*\\S.*"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "mocked": {
+          "type": "boolean"
         }
       }
     },

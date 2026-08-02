@@ -1,3 +1,5 @@
+import httpx
+
 from open_publisher_runtime.application.publishing import DryRunResult
 from open_publisher_runtime.infrastructure.orm import ArtifactORM, PlatformVariantORM
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
@@ -360,3 +362,133 @@ def test_reconcile_revalidates_approval_binding_before_adapter_io(
     assert publisher.reconcile_calls == 0
     persisted = client.get(f"/api/v1/publish/plans/{plan_id}").json()["jobs"][0]
     assert persisted["state"] == "unknown"
+
+
+def _create_wechat_sync_plan(client, article_payload):
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    created = client.post(
+        "/api/v1/publish/plans",
+        json={
+            "revision_id": article["revision"]["id"],
+            "targets": [
+                {
+                    "platform": "csdn",
+                    "account_ref": "desktop-csdn",
+                    "delivery_mode": "wechat_sync_draft",
+                }
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    plan = created.json()
+    approved = client.post(
+        f"/api/v1/publish/plans/{plan['plan']['id']}/approve",
+        json={"actor_id": "user:wechat-sync-test"},
+    )
+    assert approved.status_code == 200, approved.text
+    job = client.post(
+        f"/api/v1/publish/plans/{plan['plan']['id']}/enqueue"
+    ).json()["jobs"][0]
+    return job
+
+
+def test_wechat_sync_draft_publish_creates_a_durable_receipt(
+    client,
+    article_payload,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: int) -> httpx.Response:
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "result": {
+                    "syncId": "sync-test-1",
+                    "results": [
+                        {
+                            "platform": "csdn",
+                            "success": True,
+                            "postId": "csdn-draft-1",
+                            "postUrl": "https://editor.csdn.net/md/?draft=1",
+                            "draftOnly": True,
+                        }
+                    ],
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        "open_publisher_runtime.application.publishing.httpx.post",
+        fake_post,
+    )
+    job = _create_wechat_sync_plan(client, article_payload)
+
+    response = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["job"]["operation"] == "wechat_sync_draft"
+    assert payload["job"]["state"] == "succeeded"
+    assert payload["receipt"]["status"] == "wechat_sync_draft_saved"
+    assert payload["receipt"]["remote_id"] == "csdn-draft-1"
+    assert payload["receipt"]["remote_url"] == "https://editor.csdn.net/md/?draft=1"
+    assert calls == [
+        {
+            "url": "http://127.0.0.1:9528/request",
+            "json": {
+                "method": "syncArticle",
+                "params": {
+                    "platforms": ["csdn"],
+                        "article": {
+                            "title": article_payload["title"],
+                            "markdown": (
+                                "<!-- open-publisher variant:csdn -->\n\n"
+                                f"{article_payload['markdown']}\n"
+                            ),
+                    },
+                },
+            },
+            "timeout": 180,
+        }
+    ]
+
+
+def test_wechat_sync_bridge_failure_is_retryable(client, article_payload, monkeypatch) -> None:
+    def fake_post(*_args, **_kwargs):
+        raise httpx.ConnectError("bridge unavailable")
+
+    monkeypatch.setattr(
+        "open_publisher_runtime.application.publishing.httpx.post",
+        fake_post,
+    )
+    job = _create_wechat_sync_plan(client, article_payload)
+
+    response = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["job"]["state"] == "failed_retryable"
+    assert payload["receipt"] is None
+    assert "WechatSync 本地桥未连接" in payload["job"]["last_error"]
+
+
+def test_wechat_sync_timeout_is_recorded_as_unknown(client, article_payload, monkeypatch) -> None:
+    def fake_post(*_args, **_kwargs):
+        raise httpx.TimeoutException("deadline exceeded")
+
+    monkeypatch.setattr(
+        "open_publisher_runtime.application.publishing.httpx.post",
+        fake_post,
+    )
+    job = _create_wechat_sync_plan(client, article_payload)
+
+    response = client.post(f"/api/v1/publish/jobs/{job['id']}/process")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["job"]["state"] == "unknown"
+    assert payload["job"]["reconcile_required"] is True
+    assert payload["receipt"] is None

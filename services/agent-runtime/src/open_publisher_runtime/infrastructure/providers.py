@@ -164,6 +164,15 @@ class MockTextProvider:
             if naturalized == source:
                 naturalized = f"{source}\n\n> 本稿已完成自然表达整理，事实边界保持不变。"
             text = naturalized
+        elif request.purpose == "editor-rewrite":
+            source = str(request.context.get("source_markdown") or source).strip()
+            instruction = str(request.context.get("instruction") or "").strip()
+            if "精简" in instruction or "简洁" in instruction:
+                text = re.sub(r"[ \t]{2,}", " ", source)
+            elif "标题" in instruction and source.startswith("#"):
+                text = source.replace("# ", "# ", 1)
+            else:
+                text = source
         elif request.purpose == "review":
             text = (
                 "## 审核结果\n\n"

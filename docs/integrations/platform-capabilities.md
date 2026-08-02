@@ -5,14 +5,15 @@ it can do for the selected account and environment before a publish plan is appr
 
 | Platform | Preferred route | v0.1 implementation | Final publish | Fallback |
 | --- | --- | --- | --- | --- |
-| WeChat Official Account | Official API | Capability and draft-payload foundation | Disabled by default | Browser draft fill, then manual confirmation |
-| CSDN | Browser companion | MV3 draft fill for the current editor contract | User clicks publish | Manual Markdown/asset export |
-| Toutiao | Browser companion | MV3 draft fill for the current editor contract | User clicks publish | Manual Markdown/asset export |
+| WeChat Official Account | WechatSync local bridge | Explicitly approved platform draft save when the browser account is logged in | User clicks publish | Manual Markdown/asset export |
+| CSDN | WechatSync local bridge | Explicitly approved platform draft save when the browser account is logged in | User clicks publish | Manual Markdown/asset export |
+| Toutiao | WechatSync local bridge | Explicitly approved platform draft save when the browser account is logged in | User clicks publish | Manual Markdown/asset export |
 
-The MV3 implementation in P0 proves the extension-local task validation, pairing, replay defense,
-and DOM fill boundary. The desktop publish queue does not yet deliver tasks to the extension:
-the popup creates a local smoke payload after the user enters a nonce, title, and body. Therefore
-the table does not claim a desktop-to-browser end-to-end handoff.
+The built-in MV3 implementation remains a standalone protocol demonstration. Article-page draft
+sync uses the already-running WechatSync local bridge instead: after an explicit approval, the
+durable outbox sends one immutable platform variant to `syncArticle` and records the returned draft
+receipt. The desktop only receives platform ID and login status, never browser Cookie, bridge token,
+or account name.
 
 ## Capability states
 
@@ -40,8 +41,9 @@ approve a new publish-plan hash.
 The extension Service Worker accepts a versioned draft task from its own extension pages containing
 the article payload, target origin, expiry, and one-use nonce. It does not expose an external
 message endpoint, request cookie access, export browser storage, or click a final publish control.
-A selector or editor-version mismatch returns `NEEDS_USER`. A future desktop transport needs a
-separate authenticated local bridge and threat-model review.
+A selector or editor-version mismatch returns `NEEDS_USER`. WechatSync is an independent local
+bridge with the same final-publish prohibition; its result is retained as an outbox receipt and an
+ambiguous timeout enters `UNKNOWN` for user investigation rather than an automatic retry.
 
 ## Live test policy
 

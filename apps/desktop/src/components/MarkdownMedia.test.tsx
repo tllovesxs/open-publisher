@@ -78,6 +78,33 @@ describe("Markdown media support", () => {
     expect(editor.value).toContain("![剪贴板图片](asset://media-pasted)");
   });
 
+  it("offers the selected Markdown range to the AI editor", () => {
+    const onRequestSelectionRewrite = vi.fn();
+    render(
+      <MarkdownWorkbench
+        dirty
+        editorMode="edit"
+        markdown="开头内容，选中这段文字。"
+        onEditorModeChange={() => undefined}
+        onMarkdownChange={() => undefined}
+        onPlatformChange={() => undefined}
+        onRequestSelectionRewrite={onRequestSelectionRewrite}
+        platforms={platforms}
+        selectedPlatform="csdn"
+      />,
+    );
+    const editor = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
+    editor.setSelectionRange(5, 11);
+    fireEvent.select(editor);
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 修改选中内容" }));
+    expect(onRequestSelectionRewrite).toHaveBeenCalledWith({
+      start: 5,
+      end: 11,
+      text: "选中这段文字",
+    });
+  });
+
   it("inserts a material-library image from the image dialog", () => {
     const onInsert = vi.fn();
     const onClose = vi.fn();

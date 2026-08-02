@@ -17,7 +17,7 @@ flowchart LR
         Harness["RunController / Harness"]
         Graph["LangGraph workflows"]
         Artifacts["SQLite + artifact store"]
-        Publish["Deterministic PublishService"]
+    Publish["PublishService<br/>outbox + idempotency"]
         API --> Harness --> Graph
         API --> Artifacts
         Harness --> Artifacts
@@ -27,7 +27,8 @@ flowchart LR
     Host -->|"loopback + per-launch token"| API
     Host -.->|"future short-lived secret lease<br/>v0.1 uses env/mock refs only"| Runtime
     Graph -->|"structured artifacts only"| Publish
-    Publish -->|"official API when available"| Platforms["Publishing platforms"]
+    Publish -->|"explicitly approved draft sync"| WechatSync["WechatSync local bridge"]
+    WechatSync --> Platforms["Publishing platforms"]
 
     subgraph Browser["MV3 browser companion"]
         Popup["P0 extension popup<br/>manual smoke payload"]
@@ -37,7 +38,7 @@ flowchart LR
         Worker --> Adapter
     end
 
-    Publish -.->|"future authenticated local transport<br/>not wired in v0.1"| Worker
+    Worker -->|"keeps browser login state"| Platforms
     Adapter -->|"draft fill / NEEDS_USER"| Platforms
     Wandao["Wandao"] <-->|"ContentPackage v1"| Artifacts
 ```
@@ -69,5 +70,8 @@ does not grant an agent permission to perform a remote write.
   account is required.
 - **optional external model gateway:** a user may configure an OpenAI-compatible endpoint. The
   gateway is not bundled and remains behind `ModelAccessLayer`.
+- **explicit local draft sync:** an approved `wechat_sync_draft` job may call the already-running
+  WechatSync loopback bridge. It receives a platform Markdown variant and returns a draft receipt;
+  it never gives the WebView browser cookies or performs a final publish click.
 - **future cloud runner:** scheduling and team collaboration may add a server later, but it must
   use the same versioned contracts, approval binding, and outbox semantics.

@@ -47,6 +47,7 @@ class PublishAttemptState(StrEnum):
 
 class PublishOperation(StrEnum):
     DRY_RUN = "dry_run"
+    WECHATSYNC_DRAFT = "wechat_sync_draft"
     RECONCILE = "reconcile"
 
 

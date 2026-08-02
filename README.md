@@ -17,15 +17,15 @@ deterministic mock（确定性模拟）提供商，不会向真实模型或内�
 | 内容模型 | Markdown 主稿、不可变 `ArticleRevision`、内容寻址 Artifact 和平台派生稿 |
 | 多 Agent | Python Harness + LangGraph；研究、提纲、写作、自然化、审核、风险和视觉规划以结构化 Artifact 交接；P0 平台稿由版本化确定性转换器派生 |
 | 模型接入 | 默认 Mock；提供 OpenAI-compatible 文本/图像提供商的接入边界，不内置独立模型网关 |
-| 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验基础 |
-| 平台接入 | 微信公众号官方 API 的能力与草稿载荷基础；CSDN、今日头条和微信公众号的 MV3 浏览器草稿填充基础 |
+| 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验；超时不会盲目重试 |
+| 平台接入 | 通过本机 WechatSync 读取 CSDN、微信公众号、今日头条的登录状态，并在明确确认后保存平台草稿；不会点击最终发布 |
 | 工作流定制 | 版本化声明式工作流、必需节点与 DAG 校验；不执行用户提供的任意 Python/JavaScript |
 | 万能导互通 | 通过 `ContentPackage v1` 交换 Markdown、素材、哈希和来源信息，不共享数据库或凭据 |
 
 P0 **没有承诺**以下能力：
 
-- 没有声称微信公众号、CSDN 或今日头条的真实账号发布已经验证；
-- 不会在默认演示或测试中执行真实平台写入，浏览器扩展也不会代替用户点击最终发布；
+- 不会在默认演示或测试中执行真实平台写入；WechatSync 草稿同步必须由用户在文章页明确确认；
+- 不会代替用户点击最终发布，验证码、平台二次确认和最终发布仍在浏览器中完成；
 - 没有产出或签名 Windows、macOS、Linux 安装包；
 - 没有验证长时间生图、供应商限流、断网恢复和平台编辑器 DOM 变更；
 - 没有“桌面关闭后仍能运行”的云端定时任务，也不要求用户部署网络服务；
@@ -44,7 +44,8 @@ flowchart LR
     Py --> Store["SQLite + Artifact Store"]
     Py --> Outbox["确定性发布服务<br/>Outbox · 幂等 · 核验"]
     Outbox --> API["官方 API"]
-    Outbox -.->|"未来的本地认证传输<br/>v0.1 尚未接线"| Ext["MV3 浏览器助手<br/>仅填充草稿"]
+    Outbox --> Bridge["WechatSync 本机桥<br/>仅保存平台草稿"]
+    Bridge --> Ext["浏览器扩展<br/>保持登录态"]
     Store <-->|"ContentPackage v1"| Wandao["万能导"]
 ```
 
@@ -125,8 +126,8 @@ Sidecar，也不能执行发布。
   并核验，不能盲目重试。
 - 浏览器任务只携带文章、目标来源、过期时间和一次性 nonce；扩展不读取或导出 Cookie，
   不点击最终发布按钮。
-- v0.1 尚未把桌面发布队列到扩展 Service Worker 的认证传输接线；扩展弹窗仅用于本地
-  配对和 DOM 填充冒烟，不代表桌面到浏览器的端到端发布已经完成。
+- 文章页的 WechatSync 同步只读取平台 ID 与已登录状态，并通过本机桥请求保存草稿；
+  WebView 不接触 Cookie、桥接令牌或账号名称。最终发布仍由用户在平台页面完成。
 - `pnpm dev:web` 明确不具备 Sidecar 与秘密访问能力。
 
 这是 P0 安全基线，不等于经过生产安全审计。真实凭据、账号和未发布稿件不要放进公开

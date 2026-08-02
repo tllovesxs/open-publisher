@@ -37,7 +37,7 @@ class ApiModel(BaseModel):
 class HealthResponse(ApiModel):
     status: Literal["ok"]
     database: Literal["ok"]
-    publisher_mode: Literal["dry_run"]
+    publisher_mode: Literal["dry_run_and_wechat_sync_draft"]
 
 
 class VersionResponse(ApiModel):
@@ -285,6 +285,20 @@ class PublishTargetRequest(ApiModel):
         "retryable_failure",
         "terminal_failure",
     ] = "success"
+    delivery_mode: Literal["dry_run", "wechat_sync_draft"] = "dry_run"
+
+
+class RewriteArticleRequest(ApiModel):
+    markdown: str = Field(min_length=1, max_length=200_000)
+    instruction: str = Field(min_length=1, max_length=4_000)
+    selected_text: str | None = Field(default=None, max_length=40_000)
+
+
+class RewriteArticleResponse(ApiModel):
+    replacement: str
+    provider: str
+    model: str
+    mocked: bool
 
 
 class CreatePublishPlanRequest(ApiModel):

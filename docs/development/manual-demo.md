@@ -29,12 +29,15 @@ selects the current workflow, starts a run, and returns the output Markdown plus
 summary. The private Sidecar endpoint, bearer token, Artifact bytes, and secret references never
 cross into the WebView.
 
-The **发布** page exercises the granular local path rather than the convenience demo endpoint:
-create platform variants, inspect them, explicitly approve the bound hashes, enqueue the same plan
-twice to verify idempotency, process each deterministic dry-run job, and reload the resulting
-SQLite receipts. None of those actions contacts WeChat, CSDN, or Toutiao. The **生成配图** command
-also crosses the Rust boundary and stores validated bytes in the local Artifact Store, while the
-WebView receives only provider/model/count/media-type metadata.
+The **发布** page exercises the granular local dry-run path: create platform variants, inspect
+them, explicitly approve the bound hashes, enqueue the same plan twice to verify idempotency,
+process each deterministic job, and reload the resulting SQLite receipts. None of those actions
+contacts WeChat, CSDN, or Toutiao. On an article page, the separate **发布** action may instead
+request the already-connected WechatSync local bridge to save selected, logged-in platforms as
+drafts. That action requires explicit confirmation and is not part of automated testing; it never
+clicks a final platform publish control. The **生成配图** command also crosses the Rust boundary and
+stores validated bytes in the local Artifact Store, while the WebView receives only
+provider/model/count/media-type metadata.
 
 Article catalog metadata, evidence cards, and the general task catalog still contain seeded product
 examples in v0.1. Model connection forms persist only public configuration and a broker reference;

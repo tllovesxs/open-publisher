@@ -249,7 +249,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         container: RuntimeContainer = app.state.container
         with container.database.session() as session:
             session.execute(text("SELECT 1"))
-        return HealthResponse(status="ok", database="ok", publisher_mode="dry_run")
+        return HealthResponse(
+            status="ok",
+            database="ok",
+            publisher_mode="dry_run_and_wechat_sync_draft",
+        )
 
     app.include_router(router)
     return app

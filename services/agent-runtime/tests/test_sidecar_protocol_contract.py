@@ -15,6 +15,7 @@ from open_publisher_runtime.api.schemas import (
     CreateRunRequest,
     DemoRequest,
     GenerateImagesRequest,
+    RewriteArticleRequest,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -43,6 +44,7 @@ def test_canonical_requests_match_pydantic_models() -> None:
         "CreateRevisionRequest": CreateRevisionRequest,
         "CompleteDemoRequest": DemoRequest,
         "GenerateImagesRequest": GenerateImagesRequest,
+        "RewriteArticleRequest": RewriteArticleRequest,
         "CreateConnectionProfileRequest": CreateConnectionProfileRequest,
         "StartRunRequest": CreateRunRequest,
         "CreatePublishPlanRequest": CreatePublishPlanRequest,
@@ -111,6 +113,10 @@ def test_live_sidecar_responses_match_canonical_rust_projections(client) -> None
     image = client.post("/api/v1/images/generate", json=FIXTURES["GenerateImagesRequest"])
     assert image.status_code == 201, image.text
     validate_definition("GenerateImagesResponse", image.json())
+
+    rewrite = client.post("/api/v1/editor/rewrite", json=FIXTURES["RewriteArticleRequest"])
+    assert rewrite.status_code == 200, rewrite.text
+    validate_definition("RewriteArticleResponse", rewrite.json())
 
     connection = client.post(
         "/api/v1/connections",

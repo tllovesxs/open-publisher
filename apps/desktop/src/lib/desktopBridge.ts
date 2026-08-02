@@ -234,6 +234,7 @@ export interface CreatePublishPlanRequest {
   articleId: string;
   revisionId: string;
   platforms: PublishPlatform[];
+  deliveryMode?: "dry_run" | "wechat_sync_draft";
 }
 
 export interface PublishPlanRequest {
@@ -268,7 +269,7 @@ export interface PublishJobSummary {
   variantId: string;
   platform: PublishPlatform;
   accountRef: string;
-  operation: "dry_run" | "reconcile";
+  operation: "dry_run" | "wechat_sync_draft" | "reconcile";
   idempotencyKey: string;
   payloadHash: string;
   state: PublishJobState;
@@ -303,6 +304,19 @@ export interface PublishReceiptSummary {
 export interface ProcessPublishJobSummary {
   job: PublishJobSummary;
   receipt: PublishReceiptSummary | null;
+}
+
+export interface RewriteArticleRequest {
+  markdown: string;
+  instruction: string;
+  selectedText?: string | null;
+}
+
+export interface RewriteArticleSummary {
+  replacement: string;
+  provider: string;
+  model: string;
+  mocked: boolean;
 }
 
 export interface GenerateImageRequest {
@@ -460,6 +474,7 @@ export interface DesktopBridge {
   approvePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   enqueuePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   processPublishJob(request: ProcessPublishJobRequest): Promise<ProcessPublishJobSummary>;
+  rewriteArticle(request: RewriteArticleRequest): Promise<RewriteArticleSummary>;
   generateImage(request: GenerateImageRequest): Promise<GenerateImageSummary>;
   extractTemplate(request: ExtractTemplateRequest): Promise<TemplateExtractionSummary>;
   listConnectionProfiles(): Promise<ConnectionProfilePublic[]>;
@@ -880,6 +895,15 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       receipt: { ...receipt },
     };
   },
+  async rewriteArticle(request) {
+    const source = request.selectedText?.trim() || request.markdown;
+    return {
+      replacement: source,
+      provider: "mock",
+      model: "deterministic-mock-v1",
+      mocked: true,
+    };
+  },
   async generateImage() {
     await pause(100);
     const imageId = nextMockId("generated-image");
@@ -1031,6 +1055,8 @@ const tauriBridge: DesktopBridge = {
     invoke<PublishPlanSummary>("enqueue_publish_plan", { request }),
   processPublishJob: (request) =>
     invoke<ProcessPublishJobSummary>("process_publish_job", { request }),
+  rewriteArticle: (request) =>
+    invoke<RewriteArticleSummary>("rewrite_article", { request }),
   generateImage: (request) =>
     invoke<GenerateImageSummary>("generate_image", { request }),
   extractTemplate: (request) =>
@@ -1079,6 +1105,7 @@ const browserPreviewBridge: DesktopBridge = {
   approvePublishPlan: desktopHostRequired,
   enqueuePublishPlan: desktopHostRequired,
   processPublishJob: desktopHostRequired,
+  rewriteArticle: desktopHostRequired,
   generateImage: desktopHostRequired,
   extractTemplate: desktopHostRequired,
   listConnectionProfiles: async () => [],
@@ -1122,6 +1149,7 @@ export const desktopBridge: DesktopBridge = {
   approvePublishPlan: (request) => activeBridge().approvePublishPlan(request),
   enqueuePublishPlan: (request) => activeBridge().enqueuePublishPlan(request),
   processPublishJob: (request) => activeBridge().processPublishJob(request),
+  rewriteArticle: (request) => activeBridge().rewriteArticle(request),
   generateImage: (request) => activeBridge().generateImage(request),
   extractTemplate: (request) => activeBridge().extractTemplate(request),
   listConnectionProfiles: () => activeBridge().listConnectionProfiles(),

@@ -9,8 +9,10 @@ import {
   List,
   MoreHorizontal,
   Quote,
+  WandSparkles,
 } from "lucide-react";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
+import type { MarkdownSelection } from "./ArticleAssistant";
 import type { MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -37,6 +39,8 @@ interface MarkdownWorkbenchProps {
   onPendingImageInsertionHandled?: () => void;
   streaming?: boolean;
   contentReplacing?: boolean;
+  onSelectionChange?: (selection: MarkdownSelection | null) => void;
+  onRequestSelectionRewrite?: (selection: MarkdownSelection) => void;
 }
 
 const editorModes: Array<{
@@ -65,6 +69,8 @@ export function MarkdownWorkbench({
   onPendingImageInsertionHandled,
   streaming = false,
   contentReplacing = false,
+  onSelectionChange,
+  onRequestSelectionRewrite,
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const selectionRef = useRef({ start: 0, end: 0 });
@@ -72,6 +78,7 @@ export function MarkdownWorkbench({
   const [isDroppingImage, setIsDroppingImage] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [imageDropError, setImageDropError] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState<MarkdownSelection | null>(null);
   const lines = markdown.split("\n").length;
   const characters = markdown.replace(/\s/g, "").length;
 
@@ -160,6 +167,18 @@ export function MarkdownWorkbench({
     if (!images.length) return;
     event.preventDefault();
     void importFiles(images);
+  };
+
+  const captureSelection = (editor: HTMLTextAreaElement) => {
+    const selection = {
+      start: editor.selectionStart,
+      end: editor.selectionEnd,
+      text: markdown.slice(editor.selectionStart, editor.selectionEnd),
+    };
+    selectionRef.current = selection;
+    const next = selection.text.trim() ? selection : null;
+    setSelectedText(next);
+    onSelectionChange?.(next);
   };
 
   return (
@@ -284,10 +303,7 @@ export function MarkdownWorkbench({
               onDrop={handleDrop}
               onPaste={handlePaste}
               onSelect={(event) => {
-                selectionRef.current = {
-                  start: event.currentTarget.selectionStart,
-                  end: event.currentTarget.selectionEnd,
-                };
+                captureSelection(event.currentTarget);
               }}
               onBlur={(event) => {
                 selectionRef.current = {
@@ -299,6 +315,16 @@ export function MarkdownWorkbench({
               spellCheck="false"
               value={markdown}
             />
+            {selectedText && onRequestSelectionRewrite && (
+              <button
+                className="selection-rewrite-button"
+                onClick={() => onRequestSelectionRewrite(selectedText)}
+                onMouseDown={(event) => event.preventDefault()}
+                type="button"
+              >
+                <WandSparkles size={14} /> AI 修改选中内容
+              </button>
+            )}
           </div>
         )}
         {editorMode !== "edit" && (

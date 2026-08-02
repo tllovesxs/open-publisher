@@ -363,6 +363,8 @@ pub struct CreatePublishPlanRequest {
     pub article_id: String,
     pub revision_id: String,
     pub platforms: Vec<String>,
+    #[serde(default)]
+    pub delivery_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -375,6 +377,23 @@ pub struct PublishPlanRequest {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ProcessPublishJobRequest {
     pub job_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RewriteArticleRequest {
+    pub markdown: String,
+    pub instruction: String,
+    pub selected_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteArticleSummary {
+    pub replacement: String,
+    pub provider: String,
+    pub model: String,
+    pub mocked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -625,6 +644,10 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
         &self,
         request: ProcessPublishJobRequest,
     ) -> Result<ProcessPublishJobSummary, String>;
+    fn rewrite_article(
+        &self,
+        request: RewriteArticleRequest,
+    ) -> Result<RewriteArticleSummary, String>;
     fn generate_image(&self, request: GenerateImageRequest)
         -> Result<GenerateImageSummary, String>;
     fn extract_template(
@@ -786,6 +809,7 @@ enum ApiRoute<'a> {
     ApprovePublishPlan(&'a str),
     EnqueuePublishPlan(&'a str),
     ProcessPublishJob(&'a str),
+    RewriteArticle,
     GenerateImage,
     ExtractTemplate,
     Connections,
@@ -827,6 +851,7 @@ impl ApiRoute<'_> {
             Self::ProcessPublishJob(job_id) => {
                 format!("/api/v1/publish/jobs/{job_id}/process")
             }
+            Self::RewriteArticle => "/api/v1/editor/rewrite".to_owned(),
             Self::GenerateImage => "/api/v1/images/generate".to_owned(),
             Self::ExtractTemplate => "/api/v1/templates/extract".to_owned(),
             Self::Connections => "/api/v1/connections".to_owned(),
@@ -895,12 +920,22 @@ struct CreateGenerationBatchRequestWire<'a> {
 struct PublishTargetRequestWire {
     platform: String,
     account_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct CreatePublishPlanRequestWire<'a> {
     revision_id: &'a str,
     targets: Vec<PublishTargetRequestWire>,
+}
+
+#[derive(Debug, Serialize)]
+struct RewriteArticleRequestWire<'a> {
+    markdown: &'a str,
+    instruction: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_text: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2158,12 +2193,14 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         if mapping.revision_id != request.revision_id {
             return Err("只能为当前已保存修订创建发布计划。".to_owned());
         }
+        let delivery_mode = request.delivery_mode.clone();
         let targets = request
             .platforms
             .into_iter()
             .map(|platform| PublishTargetRequestWire {
                 account_ref: format!("desktop-{platform}"),
                 platform,
+                delivery_mode: delivery_mode.clone(),
             })
             .collect();
         let payload = CreatePublishPlanRequestWire {
@@ -2271,6 +2308,25 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         let plan = public_publish_plan(detail)?;
         validate_process_summary_against_plan(&summary, &plan)?;
         Ok(summary)
+    }
+
+    fn rewrite_article(
+        &self,
+        request: RewriteArticleRequest,
+    ) -> Result<RewriteArticleSummary, String> {
+        validate_rewrite_article_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let payload = RewriteArticleRequestWire {
+            markdown: &request.markdown,
+            instruction: &request.instruction,
+            selected_text: request.selected_text.as_deref(),
+        };
+        self.post_json(&connection, ApiRoute::RewriteArticle, &payload)
     }
 
     fn generate_image(
@@ -2985,6 +3041,11 @@ fn validate_create_publish_plan_request(request: &CreatePublishPlanRequest) -> R
     {
         return Err("发布平台选择无效或包含重复项。".to_owned());
     }
+    if let Some(mode) = &request.delivery_mode {
+        if !matches!(mode.as_str(), "dry_run" | "wechat_sync_draft") {
+            return Err("发布方式无效。".to_owned());
+        }
+    }
     Ok(())
 }
 
@@ -2994,6 +3055,15 @@ fn validate_publish_plan_request(request: &PublishPlanRequest) -> Result<(), Str
 
 fn validate_process_publish_job_request(request: &ProcessPublishJobRequest) -> Result<(), String> {
     validate_backend_id(request.job_id.clone(), "publish job").map(|_| ())
+}
+
+fn validate_rewrite_article_request(request: &RewriteArticleRequest) -> Result<(), String> {
+    validate_instruction_text(&request.markdown, "文章正文", 200_000)?;
+    validate_instruction_text(&request.instruction, "修改要求", 4_000)?;
+    if let Some(selected_text) = &request.selected_text {
+        validate_instruction_text(selected_text, "选中文本", 40_000)?;
+    }
+    Ok(())
 }
 
 fn supported_platform(platform: &str) -> bool {
@@ -4075,9 +4145,9 @@ mod tests {
         GenerateImageResponseWire, GenerateImagesRequestWire, HealthResponseWire, IdWire,
         InMemorySecretStore, PersistedModelConfiguration, ProcessPublishJobRequest,
         ProcessPublishJobWire, PublishPlanDetailWire, PublishPlanRequest, PublishTargetRequestWire,
-        PythonSidecarSupervisor, RunDetailWire, RunWorkflowRequest, RuntimeEventWire,
-        SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire,
-        VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
+        PythonSidecarSupervisor, RewriteArticleRequestWire, RunDetailWire, RunWorkflowRequest,
+        RuntimeEventWire, SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire,
+        StartRunRequestWire, VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
         WorkflowSkillInstruction, WorkflowWire, MODEL_API_KEY_SECRET, TAVILY_API_KEY_SECRET,
     };
 
@@ -4150,16 +4220,28 @@ mod tests {
                 PublishTargetRequestWire {
                     platform: "wechat".to_owned(),
                     account_ref: "desktop-wechat".to_owned(),
+                    delivery_mode: Some("dry_run".to_owned()),
                 },
                 PublishTargetRequestWire {
                     platform: "csdn".to_owned(),
                     account_ref: "desktop-csdn".to_owned(),
+                    delivery_mode: Some("dry_run".to_owned()),
                 },
             ],
         };
         assert_eq!(
             serde_json::to_value(publish_plan).expect("serialize publish plan request"),
             fixtures["CreatePublishPlanRequest"]
+        );
+
+        let rewrite = RewriteArticleRequestWire {
+            markdown: "# Desktop draft\n\n需要压缩的内容。",
+            instruction: "表达更简洁",
+            selected_text: Some("需要压缩的内容。"),
+        };
+        assert_eq!(
+            serde_json::to_value(rewrite).expect("serialize rewrite request"),
+            fixtures["RewriteArticleRequest"]
         );
 
         let approval = ApprovePublishPlanRequestWire {
@@ -4544,6 +4626,7 @@ mod tests {
                 article_id: "desktop-article".to_owned(),
                 revision_id: "revision-1".to_owned(),
                 platforms: vec!["wechat".to_owned(), "csdn".to_owned()],
+                delivery_mode: None,
             })
             .is_ok()
         );
@@ -4552,6 +4635,7 @@ mod tests {
                 article_id: "desktop-article".to_owned(),
                 revision_id: "revision-1".to_owned(),
                 platforms: vec!["wechat".to_owned(), "wechat".to_owned()],
+                delivery_mode: None,
             })
             .is_err()
         );
@@ -4883,6 +4967,7 @@ mod tests {
                 article_id: "desktop-smoke".to_owned(),
                 revision_id: customized.output_revision_id,
                 platforms: vec!["wechat".to_owned(), "csdn".to_owned()],
+                delivery_mode: None,
             })
             .expect("publish plan persists");
         assert_eq!(plan.status, "draft");

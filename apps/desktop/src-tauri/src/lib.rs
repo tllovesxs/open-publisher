@@ -8,10 +8,10 @@ use supervisor::{
     ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary, GenerationBatchDetail,
     GenerationBatchRequest, GenerationItemRequest, ModelConfigurationSummary,
     ModelConnectionTestSummary, ProcessPublishJobRequest, ProcessPublishJobSummary,
-    PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor, RunWorkflowRequest,
-    RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor,
-    StoredArticleSummary, TemplateExtractionSummary, WechatSyncBridgeStatus,
-    WorkflowActivitySummary,
+    PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor, RewriteArticleRequest,
+    RewriteArticleSummary, RunWorkflowRequest, RunWorkflowSummary, RuntimeSnapshot,
+    SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor, StoredArticleSummary,
+    TemplateExtractionSummary, WechatSyncBridgeStatus, WorkflowActivitySummary,
 };
 use tauri::Manager;
 
@@ -208,6 +208,17 @@ async fn process_publish_job(
 }
 
 #[tauri::command]
+async fn rewrite_article(
+    request: RewriteArticleRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<RewriteArticleSummary, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.rewrite_article(request))
+        .await
+        .map_err(|_| "article rewrite task was cancelled".to_owned())?
+}
+
+#[tauri::command]
 async fn generate_image(
     request: GenerateImageRequest,
     state: tauri::State<'_, DesktopState>,
@@ -322,6 +333,7 @@ pub fn run() {
             approve_publish_plan,
             enqueue_publish_plan,
             process_publish_job,
+            rewrite_article,
             generate_image,
             extract_template,
             list_connection_profiles,

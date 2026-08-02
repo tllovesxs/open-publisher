@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
 import { AgentsPage } from "./components/AgentsPage";
 import { ArticlesPage } from "./components/ArticlesPage";
+import type { MarkdownSelection, RewriteCandidate } from "./components/ArticleAssistant";
 import {
   CreatePage,
   type CreationActivity,
@@ -33,6 +34,7 @@ import {
   type ModelConnectionTestSummary,
   type PublishPlanSummary,
   type PublishReceiptSummary,
+  type RewriteArticleSummary,
   type RuntimeSnapshot,
   type VisualCompositionPlanSummary,
   type VisualCompositionRequest,
@@ -1662,6 +1664,7 @@ export default function App() {
         markdown,
       });
       setRevisionIds((current) => ({ ...current, [articleId]: receipt.revisionId }));
+      setDrafts((current) => ({ ...current, [articleId]: markdown }));
       setArticleItems((current) =>
         current.map((article) =>
           article.id === articleId
@@ -2281,6 +2284,114 @@ export default function App() {
     }
   };
 
+  const rewriteCurrentArticle = async (
+    instruction: string,
+    selection: MarkdownSelection | null,
+  ): Promise<RewriteArticleSummary> => {
+    if (!selectedArticle || workflowRunning || saving) {
+      throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
+    }
+    if (!requireTextModel()) {
+      throw new Error("请先完成文本模型配置。");
+    }
+    return desktopBridge.rewriteArticle({
+      markdown: currentMarkdown,
+      instruction,
+      selectedText: selection?.text ?? null,
+    });
+  };
+
+  const applyArticleRewrite = async (candidate: RewriteCandidate) => {
+    if (!selectedArticle || workflowRunning || saving) {
+      throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
+    }
+    const selected = candidate.selection;
+    if (
+      selected &&
+      currentMarkdown.slice(selected.start, selected.end) !== selected.text
+    ) {
+      throw new Error("选中的原文已经变化，请重新选择后再生成修改建议。");
+    }
+    const nextMarkdown = selected
+      ? `${currentMarkdown.slice(0, selected.start)}${candidate.replacement}${currentMarkdown.slice(selected.end)}`
+      : candidate.replacement;
+    if (!nextMarkdown.trim()) throw new Error("AI 返回了空内容，未修改文章。");
+
+    setArticleContentReplacing(true);
+    try {
+      const revisionId = await persistRevision(selectedArticle.id, nextMarkdown, false);
+      setArticleItems((current) =>
+        current.map((article) =>
+          article.id === selectedArticle.id
+            ? { ...article, status: "review", revisionId }
+            : article,
+        ),
+      );
+      setToast(`AI 修改已保存 · ${candidate.model}`);
+    } finally {
+      window.setTimeout(() => setArticleContentReplacing(false), 260);
+    }
+  };
+
+  const publishCurrentArticleToWechatSync = async (targets: PlatformId[]) => {
+    if (!selectedArticle || publishAction) {
+      throw new Error("当前没有可同步的文章，或已有发布任务正在执行。");
+    }
+    if (runtime?.bridgeMode !== "python_sidecar") {
+      throw new Error("浏览器预览不能同步平台草稿，请在桌面应用中执行。");
+    }
+    setPublishAction("process");
+    setPublishError(null);
+    try {
+      const status = await desktopBridge.wechatSyncStatus();
+      setWechatSyncStatus(status);
+      if (!status.available || !status.connected) {
+        throw new Error(status.detail || "WechatSync 本地桥未连接。");
+      }
+      const unauthenticated = targets.filter(
+        (platform) => !status.platforms.find((item) => item.id === platform)?.authenticated,
+      );
+      if (unauthenticated.length) {
+        throw new Error(`${unauthenticated.join("、")} 当前未登录，无法同步草稿。`);
+      }
+
+      const revisionId = await ensureRevision(selectedArticle.id, currentMarkdown);
+      let plan = await desktopBridge.createPublishPlan({
+        articleId: selectedArticle.id,
+        revisionId,
+        platforms: targets,
+        deliveryMode: "wechat_sync_draft",
+      });
+      plan = await desktopBridge.approvePublishPlan({ planId: plan.planId });
+      plan = await desktopBridge.enqueuePublishPlan({ planId: plan.planId });
+      const receiptMap = new Map<string, PublishReceiptSummary>();
+      for (const job of plan.jobs) {
+        const result = await desktopBridge.processPublishJob({ jobId: job.id });
+        if (result.receipt) receiptMap.set(result.receipt.jobId, result.receipt);
+      }
+      plan = await desktopBridge.getPublishPlan({ planId: plan.planId });
+      setPublishTargets(new Set(targets));
+      setPublishSession({
+        articleId: selectedArticle.id,
+        revisionId,
+        plan,
+        receipts: [...receiptMap.values()],
+      });
+      const failed = plan.jobs.filter((job) => job.state !== "succeeded");
+      if (failed.length) {
+        const detail = failed.map((job) => `${job.platform}：${job.lastError ?? job.state}`).join("；");
+        throw new Error(detail);
+      }
+      setToast(`已同步 ${receiptMap.size} 个平台草稿，请在浏览器中检查并最终发布。`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`草稿同步失败：${detail.slice(0, 220)}`);
+      throw error;
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
   const generateImage = async () => {
     if (!selectedArticle || generatingImage) return;
     if (!requireImageModel()) return;
@@ -2584,14 +2695,19 @@ export default function App() {
             onCreate={createBlankArticle}
             onDismissWorkflowProgress={dismissArticleProgress}
             onEditorModeChange={setEditorMode}
+            onApplyRewriteCandidate={applyArticleRewrite}
             onGenerateImage={() => void generateImage()}
             onImageFileDrop={importImageIntoArticle}
             onMarkdownChange={updateArticleMarkdown}
             onPlatformChange={setSelectedPlatform}
+            onPublishToPlatforms={publishCurrentArticleToWechatSync}
+            onRefreshWechatSync={() => void refreshWechatSyncStatus()}
+            onRewriteArticle={rewriteCurrentArticle}
             onRunWorkflow={() => void improveCurrentArticle()}
             onSave={() => void saveCurrentArticle()}
             onSelect={selectArticle}
             platforms={configuredPlatforms}
+            publishing={publishAction === "process"}
             saving={saving}
             selectedArticle={selectedArticle}
             selectedPlatform={selectedPlatform}
@@ -2600,6 +2716,8 @@ export default function App() {
               selectedArticle ? workflowWorkspaces[selectedArticle.id] ?? null : null
             }
             workflowRunning={workflowRunning}
+            wechatSyncRefreshing={refreshingWechatSync}
+            wechatSyncStatus={wechatSyncStatus}
             writerStreaming={writerStreamingArticleId === selectedArticle?.id}
             workflowFailure={
               creationActivity?.status === "failed" &&

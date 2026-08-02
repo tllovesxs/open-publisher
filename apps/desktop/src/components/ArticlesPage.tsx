@@ -6,15 +6,23 @@ import {
   Plus,
   Save,
   Search,
+  Send,
   Sparkles,
   X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { CreationLogEntry } from "./CreatePage";
+import {
+  ArticleAssistant,
+  type MarkdownSelection,
+  type RewriteCandidate,
+} from "./ArticleAssistant";
 import type { Article, MediaAsset, PlatformDefinition, PlatformId } from "../types";
 import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
+import { PublishDialog } from "./PublishDialog";
 import { WorkflowWorkspace, type WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
+import type { RewriteArticleSummary, WechatSyncBridgeStatus } from "../lib/desktopBridge";
 
 interface WorkflowProgress {
   articleId: string;
@@ -58,6 +66,16 @@ interface ArticlesPageProps {
   workflowFailure: WorkflowFailure | null;
   onRetryWorkflow: () => void;
   onDismissWorkflowProgress: () => void;
+  wechatSyncStatus: WechatSyncBridgeStatus | null;
+  wechatSyncRefreshing: boolean;
+  publishing: boolean;
+  onRefreshWechatSync: () => void;
+  onPublishToPlatforms: (platforms: PlatformId[]) => Promise<void>;
+  onRewriteArticle: (
+    instruction: string,
+    selection: MarkdownSelection | null,
+  ) => Promise<RewriteArticleSummary>;
+  onApplyRewriteCandidate: (candidate: RewriteCandidate) => Promise<void>;
 }
 
 const statusLabel: Record<Article["status"], string> = {
@@ -96,10 +114,19 @@ export function ArticlesPage({
   workflowFailure,
   onRetryWorkflow,
   onDismissWorkflowProgress,
+  wechatSyncStatus,
+  wechatSyncRefreshing,
+  publishing,
+  onRefreshWechatSync,
+  onPublishToPlatforms,
+  onRewriteArticle,
+  onApplyRewriteCandidate,
 }: ArticlesPageProps) {
   const [query, setQuery] = useState("");
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [pendingImageInsertion, setPendingImageInsertion] = useState<ImageInsertion | null>(null);
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [selection, setSelection] = useState<MarkdownSelection | null>(null);
   const filteredArticles = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return articles;
@@ -205,6 +232,18 @@ export function ArticlesPage({
             </button>
             <button
               className="button button--quiet"
+              disabled={publishing}
+              onClick={() => {
+                setPublishDialogOpen(true);
+                onRefreshWechatSync();
+              }}
+              type="button"
+            >
+              <Send size={16} />
+              发布
+            </button>
+            <button
+              className="button button--quiet"
               disabled={workflowRunning || saving}
               onClick={onRunWorkflow}
               type="button"
@@ -243,6 +282,7 @@ export function ArticlesPage({
             onEditorModeChange={onEditorModeChange}
             onMarkdownChange={onMarkdownChange}
             onImageFileDrop={onImageFileDrop}
+            onRequestSelectionRewrite={(nextSelection) => setSelection(nextSelection)}
             onPendingImageInsertionHandled={() => setPendingImageInsertion(null)}
             onRequestImageInsert={() => setImageDialogOpen(true)}
             onPlatformChange={onPlatformChange}
@@ -250,7 +290,14 @@ export function ArticlesPage({
             platforms={platforms}
             selectedPlatform={selectedPlatform}
             pendingImageInsertion={pendingImageInsertion}
+            onSelectionChange={setSelection}
             streaming={writerStreaming}
+          />
+          <ArticleAssistant
+            onApplyCandidate={onApplyRewriteCandidate}
+            onClearSelection={() => setSelection(null)}
+            onRewrite={onRewriteArticle}
+            selection={selection}
           />
           <WorkflowWorkspace
             onRetry={onRetryWorkflow}
@@ -327,6 +374,17 @@ export function ArticlesPage({
           }}
           onInsert={setPendingImageInsertion}
           open={imageDialogOpen}
+        />
+        <PublishDialog
+          article={selectedArticle}
+          bridge={wechatSyncStatus}
+          onClose={() => setPublishDialogOpen(false)}
+          onRefresh={onRefreshWechatSync}
+          onSubmit={onPublishToPlatforms}
+          open={publishDialogOpen}
+          platforms={platforms}
+          publishing={publishing}
+          refreshing={wechatSyncRefreshing}
         />
       </div>
     </section>

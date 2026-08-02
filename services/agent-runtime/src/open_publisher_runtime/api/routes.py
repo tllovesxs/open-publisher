@@ -44,6 +44,8 @@ from open_publisher_runtime.api.schemas import (
     ProcessJobResponse,
     PublishPlanDetail,
     ResumeRunRequest,
+    RewriteArticleRequest,
+    RewriteArticleResponse,
     RunDetail,
     RuntimeCatalog,
     TemplateExtractionRequest,
@@ -73,8 +75,10 @@ from open_publisher_runtime.application.platform_adapters import (
     unsupported_official_api_capability,
 )
 from open_publisher_runtime.application.publishing import (
+    DeliveryRouter,
     PublishOutboxService,
     PublishTarget,
+    WechatSyncDraftPublisher,
 )
 from open_publisher_runtime.application.template_extraction import (
     TemplateExtractionError,
@@ -164,7 +168,10 @@ def _services(
     publishing = PublishOutboxService(
         repository=repository,
         artifact_service=artifacts,
-        publisher=container.dry_run_publisher,
+        publisher=DeliveryRouter(
+            dry_run=container.dry_run_publisher,
+            wechat_sync=WechatSyncDraftPublisher(artifacts),
+        ),
     )
     packages = ContentPackageService(repository, artifacts, articles)
     return repository, artifacts, articles, controller, publishing, packages
@@ -215,6 +222,64 @@ def test_model_connection(
             detail="model connection test failed",
         ) from error
     return ModelTestResponse(
+        provider=result.provider,
+        model=result.model,
+        mocked=result.mocked,
+    )
+
+
+@router.post("/editor/rewrite", response_model=RewriteArticleResponse)
+def rewrite_article(
+    request: RewriteArticleRequest,
+    container: ContainerDep,
+) -> RewriteArticleResponse:
+    """Return an editorial candidate without mutating the canonical revision."""
+
+    source = request.selected_text or request.markdown
+    scope = "选中的 Markdown 片段" if request.selected_text else "整篇 Markdown 文章"
+    prompt = f"""你是严谨的中文编辑助手。请按用户要求修改{scope}。
+
+用户要求：{request.instruction.strip()}
+
+必须遵守：
+1. 保留原有 Markdown 语法、链接、图片和代码块，除非用户明确要求修改它们。
+2. 不要补造事实、数字、引用、经历或来源；不确定的信息保留原表达或改为审慎措辞。
+3. 只返回修改后的 Markdown 正文，不要说明、标题、代码围栏或“修改如下”。
+4. 如果是选中片段，只返回该片段的替换内容，不要返回全文。
+
+待修改内容：
+---
+{source}
+---"""
+    try:
+        result = container.model_access.generate_text(
+            TextGenerationRequest(
+                purpose="editor-rewrite",
+                prompt=prompt,
+                context={
+                    "source_markdown": source,
+                    "instruction": request.instruction.strip(),
+                    "scope": "selection" if request.selected_text else "article",
+                },
+                temperature=0.35,
+                max_output_tokens=4_000 if request.selected_text is None else 1_600,
+            )
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="article rewrite failed",
+        ) from error
+    replacement = result.text.strip()
+    if replacement.startswith("```") and replacement.endswith("```"):
+        replacement = replacement.split("\n", 1)[-1].rsplit("\n", 1)[0].strip()
+    if not replacement:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="article rewrite returned no content",
+        )
+    return RewriteArticleResponse(
+        replacement=replacement,
         provider=result.provider,
         model=result.model,
         mocked=result.mocked,

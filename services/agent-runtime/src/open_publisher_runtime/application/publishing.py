@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Protocol
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from open_publisher_runtime.application.artifacts import ArtifactService
@@ -25,6 +27,8 @@ from open_publisher_runtime.domain.enums import (
 )
 
 P0_RISK_POLICY_VERSION = "p0-dry-run-risk.v1"
+WECHATSYNC_RISK_POLICY_VERSION = "wechat-sync-draft.v1"
+WECHATSYNC_BRIDGE_URL = "http://127.0.0.1:9528/request"
 
 
 class PublishTarget(BaseModel):
@@ -36,6 +40,7 @@ class PublishTarget(BaseModel):
     title: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     simulate_outcome: str = "success"
+    delivery_mode: str = "dry_run"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,12 @@ class DryRunPublishFailure(RuntimeError):
     def __init__(self, message: str, *, retryable: bool) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+class PublishDelivery(Protocol):
+    def publish(self, job: PublishJob, variant: PlatformVariant) -> DryRunResult: ...
+
+    def reconcile(self, job: PublishJob, variant: PlatformVariant) -> DryRunResult | None: ...
 
 
 class DeterministicDryRunPublisher:
@@ -98,13 +109,127 @@ class DeterministicDryRunPublisher:
         )
 
 
+class WechatSyncDraftPublisher:
+    """Deliver one approved platform variant through the local WechatSync bridge.
+
+    The extension owns browser login state. This service only talks to the local
+    bridge and never receives browser cookies or the bridge token.
+    """
+
+    def __init__(self, artifact_service: ArtifactService) -> None:
+        self.artifact_service = artifact_service
+
+    def publish(self, job: PublishJob, variant: PlatformVariant) -> DryRunResult:
+        markdown = self.artifact_service.read_text(variant.body_artifact_id)
+        request = {
+            "method": "syncArticle",
+            "params": {
+                "platforms": [variant.platform],
+                "article": {
+                    "title": variant.title,
+                    "markdown": markdown,
+                },
+            },
+        }
+        try:
+            response = httpx.post(WECHATSYNC_BRIDGE_URL, json=request, timeout=180)
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.ConnectError as error:
+            raise DryRunPublishFailure(
+                "WechatSync 本地桥未连接；请确认浏览器扩展的 CLI/MCP 连接已启用。",
+                retryable=True,
+            ) from error
+        except httpx.TimeoutException as error:
+            raise UnknownPublishOutcome(
+                "WechatSync 请求超时，草稿是否已创建无法确认。"
+            ) from error
+        except (httpx.HTTPError, ValueError) as error:
+            raise DryRunPublishFailure(
+                "WechatSync 本地桥返回异常，请检查浏览器扩展后重试。",
+                retryable=True,
+            ) from error
+
+        result = payload.get("result") if isinstance(payload, dict) else None
+        results = result.get("results") if isinstance(result, dict) else None
+        if not isinstance(results, list):
+            raise DryRunPublishFailure(
+                "WechatSync 没有返回平台同步结果。",
+                retryable=True,
+            )
+        platform_result = next(
+            (
+                item
+                for item in results
+                if isinstance(item, dict) and item.get("platform") == variant.platform
+            ),
+            None,
+        )
+        if not isinstance(platform_result, dict):
+            raise DryRunPublishFailure(
+                f"WechatSync 未返回 {variant.platform} 的同步结果。",
+                retryable=True,
+            )
+        if platform_result.get("success") is not True:
+            detail = str(platform_result.get("error") or "平台拒绝保存草稿")
+            raise DryRunPublishFailure(detail[:500], retryable=True)
+
+        sync_id = str(result.get("syncId") or job.id) if isinstance(result, dict) else job.id
+        fallback_remote_id = f"wechat-sync:{sync_id}:{variant.platform}"
+        remote_id = str(platform_result.get("postId") or fallback_remote_id)
+        remote_url = platform_result.get("postUrl")
+        return DryRunResult(
+            remote_id=remote_id,
+            remote_url=str(remote_url) if isinstance(remote_url, str) else None,
+            details={
+                "mode": "wechat_sync_draft",
+                "platform": variant.platform,
+                "account_ref": variant.account_ref,
+                "variant_id": variant.id,
+                "sync_id": sync_id,
+                "draft_only": bool(platform_result.get("draftOnly", True)),
+                "notice": "WechatSync 已请求平台保存草稿；最终发布仍由用户在平台侧确认。",
+            },
+        )
+
+    def reconcile(self, _job: PublishJob, _variant: PlatformVariant) -> DryRunResult | None:
+        # WechatSync has no idempotent remote draft lookup API. Do not guess after a timeout.
+        return None
+
+
+class DeliveryRouter:
+    """Select a deterministic or WechatSync delivery backend per approved job."""
+
+    def __init__(
+        self,
+        *,
+        dry_run: PublishDelivery,
+        wechat_sync: WechatSyncDraftPublisher,
+    ) -> None:
+        self.dry_run = dry_run
+        self.wechat_sync = wechat_sync
+
+    def _delivery_mode(self, job: PublishJob) -> str:
+        return str(job.payload_json.get("delivery_mode") or "dry_run")
+
+    def publish(self, job: PublishJob, variant: PlatformVariant) -> DryRunResult:
+        if self._delivery_mode(job) == "wechat_sync_draft":
+            return self.wechat_sync.publish(job, variant)
+        return self.dry_run.publish(job, variant)
+
+    def reconcile(self, job: PublishJob, variant: PlatformVariant) -> DryRunResult | None:
+        if self._delivery_mode(job) == "wechat_sync_draft":
+            return self.wechat_sync.reconcile(job, variant)
+        return self.dry_run.reconcile(job, variant)
+
+
 class PublishOutboxService:
     def __init__(
         self,
         *,
         repository: RuntimeRepository,
         artifact_service: ArtifactService,
-        publisher: DeterministicDryRunPublisher,
+        publisher: PublishDelivery,
     ) -> None:
         self.repository = repository
         self.artifact_service = artifact_service
@@ -181,12 +306,17 @@ class PublishOutboxService:
             selected_asset_hashes.append(artifact.content_hash)
 
         variants: list[PlatformVariant] = []
+        delivery_modes: set[str] = set()
         for target in targets:
             platform = target.platform.strip().lower()
             account_ref = target.account_ref.strip()
             title = (target.title or article.title).strip()
             if not platform or not account_ref or not title:
                 raise ValueError("publish target platform, account, and title cannot be blank")
+            delivery_mode = target.delivery_mode.strip().lower()
+            if delivery_mode not in {"dry_run", "wechat_sync_draft"}:
+                raise ValueError("publish target delivery mode is invalid")
+            delivery_modes.add(delivery_mode)
             if target.connection_profile_id:
                 profile = self.repository.get_connection(target.connection_profile_id)
                 if profile is None:
@@ -220,26 +350,39 @@ class PublishOutboxService:
                     "producer": "deterministic-platform-transform.v1",
                     "connection_profile_id": target.connection_profile_id,
                     "simulate_outcome": target.simulate_outcome,
+                    "delivery_mode": delivery_mode,
                 },
             )
             variant.metadata_json["target_hash"] = self._target_hash(variant)
             variants.append(self.repository.add_variant(variant))
 
+        if len(delivery_modes) != 1:
+            raise ValueError("all targets in one publish plan must use the same delivery mode")
+        delivery_mode = delivery_modes.pop()
+        operation = (
+            PublishOperation.WECHATSYNC_DRAFT
+            if delivery_mode == "wechat_sync_draft"
+            else PublishOperation.DRY_RUN
+        )
         plan = PublishPlan(
             revision_id=revision.id,
             status=PublishPlanStatus.DRAFT,
             approval_status=ApprovalStatus.PENDING,
             plan_json={
-                "mode": "dry_run",
-                "requested_operation": PublishOperation.DRY_RUN.value,
-                "risk_policy_version": P0_RISK_POLICY_VERSION,
+                "mode": delivery_mode,
+                "requested_operation": operation.value,
+                "risk_policy_version": (
+                    WECHATSYNC_RISK_POLICY_VERSION
+                    if operation is PublishOperation.WECHATSYNC_DRAFT
+                    else P0_RISK_POLICY_VERSION
+                ),
                 "selected_asset_ids": normalized_asset_ids,
                 "selected_asset_hashes": selected_asset_hashes,
                 "variant_ids": [variant.id for variant in variants],
                 "target_hashes": [
                     str(variant.metadata_json["target_hash"]) for variant in variants
                 ],
-                "remote_publish_allowed": False,
+                "remote_publish_allowed": operation is PublishOperation.WECHATSYNC_DRAFT,
             },
         )
         return self.repository.add_publish_plan(plan), variants
@@ -289,8 +432,11 @@ class PublishOutboxService:
         if not target_hashes:
             raise ValueError("publish plan has no targets to approve")
         requested_operation = str(plan.plan_json.get("requested_operation") or "")
-        if requested_operation != PublishOperation.DRY_RUN.value:
-            raise ValueError("the P0 publisher only supports the dry_run operation")
+        if requested_operation not in {
+            PublishOperation.DRY_RUN.value,
+            PublishOperation.WECHATSYNC_DRAFT.value,
+        }:
+            raise ValueError("publish plan operation is unsupported")
         risk_policy_version = str(plan.plan_json.get("risk_policy_version") or "")
         if not risk_policy_version:
             raise ValueError("publish plan risk policy version is missing")
@@ -370,8 +516,10 @@ class PublishOutboxService:
 
     @staticmethod
     def _job_payload(variant: PlatformVariant) -> dict[str, object]:
+        delivery_mode = str(variant.metadata_json.get("delivery_mode") or "dry_run")
         return {
-            "mode": "dry_run",
+            "mode": delivery_mode,
+            "delivery_mode": delivery_mode,
             "variant_id": variant.id,
             "content_hash": variant.content_hash,
             "simulate_outcome": variant.metadata_json.get("simulate_outcome", "success"),
@@ -395,7 +543,7 @@ class PublishOutboxService:
     ) -> str:
         return hashlib.sha256(
             (
-                f"dry-run-v1:{plan_id}:{variant.id}:{variant.platform}:"
+                f"publisher-v1:{plan_id}:{variant.id}:{variant.platform}:"
                 f"{variant.account_ref}:{payload_hash}"
             ).encode()
         ).hexdigest()
@@ -420,8 +568,14 @@ class PublishOutboxService:
             payload_hash=expected_payload_hash,
         )
         expected_connection_id = variant.metadata_json.get("connection_profile_id")
+        delivery_mode = str(expected_payload["delivery_mode"])
+        expected_operation = (
+            PublishOperation.WECHATSYNC_DRAFT
+            if delivery_mode == "wechat_sync_draft"
+            else PublishOperation.DRY_RUN
+        )
         if (
-            job.operation is not PublishOperation.DRY_RUN
+            job.operation is not expected_operation
             or job.platform != variant.platform
             or job.account_ref != variant.account_ref
             or job.connection_profile_id != expected_connection_id
@@ -469,6 +623,11 @@ class PublishOutboxService:
                 connection_profile_id=variant.metadata_json.get("connection_profile_id"),
                 platform=variant.platform,
                 account_ref=variant.account_ref,
+                operation=(
+                    PublishOperation.WECHATSYNC_DRAFT
+                    if str(payload["delivery_mode"]) == "wechat_sync_draft"
+                    else PublishOperation.DRY_RUN
+                ),
                 idempotency_key=idempotency_key,
                 payload_hash=payload_hash,
                 payload_json=payload,
@@ -510,11 +669,11 @@ class PublishOutboxService:
         attempt = PublishAttempt(
             job_id=job.id,
             attempt_number=self.repository.next_attempt_number(job.id),
-            operation=PublishOperation.DRY_RUN,
+            operation=job.operation,
             request_json={
                 "payload_hash": job.payload_hash,
                 "idempotency_key": job.idempotency_key,
-                "mode": "dry_run",
+                "mode": str(job.payload_json.get("delivery_mode") or "dry_run"),
             },
         )
         self.repository.add_publish_attempt(attempt)
@@ -601,7 +760,7 @@ class PublishOutboxService:
             request_json={
                 "remote_id": job.remote_id,
                 "idempotency_key": job.idempotency_key,
-                "mode": "dry_run",
+                "mode": str(job.payload_json.get("delivery_mode") or "dry_run"),
             },
         )
         self.repository.add_publish_attempt(attempt)
@@ -656,7 +815,11 @@ class PublishOutboxService:
         self.repository.update_publish_job(job)
         receipt = PublishReceipt(
             job_id=job.id,
-            status="dry_run_succeeded",
+            status=(
+                "wechat_sync_draft_saved"
+                if job.operation is PublishOperation.WECHATSYNC_DRAFT
+                else "dry_run_succeeded"
+            ),
             remote_id=result.remote_id,
             remote_url=result.remote_url,
             content_hash=variant.content_hash,

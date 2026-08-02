@@ -2,7 +2,7 @@
   "HealthResponse": {
     "status": "ok",
     "database": "ok",
-    "publisher_mode": "dry_run"
+    "publisher_mode": "dry_run_and_wechat_sync_draft"
   },
   "CreateArticleRequest": {
     "title": "Desktop draft",
@@ -220,13 +220,26 @@
     "targets": [
       {
         "platform": "wechat",
-        "account_ref": "desktop-wechat"
+        "account_ref": "desktop-wechat",
+        "delivery_mode": "dry_run"
       },
       {
         "platform": "csdn",
-        "account_ref": "desktop-csdn"
+        "account_ref": "desktop-csdn",
+        "delivery_mode": "dry_run"
       }
     ]
+  },
+  "RewriteArticleRequest": {
+    "markdown": "# Desktop draft\n\n需要压缩的内容。",
+    "instruction": "表达更简洁",
+    "selected_text": "需要压缩的内容。"
+  },
+  "RewriteArticleResponse": {
+    "replacement": "需要压缩的内容。",
+    "provider": "mock",
+    "model": "deterministic-mock-v1",
+    "mocked": true
   },
   "ApprovePublishPlanRequest": {
     "actor_id": "user:desktop",
