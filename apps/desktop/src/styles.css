@@ -965,6 +965,98 @@ p {
   font-weight: 750;
 }
 
+.platform-logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.publish-dialog__empty {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 8px;
+  min-height: 64px;
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-github {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-github > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-github h3,
+.settings-github p,
+.settings-github__result p {
+  margin: 0;
+}
+
+.settings-github h3 {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.settings-github p,
+.settings-github__result p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.settings-github__result {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-muted);
+}
+
+.settings-github__result.is-update {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+}
+
+.settings-github__result strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.settings-github__result > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.settings-github__result a {
+  color: var(--accent-strong);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.settings-github__result a:hover {
+  text-decoration: underline;
+}
+
 .platform-logo--wechat {
   background: #287f55;
 }
@@ -2654,6 +2746,37 @@ p {
 .account-list,
 .preference-list {
   display: grid;
+}
+
+.account-list__empty {
+  display: flex;
+  min-height: 104px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px 18px;
+  color: var(--muted);
+}
+
+.account-list__empty > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.account-list__empty strong,
+.account-list__empty small {
+  display: block;
+}
+
+.account-list__empty strong {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.account-list__empty small {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .account-list article {

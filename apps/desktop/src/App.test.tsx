@@ -33,8 +33,13 @@ const nativeTestBridge: DesktopBridge = {
     imageTrustedHosts: [],
     timeoutSeconds: 30,
     secretConfigured: true,
+    imageSecretConfigured: true,
     webSearchConfigured: false,
     githubConfigured: false,
+    textKeyMasked: "tes••••ret",
+    imageKeyMasked: "tes••••ret",
+    tavilyKeyMasked: null,
+    githubTokenMasked: null,
     persistence: "encrypted_local_database",
   }),
   testModelConnection: async () => ({
@@ -606,6 +611,7 @@ describe("desktop product flow", () => {
 
   it("configures and tests the model from settings without rendering the secret", async () => {
     render(<App />);
+    await waitForNativeRuntime();
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
     const keyInput = screen.getByLabelText("API Key") as HTMLInputElement;

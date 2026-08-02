@@ -21,7 +21,11 @@ use serde_json::Value;
 const MODEL_CONFIGURATION_FILE: &str = "model-configuration.json";
 const MODEL_SECRETS_DATABASE_FILE: &str = "model-secrets.sqlite3";
 const DESKTOP_KEYRING_SERVICE: &str = "io.openpublisher.desktop";
+// `MODEL_API_KEY_SECRET` is retained only to migrate configurations created
+// before text and image providers could use different credentials.
 const MODEL_API_KEY_SECRET: &str = "model-api-key";
+const TEXT_MODEL_API_KEY_SECRET: &str = "text-model-api-key";
+const IMAGE_MODEL_API_KEY_SECRET: &str = "image-model-api-key";
 const TAVILY_API_KEY_SECRET: &str = "tavily-api-key";
 const GITHUB_TOKEN_SECRET: &str = "github-token";
 
@@ -639,10 +643,17 @@ pub struct ConnectionProfilePublic {
 pub struct ConfigureModelRequest {
     pub name: String,
     pub base_url: String,
+    /// Legacy shared key accepted for one migration path. New callers provide
+    /// `text_api_key` and `image_api_key` independently.
+    #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub text_api_key: String,
     pub text_model: String,
     pub image_base_url: Option<String>,
     pub image_model: Option<String>,
+    #[serde(default)]
+    pub image_api_key: String,
     #[serde(default)]
     pub image_trusted_hosts: Vec<String>,
     #[serde(default)]
@@ -663,9 +674,25 @@ pub struct ModelConfigurationSummary {
     pub image_trusted_hosts: Vec<String>,
     pub timeout_seconds: u16,
     pub secret_configured: bool,
+    pub image_secret_configured: bool,
     pub web_search_configured: bool,
     pub github_configured: bool,
+    /// Masked values are display-only hints. Plaintext is only returned by
+    /// `reveal_model_secret` after an explicit user action in the settings UI.
+    pub text_key_masked: Option<String>,
+    pub image_key_masked: Option<String>,
+    pub tavily_key_masked: Option<String>,
+    pub github_token_masked: Option<String>,
     pub persistence: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSecretKind {
+    Text,
+    Image,
+    WebSearch,
+    Github,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -676,8 +703,25 @@ pub struct ModelConnectionTestSummary {
     pub mocked: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubApplicationInfo {
+    pub repository: &'static str,
+    pub author_name: &'static str,
+    pub author_url: &'static str,
+    pub installed_version: &'static str,
+    pub latest_version: Option<String>,
+    pub release_url: Option<String>,
+    pub release_notes: Option<String>,
+    pub published_at: Option<String>,
+    pub update_available: bool,
+    pub detail: String,
+}
+
 /// Public state obtained from the already-running WechatSync local bridge.
-/// No browser token, Cookie, or account name is returned to the WebView.
+/// Browser tokens and cookies never cross this boundary. An account label is
+/// display-only metadata returned by the local extension for the user's own
+/// connected browser profile.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WechatSyncBridgeStatus {
@@ -692,6 +736,7 @@ pub struct WechatSyncBridgeStatus {
 pub struct WechatSyncPlatformStatus {
     pub id: String,
     pub authenticated: bool,
+    pub account_label: Option<String>,
 }
 
 /// The WebView talks only to this fixed command surface. Implementations own
@@ -766,7 +811,9 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
         request: ConfigureModelRequest,
     ) -> Result<ModelConfigurationSummary, String>;
     fn model_configuration(&self) -> Result<Option<ModelConfigurationSummary>, String>;
+    fn reveal_model_secret(&self, kind: ModelSecretKind) -> Result<Option<String>, String>;
     fn test_model_connection(&self) -> Result<ModelConnectionTestSummary, String>;
+    fn github_application_info(&self) -> Result<GitHubApplicationInfo, String>;
 }
 
 struct SupervisorState {
@@ -795,10 +842,11 @@ struct BackendArticleMapping {
 struct PrivateModelConfiguration {
     name: String,
     base_url: String,
-    api_key: String,
+    text_api_key: String,
     text_model: String,
     image_base_url: Option<String>,
     image_model: Option<String>,
+    image_api_key: String,
     image_trusted_hosts: Vec<String>,
     tavily_api_key: String,
     github_token: String,
@@ -815,16 +863,21 @@ impl PrivateModelConfiguration {
             image_model: self.image_model.clone(),
             image_trusted_hosts: self.image_trusted_hosts.clone(),
             timeout_seconds: self.timeout_seconds,
-            secret_configured: !self.api_key.is_empty(),
+            secret_configured: !self.text_api_key.is_empty(),
+            image_secret_configured: !self.image_api_key.is_empty(),
             web_search_configured: !self.tavily_api_key.is_empty(),
             github_configured: !self.github_token.is_empty(),
+            text_key_masked: mask_secret(&self.text_api_key),
+            image_key_masked: mask_secret(&self.image_api_key),
+            tavily_key_masked: mask_secret(&self.tavily_api_key),
+            github_token_masked: mask_secret(&self.github_token),
             persistence: "encrypted_local_database",
         }
     }
 
     fn persisted(&self) -> PersistedModelConfiguration {
         PersistedModelConfiguration {
-            schema_version: 1,
+            schema_version: 2,
             name: self.name.clone(),
             base_url: self.base_url.clone(),
             text_model: self.text_model.clone(),
@@ -1344,6 +1397,16 @@ struct ModelConnectionTestWire {
 }
 
 #[derive(Debug, Deserialize)]
+struct GitHubReleaseWire {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    published_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct WechatSyncHealthWire {
     connected: bool,
 }
@@ -1359,6 +1422,8 @@ struct WechatSyncPlatformWire {
     id: String,
     #[serde(default)]
     is_authenticated: bool,
+    #[serde(default)]
+    username: Option<String>,
 }
 
 pub struct PythonSidecarSupervisor {
@@ -1484,18 +1549,25 @@ impl PythonSidecarSupervisor {
             }
         };
 
-        let mut platforms = wechat_sync_platform_defaults();
-        for platform in response.result {
-            let target_id = match platform.id.as_str() {
-                "weixin" => "wechat",
-                "csdn" => "csdn",
-                "toutiao" => "toutiao",
-                _ => continue,
-            };
-            if let Some(target) = platforms.iter_mut().find(|entry| entry.id == target_id) {
-                target.authenticated = platform.is_authenticated;
-            }
-        }
+        let mut seen = HashSet::new();
+        let platforms = response
+            .result
+            .into_iter()
+            .filter_map(|platform| {
+                let id = normalize_wechat_sync_platform_id(&platform.id)?;
+                if !seen.insert(id.clone()) {
+                    return None;
+                }
+                Some(WechatSyncPlatformStatus {
+                    id,
+                    authenticated: platform.is_authenticated,
+                    account_label: platform
+                        .username
+                        .as_deref()
+                        .and_then(normalize_bridge_account_label),
+                })
+            })
+            .collect();
         WechatSyncBridgeStatus {
             available: true,
             connected: true,
@@ -1598,6 +1670,7 @@ impl PythonSidecarSupervisor {
         // let an inherited shell environment silently configure the sidecar.
         for variable in [
             "OPEN_PUBLISHER_MODEL_API_KEY",
+            "OPEN_PUBLISHER_IMAGE_API_KEY",
             "OPEN_PUBLISHER_SILICONFLOW_API_KEY",
             "OPEN_PUBLISHER_TEXT_BASE_URL",
             "OPEN_PUBLISHER_TEXT_MODEL",
@@ -1614,7 +1687,7 @@ impl PythonSidecarSupervisor {
 
         if let Some(model) = model_configuration {
             command
-                .env("OPEN_PUBLISHER_MODEL_API_KEY", &model.api_key)
+                .env("OPEN_PUBLISHER_MODEL_API_KEY", &model.text_api_key)
                 .env("OPEN_PUBLISHER_TEXT_BASE_URL", &model.base_url)
                 .env("OPEN_PUBLISHER_TEXT_MODEL", &model.text_model)
                 .env(
@@ -1626,7 +1699,8 @@ impl PythonSidecarSupervisor {
             {
                 command
                     .env("OPEN_PUBLISHER_IMAGE_BASE_URL", image_base_url)
-                    .env("OPEN_PUBLISHER_IMAGE_MODEL", image_model);
+                    .env("OPEN_PUBLISHER_IMAGE_MODEL", image_model)
+                    .env("OPEN_PUBLISHER_IMAGE_API_KEY", &model.image_api_key);
             }
             if !model.image_trusted_hosts.is_empty() {
                 command.env(
@@ -1950,13 +2024,31 @@ impl PythonSidecarSupervisor {
 }
 
 fn wechat_sync_platform_defaults() -> Vec<WechatSyncPlatformStatus> {
-    ["wechat", "csdn", "toutiao"]
-        .into_iter()
-        .map(|id| WechatSyncPlatformStatus {
-            id: id.to_owned(),
-            authenticated: false,
+    Vec::new()
+}
+
+fn normalize_wechat_sync_platform_id(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.len() > 64
+        || !normalized.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
         })
-        .collect()
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn normalize_bridge_account_label(value: &str) -> Option<String> {
+    let normalized = value.trim();
+    if normalized.is_empty()
+        || normalized.chars().count() > 120
+        || normalized.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(normalized.to_owned())
 }
 
 fn unavailable_wechat_sync_status(detail: &str) -> WechatSyncBridgeStatus {
@@ -2684,6 +2776,20 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             .map(PrivateModelConfiguration::summary))
     }
 
+    fn reveal_model_secret(&self, kind: ModelSecretKind) -> Result<Option<String>, String> {
+        // This is intentionally a separate command from configuration summary.
+        // Callers must opt in to putting plaintext into the settings input; no
+        // workflow event, runtime snapshot or normal configuration response can
+        // contain a credential.
+        let secret_name = match kind {
+            ModelSecretKind::Text => TEXT_MODEL_API_KEY_SECRET,
+            ModelSecretKind::Image => IMAGE_MODEL_API_KEY_SECRET,
+            ModelSecretKind::WebSearch => TAVILY_API_KEY_SECRET,
+            ModelSecretKind::Github => GITHUB_TOKEN_SECRET,
+        };
+        load_database_secret(&self.data_dir, secret_name)
+    }
+
     fn test_model_connection(&self) -> Result<ModelConnectionTestSummary, String> {
         let mut state = self.lock_state()?;
         self.ensure_started_locked(&mut state)?;
@@ -2704,6 +2810,75 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
             provider: response.provider,
             model: response.model,
             mocked: response.mocked,
+        })
+    }
+
+    fn github_application_info(&self) -> Result<GitHubApplicationInfo, String> {
+        const REPOSITORY: &str = "tllovesxs/open-publisher";
+        const AUTHOR: &str = "tllovesxs";
+        const AUTHOR_URL: &str = "https://github.com/tllovesxs";
+        const INSTALLED_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(10))
+            .no_proxy()
+            .redirect(Policy::none())
+            .user_agent("Open-Publisher-Desktop")
+            .build()
+            .map_err(|_| "无法初始化 GitHub 更新检查。".to_owned())?;
+        let response = client
+            .get(format!(
+                "https://api.github.com/repos/{REPOSITORY}/releases/latest"
+            ))
+            .send();
+        let response = match response {
+            Ok(response) if response.status() == StatusCode::NOT_FOUND => {
+                return Ok(GitHubApplicationInfo {
+                    repository: REPOSITORY,
+                    author_name: AUTHOR,
+                    author_url: AUTHOR_URL,
+                    installed_version: INSTALLED_VERSION,
+                    latest_version: None,
+                    release_url: None,
+                    release_notes: None,
+                    published_at: None,
+                    update_available: false,
+                    detail: "仓库暂未发布正式版本。".to_owned(),
+                });
+            }
+            Ok(response) => response
+                .error_for_status()
+                .map_err(|_| "GitHub 更新检查未成功完成。".to_owned())?,
+            Err(_) => return Err("无法连接 GitHub，请检查网络后重试。".to_owned()),
+        };
+        let release = response
+            .json::<GitHubReleaseWire>()
+            .map_err(|_| "GitHub 返回的版本信息无效。".to_owned())?;
+        let latest_version = release.tag_name.trim().trim_start_matches('v').to_owned();
+        if latest_version.is_empty() || latest_version.len() > 100 {
+            return Err("GitHub 返回的版本号无效。".to_owned());
+        }
+        let update_available = version_tuple(&latest_version)
+            .zip(version_tuple(INSTALLED_VERSION))
+            .map(|(latest, installed)| latest > installed)
+            .unwrap_or(false);
+        Ok(GitHubApplicationInfo {
+            repository: REPOSITORY,
+            author_name: AUTHOR,
+            author_url: AUTHOR_URL,
+            installed_version: INSTALLED_VERSION,
+            latest_version: Some(latest_version),
+            release_url: valid_https_url(&release.html_url),
+            release_notes: (!release.body.trim().is_empty())
+                .then(|| release.body.trim().chars().take(1_200).collect()),
+            published_at: release.published_at.filter(|value| valid_timestamp(value)),
+            update_available,
+            detail: if update_available {
+                "发现新版本。".to_owned()
+            } else {
+                "当前已是最新版本。".to_owned()
+            },
         })
     }
 }
@@ -2731,6 +2906,26 @@ fn model_configuration_path(data_dir: &Path) -> PathBuf {
 
 fn model_secrets_database_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MODEL_SECRETS_DATABASE_FILE)
+}
+
+fn mask_secret(value: &str) -> Option<String> {
+    let characters = value.chars().collect::<Vec<_>>();
+    if characters.is_empty() {
+        return None;
+    }
+    if characters.len() <= 6 {
+        return Some("••••••".to_owned());
+    }
+    let prefix = characters.iter().take(3).collect::<String>();
+    let suffix = characters
+        .iter()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    Some(format!("{prefix}••••••{suffix}"))
 }
 
 fn open_model_secrets_database(data_dir: &Path) -> Result<Connection, String> {
@@ -2903,18 +3098,30 @@ fn load_model_configuration(
     };
     let persisted: PersistedModelConfiguration =
         serde_json::from_slice(&bytes).map_err(|_| "本地模型配置文件无效。".to_owned())?;
-    if persisted.schema_version != 1 {
+    if !matches!(persisted.schema_version, 1 | 2) {
         return Err("本地模型配置版本不受支持。".to_owned());
     }
-    let api_key = match load_database_secret(data_dir, MODEL_API_KEY_SECRET)? {
+    let text_api_key = match load_database_secret(data_dir, TEXT_MODEL_API_KEY_SECRET)? {
         Some(value) => value,
         None => {
-            let value = secret_store
-                .read(MODEL_API_KEY_SECRET)?
-                .ok_or_else(|| "已保存的模型配置缺少 API Key。请在设置中重新保存。".to_owned())?;
-            save_database_secret(data_dir, MODEL_API_KEY_SECRET, &value)?;
+            let value = load_database_secret(data_dir, MODEL_API_KEY_SECRET)?
+                .or_else(|| secret_store.read(MODEL_API_KEY_SECRET).ok().flatten())
+                .ok_or_else(|| {
+                    "已保存的模型配置缺少文本 API Key。请在设置中重新保存。".to_owned()
+                })?;
+            save_database_secret(data_dir, TEXT_MODEL_API_KEY_SECRET, &value)?;
             value
         }
+    };
+    let image_api_key = match load_database_secret(data_dir, IMAGE_MODEL_API_KEY_SECRET)? {
+        Some(value) => value,
+        // Existing configurations used one provider key. Preserve that behavior
+        // once during migration while storing the new value separately.
+        None if persisted.image_base_url.is_some() && persisted.image_model.is_some() => {
+            save_database_secret(data_dir, IMAGE_MODEL_API_KEY_SECRET, &text_api_key)?;
+            text_api_key.clone()
+        }
+        None => String::new(),
     };
     let tavily_api_key = match load_database_secret(data_dir, TAVILY_API_KEY_SECRET)? {
         Some(value) => value,
@@ -2942,10 +3149,12 @@ fn load_model_configuration(
         ConfigureModelRequest {
             name: persisted.name,
             base_url: persisted.base_url,
-            api_key,
+            api_key: String::new(),
+            text_api_key,
             text_model: persisted.text_model,
             image_base_url: persisted.image_base_url,
             image_model: persisted.image_model,
+            image_api_key,
             image_trusted_hosts: persisted.image_trusted_hosts,
             tavily_api_key,
             github_token,
@@ -2961,7 +3170,16 @@ fn persist_model_configuration(
     _secret_store: &dyn SecretStore,
     configuration: &PrivateModelConfiguration,
 ) -> Result<(), String> {
-    save_database_secret(data_dir, MODEL_API_KEY_SECRET, &configuration.api_key)?;
+    save_database_secret(
+        data_dir,
+        TEXT_MODEL_API_KEY_SECRET,
+        &configuration.text_api_key,
+    )?;
+    save_database_secret(
+        data_dir,
+        IMAGE_MODEL_API_KEY_SECRET,
+        &configuration.image_api_key,
+    )?;
     save_database_secret(
         data_dir,
         TAVILY_API_KEY_SECRET,
@@ -3321,8 +3539,8 @@ fn validate_create_publish_plan_request(request: &CreatePublishPlanRequest) -> R
         return Err("articleId must contain between 1 and 256 bytes".to_owned());
     }
     validate_backend_id(request.revision_id.clone(), "revision")?;
-    if request.platforms.is_empty() || request.platforms.len() > 3 {
-        return Err("发布计划需要选择 1–3 个平台。".to_owned());
+    if request.platforms.is_empty() || request.platforms.len() > 12 {
+        return Err("发布计划需要选择 1–12 个平台。".to_owned());
     }
     if request.platforms.iter().collect::<HashSet<_>>().len() != request.platforms.len()
         || request
@@ -3384,7 +3602,7 @@ fn validate_rewrite_article_request(request: &RewriteArticleRequest) -> Result<(
 }
 
 fn supported_platform(platform: &str) -> bool {
-    matches!(platform, "wechat" | "csdn" | "toutiao")
+    normalize_wechat_sync_platform_id(platform).is_some()
 }
 
 fn validate_connection_request(
@@ -3448,18 +3666,22 @@ fn validate_model_configuration(
         .ok_or_else(|| "文本模型 API 地址不能为空。".to_owned())?;
     let text_model = normalize_public_option(Some(request.text_model), "文本模型", 300)?
         .ok_or_else(|| "文本模型不能为空。".to_owned())?;
-    let supplied_key = request.api_key.trim();
-    let api_key = if supplied_key.is_empty() {
+    let supplied_text_key = if request.text_api_key.trim().is_empty() {
+        request.api_key.trim()
+    } else {
+        request.text_api_key.trim()
+    };
+    let text_api_key = if supplied_text_key.is_empty() {
         existing
-            .map(|configuration| configuration.api_key.as_str())
+            .map(|configuration| configuration.text_api_key.as_str())
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
-            .ok_or_else(|| "API Key 不能为空。".to_owned())?
+            .ok_or_else(|| "文本 API Key 不能为空。".to_owned())?
     } else {
-        if supplied_key.len() > 4_096 || supplied_key.chars().any(char::is_control) {
-            return Err("API Key 格式无效。".to_owned());
+        if supplied_text_key.len() > 4_096 || supplied_text_key.chars().any(char::is_control) {
+            return Err("文本 API Key 格式无效。".to_owned());
         }
-        supplied_key.to_owned()
+        supplied_text_key.to_owned()
     };
     let supplied_tavily_key = request.tavily_api_key.trim();
     let tavily_api_key = if supplied_tavily_key.is_empty() {
@@ -3495,6 +3717,23 @@ fn validate_model_configuration(
     if image_base_url.is_some() != image_model.is_some() {
         return Err("生图 API 地址和生图模型需要同时填写。".to_owned());
     }
+    let supplied_image_key = request.image_api_key.trim();
+    let image_api_key = if image_base_url.is_none() {
+        String::new()
+    } else if supplied_image_key.is_empty() {
+        existing
+            .map(|configuration| configuration.image_api_key.as_str())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            // The first split configuration inherits a separately persisted
+            // text credential only when the user left the image field empty.
+            .unwrap_or_else(|| text_api_key.clone())
+    } else {
+        if supplied_image_key.len() > 4_096 || supplied_image_key.chars().any(char::is_control) {
+            return Err("生图 API Key 格式无效。".to_owned());
+        }
+        supplied_image_key.to_owned()
+    };
     if !(1..=1_800).contains(&request.timeout_seconds) {
         return Err("请求超时应在 1–1800 秒之间。".to_owned());
     }
@@ -3523,10 +3762,11 @@ fn validate_model_configuration(
     Ok(PrivateModelConfiguration {
         name: request.name,
         base_url,
-        api_key,
+        text_api_key,
         text_model,
         image_base_url,
         image_model,
+        image_api_key,
         image_trusted_hosts,
         tavily_api_key,
         github_token,
@@ -4474,6 +4714,30 @@ fn valid_timestamp(value: &str) -> bool {
     !value.is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
 }
 
+fn valid_https_url(value: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(value).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() || value.len() > 2_000 {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn version_tuple(value: &str) -> Option<(u32, u32, u32)> {
+    let core = value
+        .trim()
+        .trim_start_matches('v')
+        .split_once('-')
+        .map_or(value, |(head, _)| head);
+    let mut segments = core.split('.');
+    let major = segments.next()?.parse().ok()?;
+    let minor = segments.next().unwrap_or("0").parse().ok()?;
+    let patch = segments.next().unwrap_or("0").parse().ok()?;
+    if segments.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
 fn summarize_image_generation(
     response: GenerateImageResponseWire,
 ) -> Result<GenerateImageSummary, String> {
@@ -4647,7 +4911,8 @@ mod tests {
         RewriteConversationMessageWire, RunDetailWire, RunWorkflowRequest, RuntimeEventWire,
         SaveDraftRequest, SecretStore, SidecarSupervisor, StartRunPolicyWire, StartRunRequestWire,
         VisualCompositionRequest, WorkflowAgentInstruction, WorkflowRunWire,
-        WorkflowSkillInstruction, WorkflowWire, MODEL_API_KEY_SECRET, TAVILY_API_KEY_SECRET,
+        WorkflowSkillInstruction, WorkflowWire, IMAGE_MODEL_API_KEY_SECRET, MODEL_API_KEY_SECRET,
+        TAVILY_API_KEY_SECRET, TEXT_MODEL_API_KEY_SECRET,
     };
 
     #[test]
@@ -4942,10 +5207,12 @@ mod tests {
             .configure_model(ConfigureModelRequest {
                 name: "Persisted local model".to_owned(),
                 base_url: "https://models.example/v1".to_owned(),
-                api_key: "model-secret-kept-in-encrypted-database".to_owned(),
+                api_key: String::new(),
+                text_api_key: "model-secret-kept-in-encrypted-database".to_owned(),
                 text_model: "example-text".to_owned(),
                 image_base_url: Some("https://images.example/v1".to_owned()),
                 image_model: Some("example-image".to_owned()),
+                image_api_key: "image-secret-kept-in-encrypted-database".to_owned(),
                 image_trusted_hosts: vec!["images.example".to_owned()],
                 tavily_api_key: "tavily-secret-kept-in-encrypted-database".to_owned(),
                 github_token: "github-secret-kept-in-encrypted-database".to_owned(),
@@ -5032,8 +5299,14 @@ mod tests {
         assert!(restored.secret_configured);
         assert!(restored.web_search_configured);
         assert_eq!(
-            load_database_secret(data_dir.path(), MODEL_API_KEY_SECRET)
+            load_database_secret(data_dir.path(), TEXT_MODEL_API_KEY_SECRET)
                 .expect("read migrated model key")
+                .as_deref(),
+            Some("legacy-model-key-for-migration")
+        );
+        assert_eq!(
+            load_database_secret(data_dir.path(), IMAGE_MODEL_API_KEY_SECRET)
+                .expect("read migrated image key")
                 .as_deref(),
             Some("legacy-model-key-for-migration")
         );
@@ -5063,21 +5336,14 @@ mod tests {
     }
 
     #[test]
-    fn wechat_sync_status_never_exposes_accounts_or_tokens() {
+    fn unavailable_wechat_sync_status_does_not_invent_platform_login_state() {
         let defaults = wechat_sync_platform_defaults();
-        assert_eq!(
-            defaults
-                .iter()
-                .map(|platform| platform.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["wechat", "csdn", "toutiao"]
-        );
-        assert!(defaults.iter().all(|platform| !platform.authenticated));
+        assert!(defaults.is_empty());
 
         let unavailable = unavailable_wechat_sync_status("bridge unavailable");
         assert!(!unavailable.available);
         assert!(!unavailable.connected);
-        assert_eq!(unavailable.platforms.len(), 3);
+        assert!(unavailable.platforms.is_empty());
     }
 
     #[test]
@@ -5263,7 +5529,7 @@ mod tests {
             name: "Unsafe".to_owned(),
             provider: "openai-compatible".to_owned(),
             base_url: Some("http://models.example.com/v1".to_owned()),
-            secret_env_var: Some("sk-plaintext-secret".to_owned()),
+            secret_env_var: Some("example-plaintext-secret".to_owned()),
             default_text_model: None,
             default_image_model: None,
             timeout_seconds: 30,
@@ -5483,7 +5749,9 @@ mod tests {
             })
             .expect("workflow completes");
         assert_eq!(workflow.status, "completed");
-        assert_eq!(workflow.artifacts.len(), 8);
+        // The normal preset persists all audit artifacts, including the
+        // three Baoyu visual-planning intermediates.
+        assert_eq!(workflow.artifacts.len(), 11);
         assert!(workflow.output_markdown.contains("canonical draft"));
 
         let customized = supervisor
@@ -5498,7 +5766,7 @@ mod tests {
                 visual_composition: VisualCompositionRequest::default(),
             })
             .expect("customized workflow completes");
-        assert_eq!(customized.artifacts.len(), 5);
+        assert_eq!(customized.artifacts.len(), 8);
 
         let plan = supervisor
             .create_publish_plan(CreatePublishPlanRequest {

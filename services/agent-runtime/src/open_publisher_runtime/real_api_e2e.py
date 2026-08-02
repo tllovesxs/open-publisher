@@ -134,7 +134,10 @@ def run_real_api_e2e(*, output_dir: Path) -> dict[str, Any]:
         client.app.state.container.model_access.text_provider = progress_provider
 
         health = request(client, "GET", "/health", label="health")
-        _require(health["publisher_mode"] == "dry_run", "publisher is not in dry-run mode")
+        _require(
+            health["publisher_mode"] in {"dry_run", "dry_run_and_wechat_sync_draft"},
+            "publisher is not configured for local dry-run testing",
+        )
 
         model = request(
             client,

@@ -2,6 +2,7 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  CircleAlert,
   Database,
   Eye,
   EyeOff,
@@ -15,6 +16,8 @@ import { useEffect, useState } from "react";
 import type {
   ConfigureModelRequest,
   DisabledOptionalNodeId,
+  GitHubApplicationInfo,
+  ModelSecretKind,
   ModelConfigurationSummary,
   ModelConnectionTestSummary,
   RuntimeSnapshot,
@@ -29,12 +32,17 @@ interface SettingsPageProps {
   modelConfiguration: ModelConfigurationSummary | null;
   modelTest: ModelConnectionTestSummary | null;
   modelError: string | null;
+  githubApplicationInfo: GitHubApplicationInfo | null;
+  githubApplicationLoading: boolean;
+  githubApplicationError: string | null;
   disabledNodes: Set<DisabledOptionalNodeId>;
   platforms: PlatformDefinition[];
   runtime: RuntimeSnapshot | null;
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
   onConfigureModel: (request: ConfigureModelRequest) => void;
+  onCheckGitHubApplicationInfo: () => void;
+  onRevealSecret: (kind: ModelSecretKind) => Promise<string | null>;
   onRefreshWechatSync: () => void;
   onToggleNode: (nodeId: DisabledOptionalNodeId) => void;
 }
@@ -109,12 +117,17 @@ export function SettingsPage({
   modelConfiguration,
   modelTest,
   modelError,
+  githubApplicationInfo,
+  githubApplicationLoading,
+  githubApplicationError,
   disabledNodes,
   platforms,
   runtime,
   wechatSyncStatus,
   wechatSyncRefreshing,
   onConfigureModel,
+  onCheckGitHubApplicationInfo,
+  onRevealSecret,
   onRefreshWechatSync,
   onToggleNode,
 }: SettingsPageProps) {
@@ -122,7 +135,8 @@ export function SettingsPage({
   const [initialModelDraft] = useState(loadModelDraft);
   const [name, setName] = useState(initialModelDraft.name);
   const [baseUrl, setBaseUrl] = useState(initialModelDraft.baseUrl);
-  const [apiKey, setApiKey] = useState("");
+  const [textApiKey, setTextApiKey] = useState("");
+  const [imageApiKey, setImageApiKey] = useState("");
   const [tavilyApiKey, setTavilyApiKey] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [textModel, setTextModel] = useState(initialModelDraft.textModel);
@@ -130,10 +144,38 @@ export function SettingsPage({
   const [imageModel, setImageModel] = useState(initialModelDraft.imageModel);
   const [trustedHosts, setTrustedHosts] = useState(initialModelDraft.trustedHosts);
   const [timeoutSeconds, setTimeoutSeconds] = useState(initialModelDraft.timeoutSeconds);
-  const [showKey, setShowKey] = useState(false);
+  const [showTextKey, setShowTextKey] = useState(false);
+  const [showImageKey, setShowImageKey] = useState(false);
   const [showTavilyKey, setShowTavilyKey] = useState(false);
   const [showGithubToken, setShowGithubToken] = useState(false);
   const [validation, setValidation] = useState<string | null>(null);
+  const connectedPlatforms = platforms.filter((platform) => platform.status === "connected");
+
+  const revealSecret = async (kind: ModelSecretKind) => {
+    try {
+      const value = await onRevealSecret(kind);
+      if (!value) {
+        setValidation("没有可显示的已保存密钥，请直接输入新的密钥。");
+        return;
+      }
+      if (kind === "text") {
+        setTextApiKey(value);
+        setShowTextKey(true);
+      } else if (kind === "image") {
+        setImageApiKey(value);
+        setShowImageKey(true);
+      } else if (kind === "web_search") {
+        setTavilyApiKey(value);
+        setShowTavilyKey(true);
+      } else {
+        setGithubToken(value);
+        setShowGithubToken(true);
+      }
+      setValidation(null);
+    } catch {
+      setValidation("无法读取本机加密密钥。请重新输入并保存。");
+    }
+  };
 
   useEffect(() => {
     if (!modelConfiguration) return;
@@ -164,18 +206,28 @@ export function SettingsPage({
       setValidation("请填写配置名称、API 地址和文本模型。");
       return;
     }
-    if (!apiKey.trim() && !modelConfiguration?.secretConfigured) {
-      setValidation("请输入 API Key。");
+    if (!textApiKey.trim() && !modelConfiguration?.secretConfigured) {
+      setValidation("请输入文本 API Key。");
+      return;
+    }
+    if (
+      imageBaseUrl.trim() &&
+      imageModel.trim() &&
+      !imageApiKey.trim() &&
+      !modelConfiguration?.imageSecretConfigured
+    ) {
+      setValidation("请输入生图 API Key，或先取消生图模型配置。");
       return;
     }
     setValidation(null);
     onConfigureModel({
       name: name.trim(),
       baseUrl: baseUrl.trim(),
-      apiKey: apiKey.trim(),
+      textApiKey: textApiKey.trim(),
       textModel: textModel.trim(),
       imageBaseUrl: imageBaseUrl.trim() || null,
       imageModel: imageModel.trim() || null,
+      imageApiKey: imageApiKey.trim(),
       imageTrustedHosts: splitHosts(trustedHosts),
       tavilyApiKey: tavilyApiKey.trim(),
       githubToken: githubToken.trim(),
@@ -251,31 +303,36 @@ export function SettingsPage({
 
                 <div className="field">
                   <label htmlFor="model-api-key">
-                    API Key
+                    文本 API Key
                     {modelConfiguration?.secretConfigured && <small> 已配置</small>}
                   </label>
                   <span className="secret-input">
                     <input
+                      aria-label="API Key"
                       autoComplete="off"
                       id="model-api-key"
-                      onChange={(event) => setApiKey(event.target.value)}
+                      onChange={(event) => setTextApiKey(event.target.value)}
                       placeholder={
                         modelConfiguration?.secretConfigured
-                          ? "留空则继续使用已保存的密钥"
-                          : "输入 API Key"
+                          ? `已保存 · ${modelConfiguration.textKeyMasked ?? "••••••"}`
+                          : "输入文本模型的 API Key"
                       }
-                      type={showKey ? "text" : "password"}
-                      value={apiKey}
+                      type={showTextKey ? "text" : "password"}
+                      value={textApiKey}
                     />
                     <button
-                      aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
-                      onClick={() => setShowKey((current) => !current)}
+                      aria-label={showTextKey ? "隐藏文本 API Key" : "显示文本 API Key"}
+                      onClick={() => {
+                        if (showTextKey) setShowTextKey(false);
+                        else if (textApiKey) setShowTextKey(true);
+                        else void revealSecret("text");
+                      }}
                       type="button"
                     >
-                      {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                      {showTextKey ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   </span>
-                  <small>密钥保存于本机加密数据库，不进入 WebView、文章数据库或配置文件。</small>
+                  <small>默认显示掩码；点击眼睛才读取完整密钥。密钥不写入文章或配置文件。</small>
                 </div>
 
                 <div className="form-grid form-grid--two">
@@ -303,7 +360,7 @@ export function SettingsPage({
                   </label>
                 </div>
 
-                <details className="settings-advanced">
+                <details className="settings-advanced" open>
                   <summary>
                     生图模型
                     <SlidersHorizontal size={15} />
@@ -323,6 +380,35 @@ export function SettingsPage({
                         onChange={(event) => setImageModel(event.target.value)}
                         value={imageModel}
                       />
+                    </label>
+                    <label className="field field--wide" htmlFor="image-api-key">
+                      <span>生图 API Key {modelConfiguration?.imageSecretConfigured && <small>已配置</small>}</span>
+                      <span className="secret-input">
+                        <input
+                          autoComplete="off"
+                          id="image-api-key"
+                          onChange={(event) => setImageApiKey(event.target.value)}
+                          placeholder={
+                            modelConfiguration?.imageSecretConfigured
+                              ? `已保存 · ${modelConfiguration.imageKeyMasked ?? "••••••"}`
+                              : "输入生图服务的 API Key"
+                          }
+                          type={showImageKey ? "text" : "password"}
+                          value={imageApiKey}
+                        />
+                        <button
+                          aria-label={showImageKey ? "隐藏生图 API Key" : "显示生图 API Key"}
+                          onClick={() => {
+                            if (showImageKey) setShowImageKey(false);
+                            else if (imageApiKey) setShowImageKey(true);
+                            else void revealSecret("image");
+                          }}
+                          type="button"
+                        >
+                          {showImageKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </span>
+                      <small>可使用不同于文本模型的 API 地址、模型与密钥。</small>
                     </label>
                     <label className="field field--wide">
                       <span>可信图片域名</span>
@@ -350,17 +436,21 @@ export function SettingsPage({
                         autoComplete="off"
                         id="tavily-api-key"
                         onChange={(event) => setTavilyApiKey(event.target.value)}
-                        placeholder={
-                          modelConfiguration?.webSearchConfigured
-                            ? "留空则继续使用已保存的密钥"
-                            : "输入 Tavily API Key（可选）"
+                      placeholder={
+                        modelConfiguration?.webSearchConfigured
+                          ? `已保存 · ${modelConfiguration.tavilyKeyMasked ?? "••••••"}`
+                          : "输入 Tavily API Key（可选）"
                         }
                         type={showTavilyKey ? "text" : "password"}
                         value={tavilyApiKey}
                       />
                       <button
                         aria-label={showTavilyKey ? "隐藏 Tavily API Key" : "显示 Tavily API Key"}
-                        onClick={() => setShowTavilyKey((current) => !current)}
+                        onClick={() => {
+                          if (showTavilyKey) setShowTavilyKey(false);
+                          else if (tavilyApiKey) setShowTavilyKey(true);
+                          else void revealSecret("web_search");
+                        }}
                         type="button"
                       >
                         {showTavilyKey ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -378,17 +468,21 @@ export function SettingsPage({
                         autoComplete="off"
                         id="github-token"
                         onChange={(event) => setGithubToken(event.target.value)}
-                        placeholder={
-                          modelConfiguration?.githubConfigured
-                            ? "留空则继续使用已保存的 Token"
-                            : "公开仓库无需填写；私有仓库或提高限额时填写"
+                      placeholder={
+                        modelConfiguration?.githubConfigured
+                          ? `已保存 · ${modelConfiguration.githubTokenMasked ?? "••••••"}`
+                          : "公开仓库无需填写；私有仓库或提高限额时填写"
                         }
                         type={showGithubToken ? "text" : "password"}
                         value={githubToken}
                       />
                       <button
                         aria-label={showGithubToken ? "隐藏 GitHub Token" : "显示 GitHub Token"}
-                        onClick={() => setShowGithubToken((current) => !current)}
+                        onClick={() => {
+                          if (showGithubToken) setShowGithubToken(false);
+                          else if (githubToken) setShowGithubToken(true);
+                          else void revealSecret("github");
+                        }}
                         type="button"
                       >
                         {showGithubToken ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -453,22 +547,25 @@ export function SettingsPage({
                 {wechatSyncStatus?.detail ?? "尚未读取 WechatSync 状态。"}
               </p>
               <div className="account-list">
-                {platforms.map((platform) => (
+                {connectedPlatforms.length === 0 && (
+                  <div className="account-list__empty">
+                    <CircleAlert aria-hidden="true" size={17} />
+                    <div>
+                      <strong>还没有检测到已登录的平台</strong>
+                      <small>请先在浏览器登录平台，并确保 WechatSync 已连接后刷新。</small>
+                    </div>
+                  </div>
+                )}
+                {connectedPlatforms.map((platform) => (
                   <article key={platform.id}>
                     <span className={`platform-logo platform-logo--${platform.id}`}>
-                      {platform.shortName.slice(0, 1)}
+                      {platform.iconUrl ? <img alt="" src={platform.iconUrl} /> : platform.shortName.slice(0, 1)}
                     </span>
                     <div>
                       <strong>{platform.name}</strong>
-                      <small>{platform.limit}</small>
+                      <small>{platform.accountLabel || "已登录，可同步草稿"}</small>
                     </div>
-                    <span className="account-state">
-                      {platform.status === "connected"
-                        ? "已登录"
-                        : wechatSyncStatus?.available
-                          ? "未登录"
-                          : "未检测到桥接"}
-                    </span>
+                    <span className="account-state">已登录</span>
                   </article>
                 ))}
               </div>
@@ -538,6 +635,36 @@ export function SettingsPage({
                   </dd>
                 </div>
               </dl>
+              <section className="settings-github" aria-labelledby="github-app-title">
+                <div>
+                  <Server aria-hidden="true" size={18} />
+                  <div>
+                    <h3 id="github-app-title">Open Publisher</h3>
+                    <p>作者 {githubApplicationInfo?.authorName ?? "tllovesxs"} · 当前版本 {githubApplicationInfo?.installedVersion ?? "0.1.0"}</p>
+                  </div>
+                </div>
+                <button
+                  className="button button--quiet"
+                  disabled={githubApplicationLoading}
+                  onClick={onCheckGitHubApplicationInfo}
+                  type="button"
+                >
+                  {githubApplicationLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
+                  检查更新
+                </button>
+              </section>
+              {githubApplicationInfo && (
+                <div className={`settings-github__result${githubApplicationInfo.updateAvailable ? " is-update" : ""}`} role="status">
+                  <strong>{githubApplicationInfo.updateAvailable ? `发现 v${githubApplicationInfo.latestVersion}` : githubApplicationInfo.detail}</strong>
+                  {githubApplicationInfo.releaseNotes && <p>{githubApplicationInfo.releaseNotes}</p>}
+                  <div>
+                    <a href={`https://github.com/${githubApplicationInfo.repository}`} rel="noreferrer" target="_blank">项目主页</a>
+                    {githubApplicationInfo.releaseUrl && <a href={githubApplicationInfo.releaseUrl} rel="noreferrer" target="_blank">查看 Release</a>}
+                    <a href={githubApplicationInfo.authorUrl} rel="noreferrer" target="_blank">作者主页</a>
+                  </div>
+                </div>
+              )}
+              {githubApplicationError && <p className="form-error" role="alert">更新检查失败：{githubApplicationError}</p>}
             </section>
           )}
         </div>

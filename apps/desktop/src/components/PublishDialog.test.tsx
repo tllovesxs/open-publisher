@@ -31,9 +31,9 @@ describe("PublishDialog", () => {
           connected: true,
           detail: "WechatSync 已连接；登录状态来自浏览器扩展。",
           platforms: [
-            { id: "wechat", authenticated: true },
-            { id: "csdn", authenticated: true },
-            { id: "toutiao", authenticated: false },
+            { id: "wechat", authenticated: true, accountLabel: null },
+            { id: "csdn", authenticated: true, accountLabel: null },
+            { id: "toutiao", authenticated: false, accountLabel: null },
           ],
         }}
         onClose={vi.fn()}

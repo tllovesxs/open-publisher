@@ -15,7 +15,6 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type {
   VisualCompositionPlanSummary,
   WorkflowActivityEvent,
-  WorkflowArtifactSummary,
   WorkflowNodeId,
   WorkflowSourceSummary,
 } from "../lib/desktopBridge";
@@ -26,7 +25,7 @@ export interface WorkflowWorkspaceSnapshot {
   runId: string | null;
   status: WorkspaceRunStatus;
   events: WorkflowActivityEvent[];
-  artifacts: WorkflowArtifactSummary[];
+  artifacts: Array<{ id: string; kind: string }>;
   visualPlan: VisualCompositionPlanSummary | null;
   error?: string | null;
   updatedAt: number;
@@ -39,7 +38,7 @@ interface WorkflowWorkspaceProps {
   onRetry?: () => void;
 }
 
-type WorkspaceTab = "activity" | "sources" | "artifacts";
+type WorkspaceTab = "activity" | "sources";
 
 const nodeLabel: Record<WorkflowNodeId, string> = {
   research: "资料整理",
@@ -51,28 +50,19 @@ const nodeLabel: Record<WorkflowNodeId, string> = {
   visual: "配图规划",
 };
 
-const artifactLabel: Record<string, string> = {
-  "workflow.research": "研究卡片",
-  "workflow.web-sources": "联网来源",
-  "workflow.outline": "文章大纲",
-  "workflow.raw-draft": "原始正文",
-  "workflow.canonical-draft": "最终正文",
-  "workflow.natural-style-patch": "自然表达修改",
-  "workflow.review-report": "审阅报告",
-  "workflow.risk-report": "发布前检查",
-  "workflow.visual-outline": "配图大纲",
-  "workflow.visual-material-selection": "素材选择记录",
-  "workflow.visual-prompts": "生图提示词",
-  "workflow.visual-plan": "配图计划",
-};
-
 function eventLabel(event: WorkflowActivityEvent) {
-  const node = event.nodeId ? nodeLabel[event.nodeId] : "工作流";
+  const node = event.nodeId ? nodeLabel[event.nodeId] : "本次创作";
   switch (event.eventType) {
     case "run.node_started":
-      return `${node}正在执行`;
+      return event.nodeId === "draft"
+        ? "写作 Agent 正在撰写正文"
+        : event.nodeId === "risk"
+          ? "发布检查正在核对内容"
+          : event.nodeId === "visual"
+            ? "配图 Agent 正在规划图片"
+            : `${node}正在处理`;
     case "run.node_completed":
-      return `${node}已完成`;
+      return event.nodeId === "draft" ? "正文初稿已完成" : `${node}已完成`;
     case "run.node_failed":
       return `${node}未完成`;
     case "run.node_skipped":
@@ -80,7 +70,7 @@ function eventLabel(event: WorkflowActivityEvent) {
     case "run.node_tool_called":
       return event.toolName === "github_repository"
         ? "正在读取 GitHub 项目资料"
-        : "正在检索公开来源";
+        : "正在检索公开资料";
     case "run.node_precheck":
       return "正在检查配图设置和素材范围";
     case "run.node_outline_saved":
@@ -88,15 +78,15 @@ function eventLabel(event: WorkflowActivityEvent) {
     case "run.node_prompts_saved":
       return "生图提示词已保存，等待确认";
     case "run.queued":
-      return "等待本地运行时启动";
+      return "正在准备本次创作";
     case "run.started":
-      return "工作流已开始";
+      return "AI 创作已开始";
     case "run.completed":
-      return "工作流已完成";
+      return "文章处理已完成";
     case "run.failed":
-      return "工作流已失败";
+      return "本次创作未完成";
     default:
-      return "工作流状态已更新";
+      return "正在处理文章";
   }
 }
 
@@ -132,6 +122,25 @@ function uniqueSources(events: WorkflowActivityEvent[]) {
   return Array.from(sources.values());
 }
 
+function stageKey(event: WorkflowActivityEvent) {
+  if (event.eventType === "run.node_tool_called") return "research";
+  if (event.nodeId) return event.nodeId;
+  if (event.eventType === "run.queued" || event.eventType === "run.started") return "prepare";
+  return event.eventType;
+}
+
+/** Keep one clear card per user-visible stage instead of exposing raw runtime events. */
+function compactActivity(events: WorkflowActivityEvent[]) {
+  const stages = new Map<string, WorkflowActivityEvent>();
+  for (const event of events) {
+    if (event.eventType === "run.node_output_delta") continue;
+    const key = stageKey(event);
+    const current = stages.get(key);
+    if (!current || event.createdAt >= current.createdAt) stages.set(key, event);
+  }
+  return Array.from(stages.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
 function updatedAtLabel(value: number) {
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -155,10 +164,7 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
     if (snapshot?.status === "running" || snapshot?.status === "failed") setOpen(true);
   }, [snapshot?.runId, snapshot?.status]);
 
-  const activityEvents = useMemo(
-    () => (snapshot?.events ?? []).filter((event) => event.eventType !== "run.node_output_delta"),
-    [snapshot?.events],
-  );
+  const visibleActivityEvents = useMemo(() => compactActivity(snapshot?.events ?? []).slice(-6), [snapshot?.events]);
   const sources = useMemo(() => uniqueSources(snapshot?.events ?? []), [snapshot?.events]);
   const streamedCharacters = useMemo(
     () => (snapshot?.events ?? []).reduce((total, event) => total + (event.draftDelta?.replace(/\s/g, "").length ?? 0), 0),
@@ -168,12 +174,13 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
   if (!snapshot) return null;
 
   const statusLabel =
-    snapshot.status === "running" ? "正在运行" : snapshot.status === "completed" ? "已完成" : "需要处理";
+    snapshot.status === "running" ? "正在创作" : snapshot.status === "completed" ? "创作完成" : "需要重试";
+  const latest = progress ? null : visibleActivityEvents[visibleActivityEvents.length - 1];
 
   return (
-    <aside className={`workflow-workspace is-${snapshot.status}${open ? " is-open" : ""}`} aria-label="文章工作区">
+    <aside className={`workflow-workspace is-${snapshot.status}${open ? " is-open" : ""}`} aria-label="AI 创作动态">
       <button
-        aria-label={open ? undefined : "展开文章工作区"}
+        aria-label={open ? undefined : "展开 AI 创作动态"}
         aria-expanded={open}
         className="workflow-workspace__toggle"
         onClick={() => setOpen((current) => !current)}
@@ -183,18 +190,17 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
           {snapshot.status === "running" ? <LoaderCircle className="spin" size={15} /> : snapshot.status === "failed" ? <AlertCircle size={15} /> : <Check size={15} />}
         </span>
         <span className="workflow-workspace__toggle-copy">
-          <strong>Agent 工作流</strong>
-          <small>{statusLabel} · {activityEvents.length} 项过程</small>
+          <strong>AI 创作动态</strong>
+          <small>{latest ? eventLabel(latest) : statusLabel}</small>
         </span>
         {open ? <ChevronDown aria-hidden="true" size={17} /> : <ChevronRight aria-hidden="true" size={17} />}
       </button>
 
       {open && (
         <div className="workflow-workspace__content">
-          <div className="workflow-workspace__tabs" role="tablist" aria-label="工作区内容">
-            <button aria-selected={tab === "activity"} onClick={() => setTab("activity")} role="tab" type="button">过程 <span>{activityEvents.length}</span></button>
-            <button aria-selected={tab === "sources"} onClick={() => setTab("sources")} role="tab" type="button">来源 <span>{sources.length}</span></button>
-            <button aria-selected={tab === "artifacts"} onClick={() => setTab("artifacts")} role="tab" type="button">产物 <span>{snapshot.artifacts.length}</span></button>
+          <div className="workflow-workspace__tabs" role="tablist" aria-label="创作动态内容">
+            <button aria-selected={tab === "activity"} onClick={() => setTab("activity")} role="tab" type="button">创作进度 <span>{visibleActivityEvents.length}</span></button>
+            {sources.length > 0 && <button aria-selected={tab === "sources"} onClick={() => setTab("sources")} role="tab" type="button">参考资料 <span>{sources.length}</span></button>}
           </div>
 
           {tab === "activity" && (
@@ -209,7 +215,7 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
                   </div>
                 </li>
               )}
-              {activityEvents.map((event) => {
+              {visibleActivityEvents.map((event) => {
                 const Icon = eventIcon(event);
                 const state = eventState(event);
                 return (
@@ -217,8 +223,8 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
                     <span className="workflow-timeline__icon" aria-hidden="true"><Icon className={state === "running" ? "spin" : undefined} size={14} /></span>
                     <div>
                       <strong>{eventLabel(event)}</strong>
-                      {event.eventType === "run.node_tool_called" && event.toolQuery && <small>{event.toolName === "github_repository" ? "仓库：" : "检索："}{event.toolQuery}</small>}
-                      {event.eventType === "run.node_tool_called" && <small>已整理 {event.sources?.length ?? 0} 个来源</small>}
+                      {event.eventType === "run.node_tool_called" && event.toolQuery && <small>{event.toolName === "github_repository" ? "项目：" : "查询："}{event.toolQuery}</small>}
+                      {event.eventType === "run.node_tool_called" && <small>已整理 {event.sources?.length ?? 0} 条可引用资料</small>}
                     </div>
                     <time dateTime={event.createdAt}>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(event.createdAt))}</time>
                   </li>
@@ -230,13 +236,13 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
                   <div><strong>正文正在流式写入</strong><small>已接收 {streamedCharacters.toLocaleString("zh-CN")} 字</small></div>
                 </li>
               )}
-              {activityEvents.length === 0 && <li className="workflow-workspace__empty">本次运行开始后，过程会显示在这里。</li>}
+              {visibleActivityEvents.length === 0 && <li className="workflow-workspace__empty">开始创作后，这里会显示当前 AI 正在完成的步骤。</li>}
             </ol>
           )}
 
           {tab === "sources" && (
             <div className="workflow-sources">
-              {sources.length === 0 ? <p className="workflow-workspace__empty">本次文章未使用联网来源。</p> : sources.map((source) => (
+              {sources.map((source) => (
                 <article className="workflow-source-card" key={source.url}>
                   <div><span>{sourceDomain(source.url)}</span>{source.publishedDate && <time>{source.publishedDate}</time>}</div>
                   <a href={source.url} rel="noreferrer" target="_blank">{source.title}</a>
@@ -246,13 +252,6 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
             </div>
           )}
 
-          {tab === "artifacts" && (
-            <div className="workflow-artifacts">
-              {snapshot.artifacts.map((artifact) => <div className="workflow-artifact" key={artifact.id}><FileText aria-hidden="true" size={15} /><span>{artifactLabel[artifact.kind] ?? artifact.kind}</span></div>)}
-              {snapshot.visualPlan && <div className="workflow-artifact"><Image aria-hidden="true" size={15} /><span>配图计划 · {snapshot.visualPlan.targetCount} 张</span></div>}
-              {snapshot.artifacts.length === 0 && !snapshot.visualPlan && <p className="workflow-workspace__empty">运行完成后，研究、大纲和审阅产物会保存在这里。</p>}
-            </div>
-          )}
 
           {snapshot.status === "failed" && (
             <div className="workflow-workspace__failure" role="alert">
@@ -261,7 +260,7 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
               {retryable && onRetry && <button className="button button--quiet" onClick={onRetry} type="button">重试本次生成</button>}
             </div>
           )}
-          <footer>更新于 {updatedAtLabel(snapshot.updatedAt)}</footer>
+          <footer>最后更新于 {updatedAtLabel(snapshot.updatedAt)}</footer>
         </div>
       )}
     </aside>

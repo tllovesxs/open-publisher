@@ -258,7 +258,8 @@ export interface WorkflowActivitySummary {
   events: WorkflowActivityEvent[];
 }
 
-export type PublishPlatform = "wechat" | "csdn" | "toutiao";
+/** The desktop accepts any adapter ID reported by the local WechatSync bridge. */
+export type PublishPlatform = string;
 
 export interface CreatePublishPlanRequest {
   articleId: string;
@@ -465,10 +466,13 @@ export interface ConnectionProfilePublic {
 export interface ConfigureModelRequest {
   name: string;
   baseUrl: string;
-  apiKey: string;
+  /** Legacy shared key retained for migration. New settings use independent keys. */
+  apiKey?: string;
+  textApiKey: string;
   textModel: string;
   imageBaseUrl: string | null;
   imageModel: string | null;
+  imageApiKey: string;
   imageTrustedHosts: string[];
   tavilyApiKey: string;
   githubToken: string;
@@ -484,15 +488,35 @@ export interface ModelConfigurationSummary {
   imageTrustedHosts: string[];
   timeoutSeconds: number;
   secretConfigured: boolean;
+  imageSecretConfigured: boolean;
   webSearchConfigured: boolean;
   githubConfigured: boolean;
+  textKeyMasked: string | null;
+  imageKeyMasked: string | null;
+  tavilyKeyMasked: string | null;
+  githubTokenMasked: string | null;
   persistence: "encrypted_local_database";
 }
+
+export type ModelSecretKind = "text" | "image" | "web_search" | "github";
 
 export interface ModelConnectionTestSummary {
   provider: string;
   model: string;
   mocked: boolean;
+}
+
+export interface GitHubApplicationInfo {
+  repository: string;
+  authorName: string;
+  authorUrl: string;
+  installedVersion: string;
+  latestVersion: string | null;
+  releaseUrl: string | null;
+  releaseNotes: string | null;
+  publishedAt: string | null;
+  updateAvailable: boolean;
+  detail: string;
 }
 
 /** Public-only status from a locally running WechatSync bridge. */
@@ -501,8 +525,9 @@ export interface WechatSyncBridgeStatus {
   connected: boolean;
   detail: string;
   platforms: Array<{
-    id: "wechat" | "csdn" | "toutiao";
+    id: string;
     authenticated: boolean;
+    accountLabel: string | null;
   }>;
 }
 
@@ -534,7 +559,9 @@ export interface DesktopBridge {
   ): Promise<ConnectionProfilePublic>;
   configureModel(request: ConfigureModelRequest): Promise<ModelConfigurationSummary>;
   modelConfiguration(): Promise<ModelConfigurationSummary | null>;
+  revealModelSecret(kind: ModelSecretKind): Promise<string | null>;
   testModelConnection(): Promise<ModelConnectionTestSummary>;
+  githubApplicationInfo(): Promise<GitHubApplicationInfo>;
   wechatSyncStatus(): Promise<WechatSyncBridgeStatus>;
 }
 
@@ -1079,15 +1106,23 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       imageModel: request.imageModel?.trim() || null,
       imageTrustedHosts: request.imageTrustedHosts,
       timeoutSeconds: request.timeoutSeconds,
-      secretConfigured: Boolean(request.apiKey.trim()),
+      secretConfigured: Boolean(request.textApiKey?.trim() || request.apiKey?.trim()),
+      imageSecretConfigured: Boolean(request.imageApiKey?.trim()) && Boolean(request.imageModel),
       webSearchConfigured: Boolean(request.tavilyApiKey.trim()),
       githubConfigured: Boolean(request.githubToken.trim()),
+      textKeyMasked: request.textApiKey || request.apiKey ? "tes••••ret" : null,
+      imageKeyMasked: request.imageApiKey ? "tes••••ret" : null,
+      tavilyKeyMasked: request.tavilyApiKey ? "tav••••key" : null,
+      githubTokenMasked: request.githubToken ? "ghp••••ken" : null,
       persistence: "encrypted_local_database",
     };
     return { ...mockModelConfiguration };
   },
   async modelConfiguration() {
     return mockModelConfiguration ? { ...mockModelConfiguration } : null;
+  },
+  async revealModelSecret() {
+    return null;
   },
   async testModelConnection() {
     await pause(120);
@@ -1097,16 +1132,26 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       mocked: true,
     };
   },
+  async githubApplicationInfo() {
+    return {
+      repository: "tllovesxs/open-publisher",
+      authorName: "tllovesxs",
+      authorUrl: "https://github.com/tllovesxs",
+      installedVersion: "0.1.0",
+      latestVersion: null,
+      releaseUrl: null,
+      releaseNotes: null,
+      publishedAt: null,
+      updateAvailable: false,
+      detail: "浏览器预览不会检查 GitHub 更新。",
+    };
+  },
   async wechatSyncStatus() {
     return {
       available: false,
       connected: false,
       detail: "浏览器预览不会连接 WechatSync。",
-      platforms: [
-        { id: "wechat", authenticated: false },
-        { id: "csdn", authenticated: false },
-        { id: "toutiao", authenticated: false },
-      ],
+      platforms: [],
     };
   },
 };
@@ -1156,8 +1201,12 @@ const tauriBridge: DesktopBridge = {
     invoke<ModelConfigurationSummary>("configure_model", { request }),
   modelConfiguration: () =>
     invoke<ModelConfigurationSummary | null>("model_configuration"),
+  revealModelSecret: (kind) =>
+    invoke<string | null>("reveal_model_secret", { kind }),
   testModelConnection: () =>
     invoke<ModelConnectionTestSummary>("test_model_connection"),
+  githubApplicationInfo: () =>
+    invoke<GitHubApplicationInfo>("github_application_info"),
   wechatSyncStatus: () => invoke<WechatSyncBridgeStatus>("wechat_sync_status"),
 };
 
@@ -1199,7 +1248,9 @@ const browserPreviewBridge: DesktopBridge = {
   createConnectionProfile: desktopHostRequired,
   configureModel: desktopHostRequired,
   modelConfiguration: async () => null,
+  revealModelSecret: desktopHostRequired,
   testModelConnection: desktopHostRequired,
+  githubApplicationInfo: desktopHostRequired,
   wechatSyncStatus: desktopHostRequired,
 };
 
@@ -1251,6 +1302,8 @@ export const desktopBridge: DesktopBridge = {
   createConnectionProfile: (request) => activeBridge().createConnectionProfile(request),
   configureModel: (request) => activeBridge().configureModel(request),
   modelConfiguration: () => activeBridge().modelConfiguration(),
+  revealModelSecret: (kind) => activeBridge().revealModelSecret(kind),
   testModelConnection: () => activeBridge().testModelConnection(),
+  githubApplicationInfo: () => activeBridge().githubApplicationInfo(),
   wechatSyncStatus: () => activeBridge().wechatSyncStatus(),
 };

@@ -51,17 +51,15 @@ describe("WorkflowWorkspace", () => {
   it("opens active work, aggregates reviewed sources, and keeps writer deltas out of the timeline", () => {
     render(<WorkflowWorkspace snapshot={snapshot()} />);
 
-    expect(screen.getByRole("tab", { name: /过程 2/ })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /创作进度 2/ })).toBeVisible();
     expect(screen.getByText("正文正在流式写入")).toBeVisible();
     expect(screen.queryByText(/This writer output remains/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("tab", { name: /来源 1/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /参考资料 1/ }));
     const source = screen.getByRole("link", { name: "Open Publisher release notes" });
     expect(source).toHaveAttribute("href", "https://example.test/releases");
     expect(screen.getByText("example.test")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("tab", { name: /产物 1/ }));
-    expect(screen.getByText("文章大纲")).toBeVisible();
   });
 
   it("shows a retry action for a failed run when the caller can retry", () => {

@@ -18,7 +18,7 @@ deterministic mock（确定性模拟）提供商，不会向真实模型或内�
 | 多 Agent | Python Harness + LangGraph；研究、提纲、写作、自然化、审核、风险和视觉规划以结构化 Artifact 交接；P0 平台稿由版本化确定性转换器派生 |
 | 模型接入 | 默认 Mock；提供 OpenAI-compatible 文本/图像提供商的接入边界，不内置独立模型网关 |
 | 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验；超时不会盲目重试 |
-| 平台接入 | 通过本机 WechatSync 读取 CSDN、微信公众号、今日头条的登录状态，并在明确确认后保存平台草稿；不会点击最终发布 |
+| 平台接入 | 通过本机 WechatSync 动态读取当前已登录且已适配的平台，并在明确确认后保存平台草稿；不会点击最终发布 |
 | 工作流定制 | 版本化声明式工作流、必需节点与 DAG 校验；不执行用户提供的任意 Python/JavaScript |
 | 万能导互通 | 通过 `ContentPackage v1` 交换 Markdown、素材、哈希和来源信息，不共享数据库或凭据 |
 
@@ -114,7 +114,7 @@ Sidecar，也不能执行发布。
 详细演示步骤见
 [`docs/development/manual-demo.md`](docs/development/manual-demo.md)。
 其中也包含显式 opt-in 的 SiliconFlow 真实模型 E2E 命令；该命令真实生成正文与图片，
-但发布阶段固定使用本地 dry-run，不会写入微信公众号、CSDN 或今日头条。
+但发布阶段固定使用本地 dry-run，不会写入任何内容平台。
 
 ## 安全设计
 
@@ -126,8 +126,8 @@ Sidecar，也不能执行发布。
   并核验，不能盲目重试。
 - 浏览器任务只携带文章、目标来源、过期时间和一次性 nonce；扩展不读取或导出 Cookie，
   不点击最终发布按钮。
-- 文章页的 WechatSync 同步只读取平台 ID 与已登录状态，并通过本机桥请求保存草稿；
-  WebView 不接触 Cookie、桥接令牌或账号名称。最终发布仍由用户在平台页面完成。
+- 文章页的 WechatSync 同步只读取平台 ID、已登录状态和插件提供的账号显示名，并通过本机桥请求保存草稿；
+  WebView 不接触 Cookie、桥接令牌或账号凭据。最终发布仍由用户在平台页面完成。
 - `pnpm dev:web` 明确不具备 Sidecar 与秘密访问能力。
 
 这是 P0 安全基线，不等于经过生产安全审计。真实凭据、账号和未发布稿件不要放进公开

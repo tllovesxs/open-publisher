@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import uuid4
 
 from pydantic import (
@@ -19,7 +19,13 @@ from pydantic import (
     model_validator,
 )
 
-PlatformName = Literal["wechat", "csdn", "toutiao"]
+# Adapter IDs are discovered from the locally connected WechatSync extension.
+# Keep the value constrained for path and protocol safety without maintaining a
+# stale, product-specific allowlist in the Python runtime.
+PlatformName = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$"),
+]
 BrowserBodyFormat = Literal["markdown", "plain"]
 
 MAX_BROWSER_TASK_TTL_SECONDS = 10 * 60

@@ -24,11 +24,12 @@ import {
   defaultAgents,
   defaultTemplates,
 } from "./data/contentStudio";
-import { platforms } from "./data/mock";
+import { platformDefinitionFor, platforms } from "./data/platforms";
 import {
   desktopBridge,
   type ConfigureModelRequest,
   type DisabledOptionalNodeId,
+  type GitHubApplicationInfo,
   type ModelConfigurationSummary,
   type ModelConnectionTestSummary,
   type PublishPlanSummary,
@@ -603,11 +604,11 @@ function describeWorkflowActivity(
   const node = nodeId ? workflowNodeLabel[nodeId] : null;
   switch (event.eventType) {
     case "run.queued":
-      return { message: "工作流已进入本地运行队列", phase: "等待 Agent 工作流启动", tone: "info" };
+      return { message: "创作任务已进入本地队列", phase: "正在准备创作", tone: "info" };
     case "run.started":
-      return { message: "本地 Agent 工作流已开始执行", phase: "多 Agent 工作流正在执行", tone: "info" };
+      return { message: "AI 已开始处理创作要求", phase: "AI 正在创作", tone: "info" };
     case "run.budget_reserved":
-      return { message: "本次模型调用预算已确认", phase: "多 Agent 工作流正在执行", tone: "info" };
+      return { message: "本次创作资源已确认", phase: "AI 正在创作", tone: "info" };
     case "run.node_started":
       return {
         message: `${agent} 正在执行${node}`,
@@ -641,11 +642,11 @@ function describeWorkflowActivity(
     case "run.interrupted":
       return { message: "工作流正在等待人工审核", phase: "等待人工审核", tone: "info" };
     case "run.failed":
-      return { message: "工作流已记录失败状态", phase: "文章生成失败", tone: "error" };
+      return { message: "本次创作未完成", phase: "文章生成失败", tone: "error" };
     case "run.completed":
-      return { message: "工作流已完成", phase: "文章生成完成", tone: "success" };
+      return { message: "文章处理已完成", phase: "文章生成完成", tone: "success" };
     default:
-      return { message: "工作流状态已更新", phase: "多 Agent 工作流正在执行", tone: "info" };
+      return { message: "AI 正在继续处理文章", phase: "AI 正在创作", tone: "info" };
   }
 }
 
@@ -961,6 +962,10 @@ export default function App() {
   const [modelConfiguration, setModelConfiguration] =
     useState<ModelConfigurationSummary | null>(null);
   const [modelTest, setModelTest] = useState<ModelConnectionTestSummary | null>(null);
+  const [githubApplicationInfo, setGithubApplicationInfo] =
+    useState<GitHubApplicationInfo | null>(null);
+  const [githubApplicationLoading, setGithubApplicationLoading] = useState(false);
+  const [githubApplicationError, setGithubApplicationError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [configuringModel, setConfiguringModel] = useState(false);
   const [wechatSyncStatus, setWechatSyncStatus] =
@@ -1109,17 +1114,32 @@ export default function App() {
   };
 
   const configuredPlatforms = useMemo(
-    () =>
-      platforms.map((platform) => {
-        const status = wechatSyncStatus?.platforms.find(
-          (item) => item.id === platform.id,
-        );
+    () => {
+      const bridgePlatforms = wechatSyncStatus?.platforms ?? [];
+      const bridgeById = new Map(bridgePlatforms.map((platform) => [platform.id, platform]));
+      const known = platforms.map((platform) => {
+        const bridge = bridgeById.get(platform.id);
         return {
           ...platform,
-          status: status?.authenticated ? "connected" as const : platform.status,
+          status: bridge?.authenticated ? "connected" as const : platform.status,
+          accountLabel: bridge?.accountLabel ?? null,
         };
-      }),
+      });
+      const additions = bridgePlatforms
+        .filter((platform) => !known.some((candidate) => candidate.id === platform.id))
+        .map((platform) => ({
+          ...platformDefinitionFor(platform.id),
+          status: platform.authenticated ? "connected" as const : "not_connected" as const,
+          accountLabel: platform.accountLabel,
+        }));
+      return [...known, ...additions];
+    },
     [wechatSyncStatus],
+  );
+
+  const publishablePlatforms = useMemo(
+    () => configuredPlatforms.filter((platform) => platform.status === "connected"),
+    [configuredPlatforms],
   );
 
   const selectedArticle =
@@ -1164,7 +1184,11 @@ export default function App() {
 
   const requireImageModel = () => {
     if (!requireTextModel()) return false;
-    if (!modelConfiguration?.imageBaseUrl || !modelConfiguration.imageModel) {
+    if (
+      !modelConfiguration?.imageBaseUrl ||
+      !modelConfiguration.imageModel ||
+      !modelConfiguration.imageSecretConfigured
+    ) {
       const message = "请先在设置的“生图模型”中完成图片 API 与模型配置。";
       setModelError(message);
       setActiveNav("settings");
@@ -2156,7 +2180,7 @@ export default function App() {
         current
           ? {
               ...current,
-              phase: "多 Agent 工作流正在执行",
+              phase: "AI 正在创作",
               logs: [
                 ...current.logs,
                 activityLog(
@@ -2166,7 +2190,7 @@ export default function App() {
                 ),
                 activityLog(
                   `workflow-started-${startedAt}`,
-                  "已向本地主写作 Agent 提交创作请求",
+                  "已将创作要求交给写作 Agent",
                 ),
               ],
             }
@@ -2258,7 +2282,7 @@ export default function App() {
                 ...current.logs,
                 activityLog(
                   `workflow-completed-${startedAt}`,
-                  `工作流已完成，已按模板合成固定片段并生成修订 ${composed.revisionNumber}`,
+                  `文章已处理完成，已保存修订 ${composed.revisionNumber}`,
                   "success",
                 ),
               ],
@@ -2267,7 +2291,7 @@ export default function App() {
       );
       setActiveNav("articles");
       setToast(
-        `文章已生成 · 修订 ${composed.revisionNumber} · ${summary.artifacts.length} 项产物`,
+        `文章已生成 · 修订 ${composed.revisionNumber}`,
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -2838,6 +2862,20 @@ export default function App() {
     }
   };
 
+  const checkGitHubApplicationInfo = async () => {
+    if (githubApplicationLoading) return;
+    setGithubApplicationLoading(true);
+    setGithubApplicationError(null);
+    try {
+      setGithubApplicationInfo(await desktopBridge.githubApplicationInfo());
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setGithubApplicationError(detail.slice(0, 160));
+    } finally {
+      setGithubApplicationLoading(false);
+    }
+  };
+
   const renderPage = () => {
     switch (activeNav) {
       case "create":
@@ -2887,7 +2925,7 @@ export default function App() {
             onRunWorkflow={() => void improveCurrentArticle()}
             onSave={() => void saveCurrentArticle()}
             onSelect={selectArticle}
-            platforms={configuredPlatforms}
+            platforms={publishablePlatforms}
             publishing={publishAction === "process"}
             saving={saving}
             selectedArticle={selectedArticle}
@@ -2929,7 +2967,7 @@ export default function App() {
             onSelectArticle={selectArticle}
             onToggleTarget={togglePublishTarget}
             plan={currentPublishSession?.plan ?? null}
-            platforms={configuredPlatforms}
+            platforms={publishablePlatforms}
             receipts={currentPublishSession?.receipts ?? []}
             selectedArticle={selectedArticle}
             selectedTargets={publishTargets}
@@ -2969,7 +3007,12 @@ export default function App() {
             modelConfiguration={modelConfiguration}
             modelError={modelError}
             modelTest={modelTest}
+            githubApplicationInfo={githubApplicationInfo}
+            githubApplicationLoading={githubApplicationLoading}
+            githubApplicationError={githubApplicationError}
             onConfigureModel={(request) => void configureModel(request)}
+            onCheckGitHubApplicationInfo={() => void checkGitHubApplicationInfo()}
+            onRevealSecret={(kind) => desktopBridge.revealModelSecret(kind)}
             onRefreshWechatSync={() => void refreshWechatSyncStatus()}
             onToggleNode={toggleWorkflowNode}
             platforms={configuredPlatforms}

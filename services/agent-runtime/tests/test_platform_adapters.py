@@ -124,10 +124,10 @@ def test_wechat_draft_payload_is_body_only_and_rejects_active_html() -> None:
         )
 
 
-@pytest.mark.parametrize("platform", ["wechat", "csdn", "toutiao"])
+@pytest.mark.parametrize("platform", ["wechat", "csdn", "toutiao", "zhihu", "xiaohongshu"])
 def test_browser_task_matches_mv3_protocol_and_is_short_lived(platform: str) -> None:
     task = BrowserDraftTaskFactory.create(
-        platform=platform,  # type: ignore[arg-type]
+        platform=platform,
         title="平台草稿",
         content="# 正文",
         nonce="abcdefghijklmnopqrstuvwxyzABCDEF",

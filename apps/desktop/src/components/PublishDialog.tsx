@@ -122,14 +122,22 @@ export function PublishDialog({
             <small>{selectedTargets.length} 个已选</small>
           </div>
           <div className="publish-dialog__platforms">
+            {platforms.length === 0 && (
+              <div className="publish-dialog__empty">
+                <CircleAlert size={16} />
+                <span>暂无已登录的可发布平台。请在浏览器中登录后刷新状态。</span>
+              </div>
+            )}
             {platforms.map((platform) => {
               const authenticated = platformStatus.get(platform.id) === true;
               const checked = selected.has(platform.id);
               return (
                 <label className={`${checked ? "is-selected " : ""}${authenticated ? "" : "is-unavailable"}`} key={platform.id}>
                   <input checked={checked} disabled={!authenticated || publishing} onChange={() => togglePlatform(platform.id)} type="checkbox" />
-                  <span className={`platform-logo platform-logo--${platform.id}`}>{platform.shortName.slice(0, 1)}</span>
-                  <span><strong>{platform.name}</strong><small>{authenticated ? "已登录，可保存草稿" : "未登录或未检测到账号"}</small></span>
+                  <span className={`platform-logo platform-logo--${platform.id}`}>
+                    {platform.iconUrl ? <img alt="" src={platform.iconUrl} /> : platform.shortName.slice(0, 1)}
+                  </span>
+                  <span><strong>{platform.name}</strong><small>{authenticated ? `${platform.accountLabel ? `${platform.accountLabel} · ` : ""}已登录，可保存草稿` : "未登录或未检测到账号"}</small></span>
                   {authenticated ? <CheckCircle2 className="publish-dialog__state" size={17} /> : <CircleAlert className="publish-dialog__state" size={17} />}
                 </label>
               );

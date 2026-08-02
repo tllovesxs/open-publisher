@@ -77,7 +77,9 @@ def test_connection_profile_rejects_nested_secrets_and_returns_public_dto(client
             "secret_ref": "env://OPENAI_API_KEY",
             "config": {
                 "options": [
-                    {"value": "sk-this-is-obviously-a-plaintext-secret-123456"}
+                    # Deliberately non-production: validates that an opaque
+                    # public field cannot hide a key-shaped plaintext value.
+                    {"value": "sk-test-only-placeholder-credential-000001"}
                 ]
             },
         },

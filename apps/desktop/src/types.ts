@@ -7,7 +7,8 @@ export type NavKey =
   | "media"
   | "settings";
 
-export type PlatformId = "wechat" | "csdn" | "toutiao";
+/** WechatSync adapter IDs are discovered at runtime and are not a closed union. */
+export type PlatformId = string;
 
 export type ArticleStatus = "draft" | "review" | "ready" | "published";
 
@@ -31,6 +32,9 @@ export interface PlatformDefinition {
   shortName: string;
   limit: string;
   status: "connected" | "needs_attention" | "not_connected";
+  iconUrl?: string;
+  homepage?: string;
+  accountLabel?: string | null;
 }
 
 export interface StudioSkill {

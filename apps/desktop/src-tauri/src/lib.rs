@@ -6,12 +6,13 @@ use supervisor::{
     BatchTopicPlanRequest, BatchTopicPlanSummary, ConfigureModelRequest, ConnectionProfilePublic,
     CreateConnectionProfileRequest, CreateGenerationBatchRequest, CreatePublishPlanRequest,
     ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary, GenerationBatchDetail,
-    GenerationBatchRequest, GenerationItemRequest, ModelConfigurationSummary,
-    ModelConnectionTestSummary, ProcessPublishJobRequest, ProcessPublishJobSummary,
-    PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor, RewriteArticleRequest,
-    RewriteArticleSummary, RunWorkflowRequest, RunWorkflowSummary, RuntimeSnapshot,
-    SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor, StoredArticleSummary,
-    TemplateExtractionSummary, WechatSyncBridgeStatus, WorkflowActivitySummary,
+    GenerationBatchRequest, GenerationItemRequest, GitHubApplicationInfo,
+    ModelConfigurationSummary, ModelConnectionTestSummary, ModelSecretKind,
+    ProcessPublishJobRequest, ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary,
+    PythonSidecarSupervisor, RewriteArticleRequest, RewriteArticleSummary, RunWorkflowRequest,
+    RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor,
+    StoredArticleSummary, TemplateExtractionSummary, WechatSyncBridgeStatus,
+    WorkflowActivitySummary,
 };
 use tauri::{Emitter, Manager};
 
@@ -288,6 +289,17 @@ async fn model_configuration(
 }
 
 #[tauri::command]
+async fn reveal_model_secret(
+    kind: ModelSecretKind,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.reveal_model_secret(kind))
+        .await
+        .map_err(|_| "model secret reveal request was cancelled".to_owned())?
+}
+
+#[tauri::command]
 async fn test_model_connection(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<ModelConnectionTestSummary, String> {
@@ -295,6 +307,16 @@ async fn test_model_connection(
     tauri::async_runtime::spawn_blocking(move || supervisor.test_model_connection())
         .await
         .map_err(|_| "model connection test was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn github_application_info(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<GitHubApplicationInfo, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.github_application_info())
+        .await
+        .map_err(|_| "GitHub update request was cancelled".to_owned())?
 }
 
 #[tauri::command]
@@ -345,7 +367,9 @@ pub fn run() {
             create_connection_profile,
             configure_model,
             model_configuration,
+            reveal_model_secret,
             test_model_connection,
+            github_application_info,
             wechat_sync_status
         ])
         .run(tauri::generate_context!())

@@ -40,6 +40,7 @@ from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRe
 from open_publisher_runtime.workflows.preset import PresetArticleWorkflow
 
 MODEL_API_KEY_ENV = "OPEN_PUBLISHER_MODEL_API_KEY"
+IMAGE_API_KEY_ENV = "OPEN_PUBLISHER_IMAGE_API_KEY"
 LEGACY_SILICONFLOW_API_KEY_ENV = "OPEN_PUBLISHER_SILICONFLOW_API_KEY"
 TEXT_BASE_URL_ENV = "OPEN_PUBLISHER_TEXT_BASE_URL"
 TEXT_MODEL_ENV = "OPEN_PUBLISHER_TEXT_MODEL"
@@ -52,6 +53,7 @@ GITHUB_TOKEN_ENV = "OPEN_PUBLISHER_GITHUB_TOKEN"
 LOCAL_DEMO_ENV = "OPEN_PUBLISHER_LOCAL_DEMO"
 MODEL_ENV_VARIABLES = (
     MODEL_API_KEY_ENV,
+    IMAGE_API_KEY_ENV,
     LEGACY_SILICONFLOW_API_KEY_ENV,
     TEXT_BASE_URL_ENV,
     TEXT_MODEL_ENV,
@@ -125,9 +127,10 @@ def model_access_from_env(
     values = os.environ if environment is None else environment
     generic_api_key = _environment_value(values, MODEL_API_KEY_ENV)
     legacy_api_key = _environment_value(values, LEGACY_SILICONFLOW_API_KEY_ENV)
-    api_key = generic_api_key or legacy_api_key
+    text_api_key = generic_api_key or legacy_api_key
+    image_api_key = _environment_value(values, IMAGE_API_KEY_ENV) or text_api_key
     local_demo = _local_demo_enabled(values)
-    if api_key is None and local_demo:
+    if text_api_key is None and local_demo:
         return ModelAccessLayer(
             text_provider=MockTextProvider(),
             image_provider=MockImageProvider(),
@@ -146,10 +149,10 @@ def model_access_from_env(
         image_model = image_model or SILICONFLOW_IMAGE_MODEL
 
     text_provider = UnconfiguredTextProvider()
-    if api_key and text_base_url and text_model:
+    if text_api_key and text_base_url and text_model:
         text_provider = OpenAICompatibleTextProvider(
             base_url=text_base_url,
-            api_key=api_key,
+            api_key=text_api_key,
             default_model=text_model,
             timeout_seconds=timeout_seconds,
             max_output_tokens=1400,
@@ -162,13 +165,13 @@ def model_access_from_env(
         if host.strip()
     )
     image_provider = UnconfiguredImageProvider()
-    if api_key and image_base_url and image_model:
+    if image_api_key and image_base_url and image_model:
         siliconflow_image = _is_siliconflow_url(image_base_url)
         if siliconflow_image and not trusted_hosts:
             trusted_hosts = SILICONFLOW_IMAGE_HOSTS
         image_provider = OpenAICompatibleImageProvider(
             base_url=image_base_url,
-            api_key=api_key,
+            api_key=image_api_key,
             default_model=image_model,
             timeout_seconds=timeout_seconds,
             trusted_image_hosts=trusted_hosts,

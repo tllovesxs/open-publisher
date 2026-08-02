@@ -179,10 +179,11 @@ describe("desktopBridge browser preview boundary", () => {
     const configuration = await desktopBridge.configureModel({
       name: "Session model",
       baseUrl: "https://example.com/v1",
-      apiKey: "test-only-secret",
+      textApiKey: "test-only-secret",
       textModel: "test-text-model",
       imageBaseUrl: null,
       imageModel: null,
+      imageApiKey: "",
       imageTrustedHosts: [],
       tavilyApiKey: "",
       githubToken: "",
