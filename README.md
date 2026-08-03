@@ -1,10 +1,15 @@
-# Open Publisher
+# 稿流（Open Publisher）
 
 > 一个本地优先、以 Markdown 为内容源的 AI 写作与多平台发布工作台。
 
 Open Publisher 把研究、写作、审核、配图规划、平台改写和发布任务放进同一个桌面工作区。
 它不是“让 Agent 拿着账号自动乱点”的脚本：Agent 只生产结构化内容，真正的发布动作由
 可审计、可重试的确定性任务队列执行。
+
+后续产品与技术改进统一遵循
+[`稿流项目基线规范 v0.2`](docs/product/project-baseline.md)。该文档明确区分当前实现与
+目标设计，并固定了产品范围、Agent/Prompt、LangGraph 工作流、数据契约、安全边界、
+测试门禁和实施顺序。
 
 当前版本为 `0.1.0-alpha`。P0 主要用于验证产品架构和本地演示闭环；默认使用
 deterministic mock（确定性模拟）提供商，不会向真实模型或内容平台写入数据。
@@ -13,9 +18,9 @@ deterministic mock（确定性模拟）提供商，不会向真实模型或内�
 
 | 能力 | 当前状态 |
 | --- | --- |
-| 桌面工作区 | React + Tauri v2，包含 Markdown 编辑、预览、修订、工作流、素材、连接、技能、任务与发布界面 |
+| 桌面工作区 | React + Tauri v2，一级导航为创作、文章、模板、素材库和设置；发布是文章内的受控动作 |
 | 内容模型 | Markdown 主稿、不可变 `ArticleRevision`、内容寻址 Artifact 和平台派生稿 |
-| 多 Agent | Python Harness + LangGraph；研究、提纲、写作、自然化、审核、风险和视觉规划以结构化 Artifact 交接；P0 平台稿由版本化确定性转换器派生 |
+| Agent 运行时 | Python Harness + LangGraph；当前默认主路径是工具增强的写作节点与确定性风险检查，其他节点按运行策略启用 |
 | 模型接入 | 默认 Mock；提供 OpenAI-compatible 文本/图像提供商的接入边界，不内置独立模型网关 |
 | 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验；超时不会盲目重试 |
 | 平台接入 | 通过本机 WechatSync 动态读取当前已登录且已适配的平台，并在明确确认后保存平台草稿；不会点击最终发布 |
