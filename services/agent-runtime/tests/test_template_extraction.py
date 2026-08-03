@@ -122,6 +122,66 @@ def test_template_extraction_replaces_a_repeated_source_title(client) -> None:
     assert "Wandao" not in response.text
 
 
+def test_template_extraction_keeps_analysis_when_metadata_mentions_source_title(client) -> None:
+    client.app.state.container.model_access.text_provider = StaticTextProvider(
+        json.dumps(
+            {
+                "name": "Wandao 更新文章写法",
+                "description": "复用 Wandao 发布说明的递进式讲解节奏。",
+                "category": "产品更新",
+                "markdown": "# {{title}}\n\n{{lead}}\n\n> {{key_claim}}\n\n## {{feature_heading}}\n\n{{feature_detail}}\n\n{{closing}}",
+                "style_profile": {"tone": "坦诚、技术化", "pacing": "先问题后改动"},
+                "structure_profile": {"section_pattern": "痛点、能力、使用建议"},
+                "layout_profile": {"use_blockquotes": True},
+                "fixed_blocks": [],
+                "variables": ["title", "lead", "key_claim", "feature_heading", "feature_detail", "closing"],
+                "usage_instructions": "替换事实和观点，保留由痛点到行动建议的推进。",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    response = client.post(
+        "/api/v1/templates/extract",
+        json={"source_markdown": "# Wandao 体积下降 42%\n\n## 改动\n\n文章正文"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["name"] == "Wandao 更新文章写法"
+    assert payload["style_profile"]["tone"] == "坦诚、技术化"
+    assert "{{key_claim}}" in payload["markdown"]
+
+
+def test_template_extraction_adds_title_slot_without_discarding_model_structure(client) -> None:
+    client.app.state.container.model_access.text_provider = StaticTextProvider(
+        json.dumps(
+            {
+                "name": "递进说明模板",
+                "description": "保留问题、转折和建议的节奏。",
+                "category": "说明文",
+                "markdown": "# 具体标题\n\n问题说明\n\n## 具体章节\n\n解决方案与行动建议",
+                "style_profile": {"tone": "直接"},
+                "structure_profile": {"section_pattern": "问题到方案"},
+                "layout_profile": {},
+                "fixed_blocks": [],
+                "variables": [],
+                "usage_instructions": "按相同顺序填写新主题。",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    response = client.post(
+        "/api/v1/templates/extract",
+        json={"source_markdown": "# 原始标题\n\n正文"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["markdown"].startswith("# {{title}}")
+    assert "## 具体章节" in response.json()["markdown"]
+
+
 def test_template_extraction_validates_source_before_calling_model(client) -> None:
     response = client.post("/api/v1/templates/extract", json={"source_markdown": "  "})
     assert response.status_code == 422

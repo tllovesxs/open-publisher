@@ -36,6 +36,7 @@ type EditorSource = "manual" | "extracted";
 
 const MAX_SOURCE_MARKDOWN_CHARACTERS = 60_000;
 const MAX_SOURCE_FILE_BYTES = 512 * 1024;
+const EXTRACTION_WAIT_LIMIT_MS = 90_000;
 
 const blankTemplate = (): MarkdownTemplate => ({
   id: `template-${Date.now()}`,
@@ -103,6 +104,7 @@ export function TemplatesPage({
   const [query, setQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceInputRef = useRef<HTMLTextAreaElement>(null);
+  const extractionAttemptRef = useRef(0);
   const selected = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -131,9 +133,9 @@ export function TemplatesPage({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || extracting) return;
+      if (event.key !== "Escape") return;
       if (editing) setEditing(null);
-      else if (extractionOpen) setExtractionOpen(false);
+      else if (extractionOpen) closeExtraction();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -150,7 +152,10 @@ export function TemplatesPage({
   };
 
   const closeExtraction = () => {
-    if (extracting) return;
+    // The native command cannot be cancelled after dispatch. Invalidate the attempt so a
+    // late response never reopens the editor or overwrites a later retry.
+    extractionAttemptRef.current += 1;
+    setExtracting(false);
     setExtractionOpen(false);
     setExtractError(null);
   };
@@ -192,10 +197,29 @@ export function TemplatesPage({
       );
       return;
     }
+    const attempt = extractionAttemptRef.current + 1;
+    extractionAttemptRef.current = attempt;
     setExtracting(true);
     setExtractError(null);
     try {
-      const template = await onExtractTemplate(sourceMarkdown);
+      const template = await new Promise<MarkdownTemplate>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          reject(new Error("分析等待超过 90 秒，已停止等待。请检查模型连接后重试。"));
+        }, EXTRACTION_WAIT_LIMIT_MS);
+        void Promise.resolve()
+          .then(() => onExtractTemplate(sourceMarkdown))
+          .then(
+            (result) => {
+              window.clearTimeout(timer);
+              resolve(result);
+            },
+            (error: unknown) => {
+              window.clearTimeout(timer);
+              reject(error);
+            },
+          );
+      });
+      if (attempt !== extractionAttemptRef.current) return;
       setEditorSource("extracted");
       setEditing(template);
       setExtractionOpen(false);
@@ -203,9 +227,10 @@ export function TemplatesPage({
       setSourceFileName(null);
       setRightsConfirmed(false);
     } catch (error) {
+      if (attempt !== extractionAttemptRef.current) return;
       setExtractError(`提取失败：${errorMessage(error)}`);
     } finally {
-      setExtracting(false);
+      if (attempt === extractionAttemptRef.current) setExtracting(false);
     }
   };
 
@@ -327,7 +352,6 @@ export function TemplatesPage({
               <button
                 aria-label="关闭文章提取"
                 className="icon-button"
-                disabled={extracting}
                 onClick={closeExtraction}
                 type="button"
               >
@@ -398,8 +422,8 @@ export function TemplatesPage({
               {extractError && <p className="form-error" role="alert">{extractError}</p>}
             </div>
             <footer>
-              <button className="button button--quiet" disabled={extracting} onClick={closeExtraction} type="button">
-                取消
+              <button className="button button--quiet" onClick={closeExtraction} type="button">
+                {extracting ? "停止等待" : "取消"}
               </button>
               <button className="button button--primary" disabled={!canExtract} onClick={() => void extractTemplate()} type="button">
                 {extracting ? <LoaderCircle aria-hidden="true" className="is-spinning" size={16} /> : <Sparkles aria-hidden="true" size={16} />}

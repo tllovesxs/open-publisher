@@ -159,18 +159,6 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     raise TemplateExtractionError("model response did not contain a JSON object")
 
 
-def _normalized_comparison_text(value: str) -> str:
-    return re.sub(r"[^\w]+", "", value.casefold())
-
-
-def _source_primary_heading(source_markdown: str) -> str:
-    for line in source_markdown.splitlines():
-        match = PRIMARY_HEADING_PATTERN.match(line)
-        if match:
-            return _normalized_comparison_text(match.group("title"))
-    return ""
-
-
 def _source_heading_text(source_markdown: str) -> str:
     for line in source_markdown.splitlines():
         match = PRIMARY_HEADING_PATTERN.match(line)
@@ -198,7 +186,7 @@ def _sanitize_reusable_text(value: str, source_title: str, *, fixed_block: bool 
         sanitized,
         flags=re.IGNORECASE,
     )
-    if source_title and len(_normalized_comparison_text(source_title)) >= 6:
+    if source_title:
         sanitized = sanitized.replace(source_title, "{{title}}")
     return sanitized
 
@@ -224,6 +212,17 @@ def _fallback_markdown(source_markdown: str) -> str:
     return "\n".join(lines)
 
 
+def _ensure_reusable_title_slot(markdown: str) -> str:
+    """Keep a useful model analysis even when it omitted the required title slot."""
+
+    if PLACEHOLDER_PATTERN.search(markdown):
+        return markdown
+    heading = PRIMARY_HEADING_PATTERN.search(markdown)
+    if heading:
+        return f"{markdown[:heading.start()]}# {{{{title}}}}{markdown[heading.end():]}"
+    return f"# {{{{title}}}}\n\n{markdown}"
+
+
 def _source_fingerprint(source_markdown: str) -> str:
     return f"sha256:{sha256(source_markdown.encode('utf-8')).hexdigest()}"
 
@@ -246,20 +245,15 @@ def _validate_template(
         for block in candidate.fixed_blocks
     ]
     candidate = candidate.model_copy(
-        update={"markdown": sanitized_markdown, "fixed_blocks": sanitized_blocks}
+        update={
+            "markdown": _ensure_reusable_title_slot(sanitized_markdown),
+            "fixed_blocks": sanitized_blocks,
+        }
     )
-    if not PLACEHOLDER_PATTERN.search(candidate.markdown):
-        raise TemplateExtractionError("template markdown does not contain a reusable placeholder")
     if RAW_URL_PATTERN.search(candidate.markdown):
         raise TemplateExtractionError("template markdown contains a concrete external URL")
     if any(RAW_URL_PATTERN.search(block.content) for block in candidate.fixed_blocks):
         raise TemplateExtractionError("template fixed blocks contain a concrete external URL")
-    source_title = _source_primary_heading(source_markdown)
-    template_text = _normalized_comparison_text(
-        f"{candidate.name}\n{candidate.description}\n{candidate.markdown}"
-    )
-    if len(source_title) >= 8 and source_title in template_text:
-        raise TemplateExtractionError("template repeated the source article title")
     return candidate
 
 
@@ -275,12 +269,13 @@ def _extraction_prompt(source_markdown: str) -> str:
 2. JSON 必须含有 name、description、category、markdown、style_profile、structure_profile、
    layout_profile、fixed_blocks、variables、usage_instructions 字段。
 3. name、description、category 必须是便于管理和选择的中文短文本。
-4. markdown 只输出结构示意，不输出原文。它保留标题层级、清单、引用、代码块和配图位置，
-   所有内容必须使用 {{lower_snake_case}} 占位符。
+4. markdown 只输出结构示意，不输出原文。必须高保真保留标题层级、段落与清单的先后顺序、
+   引用/代码块/强调的使用习惯和配图位置。具体事实、产品名、数据、链接和原句改成
+   {{lower_snake_case}} 占位符，不要把参考文章简化成通用的“标题-正文-结尾”骨架。
 5. style_profile 描述可迁移的文风、读者、视角、句式、节奏和信息密度；structure_profile 描述开头、
    章节、结尾、标题层级和段落习惯；layout_profile 描述列表、表格、引用、代码块和图片位置。
-6. fixed_blocks 必须返回空数组。项目介绍、链接和行动号召只能由用户之后自行添加，
-   不能从参考文章中提取。
+6. fixed_blocks 返回空数组。项目介绍、链接和行动号召由用户在审核页自行添加，
+   不从参考文章直接复制。
 7. markdown 至少包含一个合法占位符。链接位置使用 {{reference_url}}，图片位置使用 {{image_url}}。
 8. variables 返回 markdown 中使用的占位符名称（不含花括号）。
 

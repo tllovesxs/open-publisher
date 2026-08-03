@@ -233,7 +233,7 @@ const fn default_max_web_search_calls() -> u8 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct VisualCompositionRequest {
     #[serde(default = "default_visual_mode")]
     pub mode: String,
@@ -5450,6 +5450,33 @@ mod tests {
             model: None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn visual_composition_accepts_the_desktop_camel_case_contract() {
+        let composition: VisualCompositionRequest = serde_json::from_value(serde_json::json!({
+            "mode": "auto",
+            "targetCount": 2,
+            "assets": [{
+                "id": "asset-1",
+                "alt": "产品界面",
+                "description": "用于说明导出流程"
+            }],
+            "assetScope": "library",
+            "preferredType": "infographic",
+            "density": "balanced",
+            "style": "sketch-notes",
+            "palette": "macaron",
+            "preferredImageBackend": "auto",
+            "generationBatchSize": 3,
+            "skipConfirmation": false
+        }))
+        .expect("desktop payload uses camelCase");
+
+        assert_eq!(composition.asset_scope, "library");
+        assert_eq!(composition.preferred_image_backend, "auto");
+        assert_eq!(composition.generation_batch_size, 3);
+        assert_eq!(composition.assets[0].description, "用于说明导出流程");
     }
 
     #[test]
