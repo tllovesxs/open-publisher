@@ -87,6 +87,8 @@ def test_complete_demo_closes_the_local_loop_without_network(client, monkeypatch
         "workflow.visual-material-selection",
         "workflow.visual-prompts",
         "workflow.writer-prompt",
+        "workflow.source-ledger",
+        "workflow.fact-ledger",
         "platform-variant.csdn",
         "platform-variant.wechat",
         "platform-variant.toutiao",
@@ -131,6 +133,8 @@ def test_complete_demo_honors_optional_node_selection(client) -> None:
         "workflow.raw-draft",
         "workflow.risk-report",
         "workflow.writer-prompt",
+        "workflow.source-ledger",
+        "workflow.fact-ledger",
         "platform-variant.wechat",
     }
 

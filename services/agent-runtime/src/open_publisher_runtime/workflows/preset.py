@@ -36,6 +36,11 @@ from open_publisher_runtime.workflows.baoyu_article_illustrator import (
     select_material_sources,
     target_image_count,
 )
+from open_publisher_runtime.workflows.evidence_ledgers import (
+    FactLedger,
+    SourceLedger,
+    build_evidence_ledgers,
+)
 from open_publisher_runtime.workflows.visual_plan import fallback_visual_plan
 
 try:
@@ -219,6 +224,8 @@ class PresetWorkflowOutput(BaseModel):
     risk_report: str
     visual_plan: VisualCompositionPlan
     source_evidence: list[SourceEvidence] = Field(default_factory=list)
+    source_ledger: SourceLedger
+    fact_ledger: FactLedger
     writer_prompt: WriterPromptProvenance
     engine: str
 
@@ -231,6 +238,8 @@ class WorkflowState(TypedDict):
     web_search_mode: WebSearchMode
     max_web_search_calls: int
     source_evidence: list[SourceEvidence]
+    source_ledger: SourceLedger
+    fact_ledger: FactLedger
     research_report: str
     outline: str
     raw_draft: str
@@ -378,7 +387,7 @@ class PresetArticleWorkflow:
         self,
         state: WorkflowState,
         on_node_event: NodeEventCallback | None,
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         checkpoint_buffer = ""
 
         def persist_completed_paragraphs(*, force: bool) -> None:
@@ -416,6 +425,7 @@ class PresetArticleWorkflow:
 
         tools: list[dict[str, object]] = []
         source_evidence: list[SourceEvidence] = []
+        source_origins: dict[str, str] = {}
         if state["web_search_mode"] != "off":
             if self.web_search_tool is not None:
                 tools.append(self.web_search_tool.definition())
@@ -435,7 +445,11 @@ class PresetArticleWorkflow:
             ):
                 tools.append(self.github_repository_tool.definition())
 
-        def append_sources(sources: Sequence[SourceEvidence]) -> list[SourceEvidence]:
+        def append_sources(
+            sources: Sequence[SourceEvidence],
+            *,
+            source_origin: str,
+        ) -> list[SourceEvidence]:
             known_urls = {str(source.url) for source in source_evidence}
             appended: list[SourceEvidence] = []
             for source in sources:
@@ -447,6 +461,7 @@ class PresetArticleWorkflow:
                 source_evidence.append(saved)
                 appended.append(saved)
                 known_urls.add(str(saved.url))
+                source_origins[saved.source_id] = source_origin
             return appended
 
         def execute_tool(name: str, arguments: dict[str, object]) -> str:
@@ -459,6 +474,7 @@ class PresetArticleWorkflow:
                 sources = self.web_search_tool.search(query, max_results=max_results)
                 query_summary = " ".join(query.split())[:500]
                 tool_result = self.web_search_tool.tool_result
+                source_origin = "web_search"
             elif (
                 self.github_repository_tool is not None
                 and name == self.github_repository_tool.name
@@ -471,9 +487,10 @@ class PresetArticleWorkflow:
                 sources = self.github_repository_tool.inspect(repository)
                 query_summary = repository.strip()[:500]
                 tool_result = self.github_repository_tool.tool_result
+                source_origin = "github_repository"
             else:
                 raise ValueError("writer requested a tool that is not available")
-            appended_sources = append_sources(sources)
+            appended_sources = append_sources(sources, source_origin=source_origin)
             if on_node_event is not None:
                 on_node_event(
                     "draft",
@@ -633,7 +650,17 @@ class PresetArticleWorkflow:
             max_tool_calls=max(0, remaining_tool_calls),
         )
         persist_completed_paragraphs(force=True)
-        return {"raw_draft": response.text, "source_evidence": source_evidence}
+        source_ledger, fact_ledger = build_evidence_ledgers(
+            author_material=author_material,
+            source_evidence=source_evidence,
+            source_origins=source_origins,
+        )
+        return {
+            "raw_draft": response.text,
+            "source_evidence": source_evidence,
+            "source_ledger": source_ledger,
+            "fact_ledger": fact_ledger,
+        }
 
     def _naturalize(self, state: WorkflowState) -> dict[str, str]:
         response = self.model_access.generate_text(
@@ -907,6 +934,8 @@ class PresetArticleWorkflow:
             "web_search_mode": workflow_input.web_search_mode,
             "max_web_search_calls": workflow_input.max_web_search_calls,
             "source_evidence": [],
+            "source_ledger": SourceLedger(),
+            "fact_ledger": FactLedger(),
             "visual_composition": workflow_input.visual_composition,
             "research_report": "",
             "outline": "",
@@ -950,6 +979,8 @@ class PresetArticleWorkflow:
                 workflow_input.visual_composition,
             ),
             source_evidence=state["source_evidence"],
+            source_ledger=state["source_ledger"],
+            fact_ledger=state["fact_ledger"],
             writer_prompt=self.writer_prompt_provenance,
             engine=engine,
         )

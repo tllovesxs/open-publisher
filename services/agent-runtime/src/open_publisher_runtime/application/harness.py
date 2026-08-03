@@ -16,6 +16,10 @@ from open_publisher_runtime.domain.entities import (
 )
 from open_publisher_runtime.domain.enums import ApprovalStatus, RunStatus
 from open_publisher_runtime.domain.policies import RunPolicy
+from open_publisher_runtime.workflows.evidence_ledgers import (
+    fact_ledger_summary,
+    source_ledger_summary,
+)
 from open_publisher_runtime.workflows.preset import (
     PresetArticleWorkflow,
     PresetWorkflowInput,
@@ -35,6 +39,8 @@ WORKFLOW_ARTIFACT_STATE_KEYS = (
     "visual_material_selection_artifact_id",
     "visual_prompts_artifact_id",
     "writer_prompt_artifact_id",
+    "source_ledger_artifact_id",
+    "fact_ledger_artifact_id",
 )
 
 
@@ -351,6 +357,30 @@ class RunController:
                 metadata=artifact_metadata,
             )
             state_json["writer_prompt_artifact_id"] = writer_prompt_artifact.id
+            source_ledger_artifact = self.artifact_service.put_json(
+                kind="workflow.source-ledger",
+                value=output.source_ledger.model_dump(mode="json"),
+                metadata=artifact_metadata,
+            )
+            fact_ledger_artifact = self.artifact_service.put_json(
+                kind="workflow.fact-ledger",
+                value=output.fact_ledger.model_dump(mode="json"),
+                metadata=artifact_metadata,
+            )
+            state_json["source_ledger_artifact_id"] = source_ledger_artifact.id
+            state_json["fact_ledger_artifact_id"] = fact_ledger_artifact.id
+            state_json["source_ledger_summary"] = {
+                "schema_version": output.source_ledger.schema_version,
+                "artifact_id": source_ledger_artifact.id,
+                "content_hash": source_ledger_artifact.content_hash,
+                **source_ledger_summary(output.source_ledger),
+            }
+            state_json["fact_ledger_summary"] = {
+                "schema_version": output.fact_ledger.schema_version,
+                "artifact_id": fact_ledger_artifact.id,
+                "content_hash": fact_ledger_artifact.content_hash,
+                **fact_ledger_summary(output.fact_ledger),
+            }
             if "research" in enabled_node_ids:
                 research_artifact = self.artifact_service.put_text(
                     kind="workflow.research",

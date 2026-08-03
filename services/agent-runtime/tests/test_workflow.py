@@ -242,6 +242,8 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
                 "raw_draft_artifact_id",
                 "risk_artifact_id",
                 "writer_prompt_artifact_id",
+                "source_ledger_artifact_id",
+                "fact_ledger_artifact_id",
             )
         ]
         assert all(artifact is not None for artifact in persisted)
@@ -249,6 +251,8 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
             "workflow.raw-draft",
             "workflow.risk-report",
             "workflow.writer-prompt",
+            "workflow.source-ledger",
+            "workflow.fact-ledger",
         }
         raw_draft = artifacts.read_text(run["state_json"]["raw_draft_artifact_id"])
         assert raw_draft
@@ -259,6 +263,24 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         assert json.loads(artifacts.read_text(prompt_artifact.id)) == run["state_json"][
             "writer_prompt"
         ]
+        source_ledger = json.loads(
+            artifacts.read_text(run["state_json"]["source_ledger_artifact_id"])
+        )
+        fact_ledger = json.loads(
+            artifacts.read_text(run["state_json"]["fact_ledger_artifact_id"])
+        )
+
+    assert source_ledger["schema_version"] == "source_ledger.v1"
+    assert source_ledger["sources"][0]["source_id"] == "author-material"
+    assert source_ledger["sources"][0]["status"] == "user_provided"
+    assert fact_ledger["schema_version"] == "fact_ledger.v1"
+    assert all(fact["allowed_as_fact"] for fact in fact_ledger["facts"])
+    assert run["state_json"]["source_ledger_summary"]["artifact_id"] == run[
+        "state_json"
+    ]["source_ledger_artifact_id"]
+    assert run["state_json"]["fact_ledger_summary"]["artifact_id"] == run[
+        "state_json"
+    ]["fact_ledger_artifact_id"]
 
     writer_prompt = run["state_json"]["writer_prompt"]
     assert writer_prompt["id"] == "article-writer"
@@ -370,6 +392,28 @@ def test_named_project_promotion_resolves_sources_before_writing(
         event for event in detail["events"] if event["event_type"] == "run.node_tool_called"
     ]
     assert tool_events[0]["payload_json"]["tool"] == "web_search"
+    with client.app.state.container.database.session() as session:
+        artifacts = ArtifactService(
+            SqlAlchemyRuntimeRepository(session),
+            client.app.state.container.blob_store,
+        )
+        source_ledger = json.loads(
+            artifacts.read_text(run["state_json"]["source_ledger_artifact_id"])
+        )
+        fact_ledger = json.loads(
+            artifacts.read_text(run["state_json"]["fact_ledger_artifact_id"])
+        )
+    verified_source = next(
+        source for source in source_ledger["sources"] if source["source_id"] == "source-1"
+    )
+    assert verified_source["kind"] == "web_search"
+    assert verified_source["status"] == "verified"
+    assert any(
+        fact["status"] == "verified" and fact["source_ids"] == ["source-1"]
+        for fact in fact_ledger["facts"]
+    )
+    assert run["state_json"]["source_ledger_summary"]["verified_source_count"] == 1
+    assert run["state_json"]["fact_ledger_summary"]["verified_fact_count"] >= 1
 
 
 def test_named_project_promotion_fails_without_sources(client, article_payload) -> None:
@@ -412,6 +456,8 @@ def test_named_project_promotion_fails_without_sources(client, article_payload) 
     assert "ProjectEvidenceRequiredError" in run["error"]
     assert run["output_revision_id"] is None
     assert provider.calls == 0
+    assert "source_ledger_artifact_id" not in run["state_json"]
+    assert "fact_ledger_artifact_id" not in run["state_json"]
 
 
 def test_writer_registers_github_repository_as_a_bounded_research_tool(
@@ -1031,6 +1077,8 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
             "workflow.raw-draft",
             "workflow.risk-report",
             "workflow.writer-prompt",
+            "workflow.source-ledger",
+            "workflow.fact-ledger",
         }
 
     article_detail = client.get(
