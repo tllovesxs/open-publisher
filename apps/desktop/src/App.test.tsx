@@ -146,6 +146,7 @@ describe("desktop product flow", () => {
     expect(within(navigation).queryByRole("button", { name: "Skill" })).toBeNull();
     expect(within(navigation).queryByRole("button", { name: "智能体" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "批量" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "文章进度" })).toBeNull();
 
     fireEvent.click(within(navigation).getByRole("button", { name: "文章" }));
     expect(await screen.findByRole("heading", { name: "还没有文章" })).toBeVisible();
@@ -270,8 +271,8 @@ describe("desktop product flow", () => {
       () => expect((editor as HTMLTextAreaElement).value).toBe(streamedMarkdown),
       { timeout: 5_000 },
     );
-    fireEvent.click(await screen.findByRole("button", { name: "关闭进度提示" }));
     expect(screen.queryByRole("button", { name: "关闭进度提示" })).toBeNull();
+    expect(screen.getByText("正文正在流式写入")).toBeVisible();
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         agentInstructions: expect.arrayContaining([
@@ -312,7 +313,7 @@ describe("desktop product flow", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "停止生成" })[0]!);
     await waitFor(() => expect(cancelWorkflow).toHaveBeenCalledWith(expect.any(String)));
     expect(await screen.findByText("文章生成失败")).toBeVisible();
-    expect(screen.getByText("已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。")).toBeVisible();
+    expect(screen.getByText("失败原因：已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。")).toBeVisible();
     expect(screen.getAllByRole("button", { name: "重试本次生成" }).length).toBeGreaterThan(0);
 
     finishWorkflow?.();

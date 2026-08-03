@@ -17,6 +17,10 @@ import {
   type RewriteArticleSummary,
   type RewriteConversationMessage,
 } from "../lib/desktopBridge";
+import {
+  WorkflowWorkspace,
+  type WorkflowWorkspaceSnapshot,
+} from "./WorkflowWorkspace";
 
 export interface MarkdownSelection {
   start: number;
@@ -50,6 +54,22 @@ interface ArticleAssistantProps {
   ) => Promise<RewriteArticleSummary>;
   onApplyCandidate: (candidate: RewriteCandidate) => Promise<void>;
   onUndoLastRewrite: () => Promise<void>;
+  workflowSnapshot?: WorkflowWorkspaceSnapshot | null;
+  workflowProgress?: { title: string; detail: string; value: number | null } | null;
+  workflowFailure?: {
+    detail: string;
+    logs: Array<{
+      id: string;
+      timestamp: number;
+      message: string;
+      tone: "info" | "success" | "error";
+    }>;
+    retryable: boolean;
+  } | null;
+  workflowRetryable?: boolean;
+  onRetryWorkflow?: () => void;
+  onCancelWorkflow?: () => void;
+  cancellingWorkflow?: boolean;
 }
 
 const quickInstructions = ["表达更简洁", "补充可执行步骤", "调整为技术作者口吻"];
@@ -118,6 +138,13 @@ export function ArticleAssistant({
   onRewrite,
   onApplyCandidate,
   onUndoLastRewrite,
+  workflowSnapshot = null,
+  workflowProgress = null,
+  workflowFailure = null,
+  workflowRetryable = false,
+  onRetryWorkflow,
+  onCancelWorkflow,
+  cancellingWorkflow = false,
 }: ArticleAssistantProps) {
   const [open, setOpen] = useState(true);
   const [instruction, setInstruction] = useState("");
@@ -217,6 +244,19 @@ export function ArticleAssistant({
   const scopeLabel = activeSelections.length
     ? `${activeSelections.length} 个选中文本片段`
     : "整篇文章";
+  const activeWorkflowSnapshot = workflowSnapshot ?? (
+    workflowProgress || workflowFailure
+      ? {
+          runId: null,
+          status: workflowFailure ? "failed" : "running",
+          events: [],
+          artifacts: [],
+          visualPlan: null,
+          error: workflowFailure?.detail ?? null,
+          updatedAt: Date.now(),
+        } satisfies WorkflowWorkspaceSnapshot
+      : null
+  );
 
   const submit = async (nextInstruction = instruction) => {
     const normalized = nextInstruction.trim();
@@ -293,6 +333,19 @@ export function ArticleAssistant({
 
       {open && (
         <div className="article-assistant__content">
+          {activeWorkflowSnapshot && (
+            <WorkflowWorkspace
+              cancelling={cancellingWorkflow}
+              embedded
+              failureDetail={workflowFailure?.detail}
+              failureLogs={workflowFailure?.logs}
+              onCancel={onCancelWorkflow}
+              onRetry={onRetryWorkflow}
+              progress={workflowProgress}
+              retryable={workflowFailure?.retryable ?? workflowRetryable}
+              snapshot={activeWorkflowSnapshot}
+            />
+          )}
           <div className="article-assistant__scope" role="group" aria-label="修改范围">
             <button
               aria-pressed={scope === "article"}

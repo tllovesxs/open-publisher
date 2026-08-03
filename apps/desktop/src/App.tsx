@@ -9,7 +9,6 @@ import {
   type CreationLogEntry,
   type CreationRequest,
 } from "./components/CreatePage";
-import { LifecycleRail } from "./components/LifecycleRail";
 import { MediaPage } from "./components/MediaPage";
 import type { EditorMode } from "./components/MarkdownWorkbench";
 import type { WorkflowWorkspaceSnapshot } from "./components/WorkflowWorkspace";
@@ -1010,7 +1009,6 @@ export default function App() {
   const [visualConfirmation, setVisualConfirmation] = useState<VisualConfirmationState | null>(null);
   const [rewriteUndoArticleId, setRewriteUndoArticleId] = useState<string | null>(null);
   const rewriteUndoRef = useRef<Record<string, { before: string; after: string }>>({});
-  const dismissedWorkflowProgressArticleIds = useRef(new Set<string>());
   const lastWorkflowActivityAt = useRef(Date.now());
   const workflowExecutionSequenceRef = useRef(0);
   const activeWorkflowExecutionRef = useRef<{ articleId: string; id: number } | null>(null);
@@ -1039,15 +1037,7 @@ export default function App() {
   };
 
   const showArticleProgress = (progress: ArticleProgress) => {
-    if (dismissedWorkflowProgressArticleIds.current.has(progress.articleId)) return;
     setArticleProgress(progress);
-  };
-
-  const dismissArticleProgress = () => {
-    if (articleProgress) {
-      dismissedWorkflowProgressArticleIds.current.add(articleProgress.articleId);
-    }
-    setArticleProgress(null);
   };
 
   const requestVisualConfirmation = (
@@ -1237,12 +1227,6 @@ export default function App() {
       setRefreshingWechatSync(false);
     }
   };
-
-  const lifecycleStep = useMemo(() => {
-    if (activeNav === "create") return creatingArticle ? "draft" : "brief";
-    if (activeNav === "publish") return "publish";
-    return "edit";
-  }, [activeNav, creatingArticle]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2142,7 +2126,6 @@ export default function App() {
   ) => {
     const revisionId = await ensureRevision(article.id, markdown);
     ensureWorkflowExecutionCurrent(article.id, executionId);
-    dismissedWorkflowProgressArticleIds.current.delete(article.id);
     lastWorkflowActivityAt.current = Date.now();
     beginWorkflowWorkspace(article.id);
     const workflowPromise = desktopBridge.runWorkflow({
@@ -2197,7 +2180,6 @@ export default function App() {
     activeCreationRequestRef.current = { articleId: article.id, request };
     setCreatingArticle(true);
     setWorkflowRunning(true);
-    dismissedWorkflowProgressArticleIds.current.delete(article.id);
     lastWorkflowActivityAt.current = Date.now();
     showArticleProgress({
       articleId: article.id,
@@ -3041,7 +3023,6 @@ export default function App() {
             cancellingWorkflow={cancellingWorkflow}
             onCancelWorkflow={cancelCurrentWorkflow}
             onCreate={createBlankArticle}
-            onDismissWorkflowProgress={dismissArticleProgress}
             onEditorModeChange={setEditorMode}
             onApplyRewriteCandidate={applyArticleRewrite}
             canUndoRewrite={
@@ -3215,13 +3196,6 @@ export default function App() {
             </button>
           )}
         </header>
-
-        {(activeNav === "create" || activeNav === "articles") && (
-          <LifecycleRail
-            active={lifecycleStep}
-            busy={creatingArticle || workflowRunning || publishAction !== null}
-          />
-        )}
 
         <main className="page-viewport" id="main-content">
           {loadingArticles && activeNav === "articles" ? (

@@ -113,4 +113,28 @@ describe("ArticleAssistant", () => {
     expect(requestAnimationFrame).not.toHaveBeenCalled();
     requestAnimationFrame.mockRestore();
   });
+
+  it("keeps the active workflow controls inside the AI assistant", async () => {
+    const onCancelWorkflow = vi.fn();
+    renderAssistant({
+      onCancelWorkflow,
+      workflowProgress: {
+        title: "正在撰写正文",
+        detail: "写作 Agent 正在输出正文。",
+        value: 42,
+      },
+      workflowSnapshot: {
+        runId: "run-article-assistant",
+        status: "running",
+        events: [],
+        artifacts: [],
+        visualPlan: null,
+        updatedAt: Date.now(),
+      },
+    });
+
+    expect(await screen.findByText("正在撰写正文")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
+    expect(onCancelWorkflow).toHaveBeenCalledOnce();
+  });
 });

@@ -51,7 +51,7 @@ export function AppNavigation({
             OP
           </span>
           <div>
-            <strong>Open Publisher</strong>
+            <strong>稿流</strong>
             <small>本地内容工作台</small>
           </div>
           <button
@@ -67,10 +67,12 @@ export function AppNavigation({
         <nav aria-label="主导航" className="app-navigation__items">
           {navigation.map(({ id, label, icon: Icon }) => (
             <button
+              aria-label={label}
               aria-current={active === id ? "page" : undefined}
               className={`app-navigation__item${active === id ? " is-active" : ""}`}
               key={id}
               onClick={() => onNavigate(id)}
+              title={label}
               type="button"
             >
               <Icon aria-hidden="true" size={18} strokeWidth={1.8} />

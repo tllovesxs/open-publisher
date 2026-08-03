@@ -1,17 +1,25 @@
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   FileText,
+  GripVertical,
   ImagePlus,
   LoaderCircle,
   Plus,
   Save,
   Search,
   Send,
-  Square,
   Sparkles,
-  X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { CreationLogEntry } from "./CreatePage";
 import {
   ArticleAssistant,
@@ -22,7 +30,7 @@ import type { Article, MediaAsset, PlatformDefinition, PlatformId } from "../typ
 import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
 import { PublishDialog } from "./PublishDialog";
-import { WorkflowWorkspace, type WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
+import type { WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
 import type { RewriteArticleSummary, WechatSyncBridgeStatus } from "../lib/desktopBridge";
 
 interface WorkflowProgress {
@@ -68,7 +76,6 @@ interface ArticlesPageProps {
   onRetryWorkflow: () => void;
   onCancelWorkflow: () => void;
   cancellingWorkflow: boolean;
-  onDismissWorkflowProgress: () => void;
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
   publishing: boolean;
@@ -91,6 +98,36 @@ const statusLabel: Record<Article["status"], string> = {
   ready: "可发布",
   published: "已发布",
 };
+
+const articleBrowserPreferenceKey = "open-publisher.articles.browser.v1";
+const articleBrowserBounds = { min: 208, max: 320, default: 248 } as const;
+
+interface ArticleBrowserPreference {
+  collapsed: boolean;
+  width: number;
+}
+
+function clampArticleBrowserWidth(width: number) {
+  return Math.min(articleBrowserBounds.max, Math.max(articleBrowserBounds.min, Math.round(width)));
+}
+
+function loadArticleBrowserPreference(): ArticleBrowserPreference {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(articleBrowserPreferenceKey) ?? "null");
+    if (!value || typeof value !== "object") {
+      return { collapsed: false, width: articleBrowserBounds.default };
+    }
+    const preference = value as Partial<ArticleBrowserPreference>;
+    return {
+      collapsed: preference.collapsed === true,
+      width: typeof preference.width === "number"
+        ? clampArticleBrowserWidth(preference.width)
+        : articleBrowserBounds.default,
+    };
+  } catch {
+    return { collapsed: false, width: articleBrowserBounds.default };
+  }
+}
 
 export function ArticlesPage({
   articles,
@@ -122,7 +159,6 @@ export function ArticlesPage({
   onRetryWorkflow,
   onCancelWorkflow,
   cancellingWorkflow,
-  onDismissWorkflowProgress,
   wechatSyncStatus,
   wechatSyncRefreshing,
   publishing,
@@ -134,10 +170,23 @@ export function ArticlesPage({
   onUndoRewrite,
 }: ArticlesPageProps) {
   const [query, setQuery] = useState("");
+  const [articleBrowser, setArticleBrowser] = useState<ArticleBrowserPreference>(
+    loadArticleBrowserPreference,
+  );
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [pendingImageInsertion, setPendingImageInsertion] = useState<ImageInsertion | null>(null);
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [selections, setSelections] = useState<MarkdownSelection[]>([]);
+  const layoutRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(articleBrowserPreferenceKey, JSON.stringify(articleBrowser));
+    } catch {
+      // Panel dimensions are a convenience. The article workspace remains usable without storage.
+    }
+  }, [articleBrowser]);
+
   useEffect(() => {
     if (!selectedArticle?.id) return;
     setSelections([]);
@@ -149,6 +198,39 @@ export function ArticlesPage({
       `${article.title} ${article.collection}`.toLocaleLowerCase().includes(normalized),
     );
   }, [articles, query]);
+
+  const toggleArticleBrowser = () => {
+    setArticleBrowser((current) => ({ ...current, collapsed: !current.collapsed }));
+  };
+
+  const updateArticleBrowserWidth = (width: number) => {
+    setArticleBrowser((current) => ({ ...current, collapsed: false, width: clampArticleBrowserWidth(width) }));
+  };
+
+  const handleResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || articleBrowser.collapsed) return;
+    event.preventDefault();
+    const previousCursor = document.body.style.cursor;
+    document.body.style.cursor = "col-resize";
+    const onMove = (moveEvent: PointerEvent) => {
+      const rect = layoutRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      updateArticleBrowserWidth(moveEvent.clientX - rect.left);
+    };
+    const onEnd = () => {
+      document.body.style.cursor = previousCursor;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd, { once: true });
+    window.addEventListener("pointercancel", onEnd, { once: true });
+  };
+
+  const articleLayoutStyle = {
+    "--article-browser-width": `${articleBrowser.width}px`,
+  } as CSSProperties;
 
   if (!selectedArticle) {
     return (
@@ -164,7 +246,11 @@ export function ArticlesPage({
   }
 
   return (
-    <section className="articles-layout">
+    <section
+      className={`articles-layout${articleBrowser.collapsed ? " is-browser-collapsed" : ""}`}
+      ref={layoutRef}
+      style={articleLayoutStyle}
+    >
       <aside className="article-browser" aria-label="文章列表">
         <div className="article-browser__head">
           <div>
@@ -217,10 +303,44 @@ export function ArticlesPage({
         </div>
       </aside>
 
+      <div
+        aria-label="调整文章列表宽度"
+        aria-orientation="vertical"
+        aria-valuemax={articleBrowserBounds.max}
+        aria-valuemin={articleBrowserBounds.min}
+        aria-valuenow={articleBrowser.width}
+        className="article-browser__resizer"
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            updateArticleBrowserWidth(articleBrowser.width - 16);
+          }
+          if (event.key === "ArrowRight") {
+            event.preventDefault();
+            updateArticleBrowserWidth(articleBrowser.width + 16);
+          }
+        }}
+        onPointerDown={handleResizeStart}
+        role="separator"
+        tabIndex={articleBrowser.collapsed ? -1 : 0}
+      >
+        <GripVertical aria-hidden="true" size={14} />
+      </div>
+
       <div className="article-editor">
         <header className="article-editor__head">
           <div className="article-editor__title">
             <div>
+              <button
+                aria-label={articleBrowser.collapsed ? "展开文章列表" : "收起文章列表"}
+                aria-pressed={!articleBrowser.collapsed}
+                className="icon-button article-editor__browser-toggle"
+                onClick={toggleArticleBrowser}
+                title={articleBrowser.collapsed ? "展开文章列表" : "收起文章列表"}
+                type="button"
+              >
+                {articleBrowser.collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
+              </button>
               <span className={`article-status article-status--${selectedArticle.status}`}>
                 {statusLabel[selectedArticle.status]}
               </span>
@@ -270,17 +390,6 @@ export function ArticlesPage({
               )}
               {workflowRunning ? "处理中" : "AI 完善全文"}
             </button>
-            {workflowRunning && (
-              <button
-                className="button button--quiet button--stop-workflow"
-                disabled={cancellingWorkflow}
-                onClick={onCancelWorkflow}
-                type="button"
-              >
-                {cancellingWorkflow ? <LoaderCircle className="spin" size={16} /> : <Square size={15} />}
-                {cancellingWorkflow ? "正在停止" : "停止生成"}
-              </button>
-            )}
             <button
               className="button button--primary"
               disabled={saving || !dirty}
@@ -344,75 +453,17 @@ export function ArticlesPage({
             onRewrite={onRewriteArticle}
             onUndoLastRewrite={onUndoRewrite}
             selections={selections}
-          />
-          <WorkflowWorkspace
-            cancelling={cancellingWorkflow}
-            onCancel={onCancelWorkflow}
-            onRetry={onRetryWorkflow}
-            progress={workflowProgress}
-            retryable={workflowFailure?.retryable}
-            snapshot={workflowWorkspace}
+            workflowFailure={workflowFailure}
+            workflowProgress={
+              workflowProgress?.articleId === selectedArticle.id ? workflowProgress : null
+            }
+            workflowSnapshot={workflowWorkspace}
+            workflowRetryable={workflowFailure?.retryable}
+            onCancelWorkflow={onCancelWorkflow}
+            onRetryWorkflow={onRetryWorkflow}
+            cancellingWorkflow={cancellingWorkflow}
           />
         </div>
-        {workflowFailure && (
-          <aside className="article-workflow-failure" role="alert">
-            <div className="article-workflow-failure__summary">
-              <div>
-                <strong>文章生成失败</strong>
-                <p>{workflowFailure.detail}</p>
-              </div>
-              {workflowFailure.retryable && (
-                <button
-                  className="button button--primary"
-                  onClick={onRetryWorkflow}
-                  type="button"
-                >
-                  <Sparkles size={16} />
-                  重试本次生成
-                </button>
-              )}
-            </div>
-            <details className="article-workflow-failure__logs" open>
-              <summary>查看执行日志</summary>
-              <ol>
-                {workflowFailure.logs.slice(-8).map((entry) => (
-                  <li className={`is-${entry.tone}`} key={entry.id}>
-                    <time dateTime={new Date(entry.timestamp).toISOString()}>
-                      {new Intl.DateTimeFormat("zh-CN", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      }).format(entry.timestamp)}
-                    </time>
-                    <span>{entry.message}</span>
-                  </li>
-                ))}
-              </ol>
-            </details>
-          </aside>
-        )}
-        {workflowProgress?.articleId === selectedArticle.id && (
-          <aside aria-live="polite" className="article-progress" role="status">
-            <button
-              aria-label="关闭进度提示"
-              className="article-progress__dismiss"
-              onClick={onDismissWorkflowProgress}
-              title="关闭进度提示"
-              type="button"
-            >
-              <X aria-hidden="true" size={15} />
-            </button>
-            <div>
-              <strong>{workflowProgress.title}</strong>
-              <span>{workflowProgress.detail}</span>
-            </div>
-            {workflowProgress.value !== null && (
-              <div aria-label={`${workflowProgress.value}%`} className="article-progress__track" role="progressbar" aria-valuemax={100} aria-valuemin={0} aria-valuenow={workflowProgress.value}>
-                <i style={{ transform: `scaleX(${workflowProgress.value / 100})` }} />
-              </div>
-            )}
-          </aside>
-        )}
         <ImageInsertDialog
           assets={mediaAssets}
           onClose={() => setImageDialogOpen(false)}

@@ -39,6 +39,14 @@ interface WorkflowWorkspaceProps {
   onRetry?: () => void;
   onCancel?: () => void;
   cancelling?: boolean;
+  embedded?: boolean;
+  failureDetail?: string;
+  failureLogs?: Array<{
+    id: string;
+    timestamp: number;
+    message: string;
+    tone: "info" | "success" | "error";
+  }>;
 }
 
 type WorkspaceTab = "activity" | "sources";
@@ -166,6 +174,9 @@ export function WorkflowWorkspace({
   onRetry,
   onCancel,
   cancelling = false,
+  embedded = false,
+  failureDetail,
+  failureLogs = [],
 }: WorkflowWorkspaceProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<WorkspaceTab>("activity");
@@ -188,7 +199,10 @@ export function WorkflowWorkspace({
   const latest = progress ? null : visibleActivityEvents[visibleActivityEvents.length - 1];
 
   return (
-    <aside className={`workflow-workspace is-${snapshot.status}${open ? " is-open" : ""}`} aria-label="AI 创作动态">
+    <aside
+      className={`workflow-workspace is-${snapshot.status}${open ? " is-open" : ""}${embedded ? " is-embedded" : ""}`}
+      aria-label="AI 创作动态"
+    >
       <button
         aria-label={open ? undefined : "展开 AI 创作动态"}
         aria-expanded={open}
@@ -265,9 +279,28 @@ export function WorkflowWorkspace({
 
           {snapshot.status === "failed" && (
             <div className="workflow-workspace__failure" role="alert">
-              <strong>本次运行未完成</strong>
-              <p>{snapshot.error ?? "本地运行时未返回可展示的错误信息。"}</p>
+              <strong>文章生成失败</strong>
+              <p>{failureDetail ?? snapshot.error ?? "本地运行时未返回可展示的错误信息。"}</p>
               {retryable && onRetry && <button className="button button--quiet" onClick={onRetry} type="button">重试本次生成</button>}
+              {failureLogs.length > 0 && (
+                <details className="workflow-workspace__logs" open>
+                  <summary>查看执行日志</summary>
+                  <ol>
+                    {failureLogs.slice(-8).map((entry) => (
+                      <li className={`is-${entry.tone}`} key={entry.id}>
+                        <time dateTime={new Date(entry.timestamp).toISOString()}>
+                          {new Intl.DateTimeFormat("zh-CN", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            second: "2-digit",
+                          }).format(entry.timestamp)}
+                        </time>
+                        <span>{entry.message}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
             </div>
           )}
           {snapshot.status === "running" && onCancel && (
