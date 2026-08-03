@@ -129,12 +129,22 @@ def test_template_extraction_keeps_analysis_when_metadata_mentions_source_title(
                 "name": "Wandao 更新文章写法",
                 "description": "复用 Wandao 发布说明的递进式讲解节奏。",
                 "category": "产品更新",
-                "markdown": "# {{title}}\n\n{{lead}}\n\n> {{key_claim}}\n\n## {{feature_heading}}\n\n{{feature_detail}}\n\n{{closing}}",
+                "markdown": (
+                    "# {{title}}\n\n{{lead}}\n\n> {{key_claim}}\n\n## {{feature_heading}}"
+                    "\n\n{{feature_detail}}\n\n{{closing}}"
+                ),
                 "style_profile": {"tone": "坦诚、技术化", "pacing": "先问题后改动"},
                 "structure_profile": {"section_pattern": "痛点、能力、使用建议"},
                 "layout_profile": {"use_blockquotes": True},
                 "fixed_blocks": [],
-                "variables": ["title", "lead", "key_claim", "feature_heading", "feature_detail", "closing"],
+                "variables": [
+                    "title",
+                    "lead",
+                    "key_claim",
+                    "feature_heading",
+                    "feature_detail",
+                    "closing",
+                ],
                 "usage_instructions": "替换事实和观点，保留由痛点到行动建议的推进。",
             },
             ensure_ascii=False,
