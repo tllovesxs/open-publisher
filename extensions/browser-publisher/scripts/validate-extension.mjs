@@ -9,8 +9,9 @@ const taskSchema = JSON.parse(
 
 const expectedHosts = [
   "https://editor.csdn.net/*",
-  "https://mp.toutiao.com/*",
   "https://mp.weixin.qq.com/*",
+  "https://zhuanlan.zhihu.com/*",
+  "https://creator.xiaohongshu.com/*",
 ];
 const expectedPermissions = ["activeTab", "storage"];
 const forbiddenPermissions = new Set([
@@ -27,7 +28,7 @@ if (JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)
   throw new Error("permissions must contain only activeTab and storage");
 }
 if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(expectedHosts)) {
-  throw new Error("host_permissions must contain only the three reviewed editor origins");
+  throw new Error("host_permissions must contain only the four reviewed editor origins");
 }
 if ("externally_connectable" in manifest) {
   throw new Error("P0 must not expose an externally_connectable message endpoint");

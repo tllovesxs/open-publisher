@@ -38,8 +38,9 @@
     "platform": {
       "enum": [
         "csdn",
-        "toutiao",
-        "wechat"
+        "wechat",
+        "zhihu",
+        "xiaohongshu"
       ]
     },
     "action": {

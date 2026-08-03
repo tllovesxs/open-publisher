@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Open Publisher 安全草稿助手",
-  "description": "在已登录的 CSDN、今日头条和微信公众号编辑页中安全填充草稿；最终发布始终由用户确认。",
-  "version": "0.1.0",
+  "name": "Open Publisher 草稿助手",
+  "description": "在已登录的 CSDN、微信公众号、知乎和小红书编辑页中填充草稿；最终发布始终由用户确认。",
+  "version": "0.2.0",
   "minimum_chrome_version": "120",
   "permissions": [
     "activeTab",
@@ -10,8 +10,9 @@
   ],
   "host_permissions": [
     "https://editor.csdn.net/*",
-    "https://mp.toutiao.com/*",
-    "https://mp.weixin.qq.com/*"
+    "https://mp.weixin.qq.com/*",
+    "https://zhuanlan.zhihu.com/*",
+    "https://creator.xiaohongshu.com/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js",
@@ -25,8 +26,9 @@
     {
       "matches": [
         "https://editor.csdn.net/*",
-        "https://mp.toutiao.com/*",
-        "https://mp.weixin.qq.com/*"
+        "https://mp.weixin.qq.com/*",
+        "https://zhuanlan.zhihu.com/*",
+        "https://creator.xiaohongshu.com/*"
       ],
       "js": [
         "src/content/content-script.js"

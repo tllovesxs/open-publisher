@@ -45,7 +45,7 @@ document.querySelector("#fill").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const platform = typeof tab?.url === "string" ? platformForEditorUrl(tab.url) : null;
   if (platform === null) {
-    setStatus("请先打开 CSDN、今日头条或微信公众号编辑页。");
+    setStatus("请先打开 CSDN、微信公众号、知乎或小红书编辑页。");
     return;
   }
 

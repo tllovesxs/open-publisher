@@ -1,12 +1,25 @@
 export const TASK_SCHEMA_VERSION = "1.0";
 export const NONCE_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
-export const SUPPORTED_PLATFORMS = Object.freeze(["csdn", "toutiao", "wechat"]);
+export const SUPPORTED_PLATFORMS = Object.freeze(["csdn", "wechat", "zhihu", "xiaohongshu"]);
 export const TASK_MAX_TTL_MS = 10 * 60 * 1000;
 
 const ALLOWED_EDITORS = Object.freeze({
-  csdn: (url) => url.protocol === "https:" && url.hostname === "editor.csdn.net",
-  toutiao: (url) => url.protocol === "https:" && url.hostname === "mp.toutiao.com",
-  wechat: (url) => url.protocol === "https:" && url.hostname === "mp.weixin.qq.com",
+  csdn: (url) =>
+    url.protocol === "https:" &&
+    url.hostname === "editor.csdn.net" &&
+    (url.pathname === "/md" || url.pathname.startsWith("/md/")),
+  wechat: (url) =>
+    url.protocol === "https:" &&
+    url.hostname === "mp.weixin.qq.com" &&
+    url.pathname === "/cgi-bin/appmsg",
+  zhihu: (url) =>
+    url.protocol === "https:" &&
+    url.hostname === "zhuanlan.zhihu.com" &&
+    (url.pathname === "/write" || url.pathname.startsWith("/write/")),
+  xiaohongshu: (url) =>
+    url.protocol === "https:" &&
+    url.hostname === "creator.xiaohongshu.com" &&
+    (url.pathname === "/publish" || url.pathname.startsWith("/publish/")),
 });
 
 export function platformForEditorUrl(rawUrl) {

@@ -33,9 +33,16 @@ function validTask() {
 
 test("editor allowlist is exact and HTTPS-only", () => {
   assert.equal(platformForEditorUrl("https://editor.csdn.net/md?articleId=1"), "csdn");
-  assert.equal(platformForEditorUrl("https://mp.toutiao.com/profile_v4/graphic/publish"), "toutiao");
   assert.equal(platformForEditorUrl("https://mp.weixin.qq.com/cgi-bin/appmsg"), "wechat");
+  assert.equal(platformForEditorUrl("https://zhuanlan.zhihu.com/write"), "zhihu");
+  assert.equal(
+    platformForEditorUrl("https://creator.xiaohongshu.com/publish/publish?source=menu"),
+    "xiaohongshu",
+  );
   assert.equal(platformForEditorUrl("http://editor.csdn.net/md"), null);
+  assert.equal(platformForEditorUrl("https://editor.csdn.net/"), null);
+  assert.equal(platformForEditorUrl("https://zhuanlan.zhihu.com/"), null);
+  assert.equal(platformForEditorUrl("https://creator.xiaohongshu.com/manage"), null);
   assert.equal(platformForEditorUrl("https://editor.csdn.net.evil.invalid/md"), null);
   assert.equal(
     isAllowedEditorUrl("https://mp.weixin.qq.com/cgi-bin/appmsg", "wechat"),
@@ -61,6 +68,9 @@ test("consumed task records reject replay and prune expired records", () => {
 
 test("only safe draft-fill tasks are accepted", () => {
   assert.deepEqual(validateBrowserDraftTask(validTask()), { ok: true, errors: [] });
+  assert.equal(validateBrowserDraftTask({ ...validTask(), platform: "zhihu" }).ok, true);
+  assert.equal(validateBrowserDraftTask({ ...validTask(), platform: "xiaohongshu" }).ok, true);
+  assert.equal(validateBrowserDraftTask({ ...validTask(), platform: "toutiao" }).ok, false);
   assert.equal(
     validateBrowserDraftTask({
       ...validTask(),

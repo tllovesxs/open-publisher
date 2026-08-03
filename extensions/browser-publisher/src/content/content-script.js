@@ -1,42 +1,81 @@
 (() => {
   "use strict";
 
+  // DOM selectors are intentionally isolated here. A platform change should only affect its adapter.
   const ADAPTERS = {
     csdn: {
-      domVersion: "csdn-editor-v1",
-      titleSelectors: ["#txtTitle", "input[placeholder='请输入文章标题']"],
+      domVersion: "csdn-editor-v2",
+      titleSelectors: ["#txtTitle", "input[placeholder*='文章标题']"],
       bodySelectors: [
         ".CodeMirror textarea",
         "textarea.markdown_editor",
         ".monaco-editor textarea.inputarea",
+        "textarea[placeholder*='Markdown']",
       ],
-    },
-    toutiao: {
-      domVersion: "toutiao-editor-v1",
-      titleSelectors: [
-        "textarea[placeholder='请输入文章标题（2～30个字）']",
-        "textarea[placeholder*='文章标题']",
-      ],
-      bodySelectors: [
-        ".ProseMirror[contenteditable='true']",
-        "div[data-contents='true'][contenteditable='true']",
-      ],
+      titleMode: "required",
     },
     wechat: {
-      domVersion: "wechat-editor-v1",
+      domVersion: "wechat-editor-v2",
       titleSelectors: ["#title", "textarea[name='title']", "textarea[placeholder*='标题']"],
       bodySelectors: [
         ".edui-body-container[contenteditable='true']",
         "#js_editor[contenteditable='true']",
+        "[contenteditable='true'][data-placeholder*='正文']",
       ],
+      titleMode: "required",
+    },
+    zhihu: {
+      domVersion: "zhihu-write-v1",
+      titleSelectors: [
+        "textarea[placeholder*='标题']",
+        "input[placeholder*='标题']",
+        "textarea[aria-label*='标题']",
+      ],
+      bodySelectors: [
+        "[data-contents='true'][contenteditable='true']",
+        ".DraftEditor-root [contenteditable='true']",
+        "div[contenteditable='true'][role='textbox']",
+      ],
+      titleMode: "required",
+    },
+    xiaohongshu: {
+      domVersion: "xiaohongshu-note-v1",
+      titleSelectors: [
+        "input[placeholder*='标题']",
+        "textarea[placeholder*='标题']",
+        "input[aria-label*='标题']",
+      ],
+      bodySelectors: [
+        "textarea[placeholder*='描述']",
+        "textarea[placeholder*='正文']",
+        "[contenteditable='true'][data-placeholder*='描述']",
+        "div[contenteditable='true'][role='textbox']",
+      ],
+      // Some note composers only have a single caption field. Preserve the title in that case.
+      titleMode: "prepend-if-missing",
     },
   };
 
   function platformForLocation() {
     if (location.protocol !== "https:") return null;
-    if (location.hostname === "editor.csdn.net") return "csdn";
-    if (location.hostname === "mp.toutiao.com") return "toutiao";
-    if (location.hostname === "mp.weixin.qq.com") return "wechat";
+    if (location.hostname === "editor.csdn.net" && /^\/md(?:\/|$)/.test(location.pathname)) {
+      return "csdn";
+    }
+    if (location.hostname === "mp.weixin.qq.com" && location.pathname === "/cgi-bin/appmsg") {
+      return "wechat";
+    }
+    if (
+      location.hostname === "zhuanlan.zhihu.com" &&
+      /^\/write(?:\/|$)/.test(location.pathname)
+    ) {
+      return "zhihu";
+    }
+    if (
+      location.hostname === "creator.xiaohongshu.com" &&
+      /^\/publish(?:\/|$)/.test(location.pathname)
+    ) {
+      return "xiaohongshu";
+    }
     return null;
   }
 
@@ -54,6 +93,53 @@
     return null;
   }
 
+  function dispatchTextEvents(element, value) {
+    try {
+      element.dispatchEvent(
+        new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          data: value,
+          inputType: "insertText",
+        }),
+      );
+    } catch {
+      // Older Chromium builds still receive the following input/change events.
+    }
+    try {
+      element.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: value,
+          inputType: "insertText",
+        }),
+      );
+    } catch {
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function overwriteContentEditable(element, value) {
+    element.focus();
+    const selection = window.getSelection();
+    if (selection !== null) {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    // Browser insertion triggers most React, Slate, and ProseMirror input paths without HTML injection.
+    const inserted = document.execCommand("insertText", false, value);
+    if (!inserted) {
+      element.textContent = value;
+    }
+    dispatchTextEvents(element, value);
+    return element.textContent === value || element.innerText === value;
+  }
+
   function setNativeValue(element, value) {
     if (element instanceof HTMLInputElement) {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -62,15 +148,14 @@
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
       setter?.call(element, value);
     } else if (element instanceof HTMLElement && element.isContentEditable) {
-      // Deliberately use textContent. Untrusted HTML is never injected into the platform page.
-      element.textContent = value;
+      return overwriteContentEditable(element, value);
     } else {
       return false;
     }
 
-    element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
+    element.focus();
+    dispatchTextEvents(element, value);
+    return element.value === value;
   }
 
   function fillDraft(task) {
@@ -88,45 +173,40 @@
         ok: false,
         status: "NEEDS_USER",
         reason: "DOM_VERSION_UNSUPPORTED",
-        diagnostics: {
-          expected: task.expectedDomVersion,
-          observed: adapter.domVersion,
-        },
+        diagnostics: { expected: task.expectedDomVersion, observed: adapter.domVersion },
       };
     }
 
     const titleTarget = firstEditable(adapter.titleSelectors);
     const bodyTarget = firstEditable(adapter.bodySelectors);
     const missing = [];
-    if (titleTarget === null) missing.push("title");
+    if (titleTarget === null && adapter.titleMode === "required") missing.push("title");
     if (bodyTarget === null) missing.push("body");
     if (missing.length > 0) {
       return {
         ok: false,
         status: "NEEDS_USER",
         reason: "DOM_VERSION_UNSUPPORTED",
-        diagnostics: {
-          domVersion: adapter.domVersion,
-          missing,
-        },
+        diagnostics: { domVersion: adapter.domVersion, missing },
       };
     }
 
-    const titleFilled = setNativeValue(titleTarget.element, task.article.title);
-    const bodyFilled = setNativeValue(bodyTarget.element, task.article.body.content);
+    const bodyContent =
+      titleTarget === null && adapter.titleMode === "prepend-if-missing"
+        ? `${task.article.title}\n\n${task.article.body.content}`
+        : task.article.body.content;
+    const titleFilled = titleTarget === null || setNativeValue(titleTarget.element, task.article.title);
+    const bodyFilled = setNativeValue(bodyTarget.element, bodyContent);
     if (!titleFilled || !bodyFilled) {
       return {
         ok: false,
         status: "NEEDS_USER",
         reason: "EDITOR_REJECTED_INPUT",
-        diagnostics: {
-          titleFilled,
-          bodyFilled,
-        },
+        diagnostics: { titleFilled, bodyFilled },
       };
     }
 
-    // No publish or save button is queried or clicked. The user reviews and saves the draft.
+    // Saving and final publication stay entirely under the user's control.
     return {
       ok: true,
       status: "DRAFT_FILLED",
@@ -134,7 +214,7 @@
       platform,
       domVersion: adapter.domVersion,
       requiresUserReview: true,
-      filledFields: ["title", "body"],
+      filledFields: titleTarget === null ? ["body"] : ["title", "body"],
     };
   }
 
