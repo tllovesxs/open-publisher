@@ -5,6 +5,7 @@ import {
   ImagePlus,
   Link2,
   LoaderCircle,
+  Settings2,
   Sparkles,
   X,
 } from "lucide-react";
@@ -137,6 +138,14 @@ export function CreatePage(props: CreatePageProps) {
   const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>(initial.webSearchMode);
   const [picker, setPicker] = useState<Picker>(null);
   const [validation, setValidation] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => Boolean(
+      initial.title ||
+      initial.references ||
+      initial.lengthPreset === "custom" ||
+      initial.contentType !== defaultDraft.contentType,
+    ),
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptId = useId();
 
@@ -187,6 +196,7 @@ export function CreatePage(props: CreatePageProps) {
     if (!file) return;
     const text = await file.text();
     setReferences((current) => `${current.trim()}\n\n--- ${file.name} ---\n${text.trim()}`.trim());
+    setAdvancedOpen(true);
   };
 
   const selectedIds = new Set(props.selectedMedia.map((asset) => asset.id));
@@ -197,32 +207,137 @@ export function CreatePage(props: CreatePageProps) {
   };
 
   return <section className="page page--create">
-    <header className="page-heading">
-      <div><span className="page-kicker">创作工作台</span><h1>开始创作</h1></div>
-      <button className="model-chip" onClick={props.onOpenSettings} type="button"><span className="model-chip__dot" /><span>{props.modelLabel}</span><ChevronDown size={14} /></button>
+    <header className="page-heading page-heading--create">
+      <div>
+        <span className="page-kicker">创作工作台</span>
+        <h1>开始创作</h1>
+      </div>
+      <button className="model-chip" onClick={props.onOpenSettings} type="button">
+        <span className="model-chip__dot" />
+        <span>{props.modelLabel}</span>
+        <ChevronDown size={14} />
+      </button>
     </header>
 
     <div className="creation-studio">
-      <div className="creation-toolbar">
-        <label><span>模板</span><select onChange={(event) => props.onTemplateChange(event.target.value)} value={props.selectedTemplate?.id ?? ""}><option value="">自由结构</option>{props.templates.map((template) => <option key={template.id} value={template.id}>{template.mode === "reference" ? `${template.name} · 高保真` : template.name}</option>)}</select></label>
-        <label><span>风格</span><select onChange={(event) => setTone(event.target.value)} value={tone}><option>专业清晰</option><option>自然亲切</option><option>简洁直接</option><option>深入严谨</option></select></label>
-        <label><span>篇幅</span><select onChange={(event) => setLengthPreset(event.target.value as LengthPreset)} value={lengthPreset}>{lengthOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-        <label><span>联网</span><select onChange={(event) => setWebSearchMode(event.target.value as WebSearchMode)} value={webSearchMode}><option value="auto">自动</option><option value="off">关闭</option></select></label>
-        <label><span>配图</span><select onChange={(event) => { const value = event.target.value; setImagePlanMode(value === "none" || value === "auto" ? value : "fixed"); if (value !== "none" && value !== "auto") setImageCount(Number(value)); }} value={imagePlanMode === "fixed" ? String(imageCount) : imagePlanMode}><option value="auto">自动</option><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="none">不添加</option></select></label>
+      <div aria-label="创作选项" className="creation-toolbar">
+        <label className="creation-toolbar__choice">
+          <span>模板</span>
+          <select aria-label="模板" onChange={(event) => props.onTemplateChange(event.target.value)} value={props.selectedTemplate?.id ?? ""}>
+            <option value="">自由结构</option>
+            {props.templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.mode === "reference" ? `${template.name} · 高保真` : template.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="creation-toolbar__choice">
+          <span>文风</span>
+          <select aria-label="文风" onChange={(event) => setTone(event.target.value)} value={tone}>
+            <option>专业清晰</option><option>自然亲切</option><option>简洁直接</option><option>深入严谨</option>
+          </select>
+        </label>
+        <label className="creation-toolbar__choice">
+          <span>篇幅</span>
+          <select
+            aria-label="篇幅"
+            onChange={(event) => {
+              const nextPreset = event.target.value as LengthPreset;
+              setLengthPreset(nextPreset);
+              if (nextPreset === "custom") setAdvancedOpen(true);
+            }}
+            value={lengthPreset}
+          >
+            {lengthOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="creation-toolbar__choice">
+          <span>联网</span>
+          <select aria-label="联网检索" onChange={(event) => setWebSearchMode(event.target.value as WebSearchMode)} value={webSearchMode}>
+            <option value="auto">自动</option><option value="off">关闭</option>
+          </select>
+        </label>
+        <label className="creation-toolbar__choice">
+          <span>配图</span>
+          <select
+            aria-label="配图"
+            onChange={(event) => {
+              const value = event.target.value;
+              setImagePlanMode(value === "none" || value === "auto" ? value : "fixed");
+              if (value !== "none" && value !== "auto") setImageCount(Number(value));
+            }}
+            value={imagePlanMode === "fixed" ? String(imageCount) : imagePlanMode}
+          >
+            <option value="auto">自动</option><option value="1">1 张</option><option value="2">2 张</option><option value="3">3 张</option><option value="none">不添加</option>
+          </select>
+        </label>
+        <button aria-expanded={advancedOpen} className="creation-toolbar__more" onClick={() => setAdvancedOpen((current) => !current)} type="button">
+          <Settings2 size={15} />更多
+        </button>
       </div>
+
       <div className="creation-composer">
         <label className="visually-hidden" htmlFor={promptId}>文章主题</label>
-        <textarea autoFocus id={promptId} onChange={(event) => setTopic(event.target.value)} placeholder="写下主题、读者、目标或你希望文章回答的问题" rows={8} value={topic} />
+        <textarea
+          aria-invalid={validation ? "true" : undefined}
+          autoFocus
+          id={promptId}
+          onChange={(event) => setTopic(event.target.value)}
+          placeholder="写下主题、读者、目标或希望文章回答的问题"
+          rows={8}
+          value={topic}
+        />
         <div className="creation-composer__footer">
-          <button className="text-button" onClick={() => fileInputRef.current?.click()} type="button"><FilePlus2 size={15} />导入资料</button>
-          <input accept=".md,.markdown,.txt,text/plain,text/markdown" className="visually-hidden" onChange={(event) => void importReference(event.target.files?.[0])} ref={fileInputRef} type="file" />
-          <button className="text-button" onClick={() => setPicker("media")} type="button"><ImagePlus size={15} />素材 {props.selectedMedia.length || ""}</button>
-          <span>{props.selectedTemplate?.mode === "reference" ? `高保真参考 · ${props.selectedTemplate.name}` : props.selectedTemplate?.name ?? "自由结构"}</span>
-          <button className="button button--primary" disabled={props.generating} onClick={() => { const request = creationRequest(); if (request) props.onCreate(request); }} type="button">{props.generating ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{props.generating ? "正在创作" : "开始创作"}</button>
+          <div className="creation-composer__tools">
+            <button className="text-button" onClick={() => fileInputRef.current?.click()} type="button"><FilePlus2 size={15} />导入资料</button>
+            <input accept=".md,.markdown,.txt,text/plain,text/markdown" className="visually-hidden" onChange={(event) => void importReference(event.target.files?.[0])} ref={fileInputRef} type="file" />
+            <button className="text-button" onClick={() => setPicker("media")} type="button"><ImagePlus size={15} />{props.selectedMedia.length ? `素材 ${props.selectedMedia.length}` : "选择素材"}</button>
+          </div>
+          <span className="creation-composer__summary">
+            {props.selectedTemplate?.mode === "reference" ? `高保真参考 · ${props.selectedTemplate.name}` : props.selectedTemplate?.name ?? "自由结构"}
+          </span>
+          <button
+            className="button button--primary"
+            disabled={props.generating}
+            onClick={() => {
+              const request = creationRequest();
+              if (request) props.onCreate(request);
+            }}
+            type="button"
+          >
+            {props.generating ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+            {props.generating ? "正在创作" : "开始创作"}
+          </button>
         </div>
       </div>
-      {lengthPreset === "custom" && <label className="field creation-custom-length"><span>目标字数</span><input max={20_000} min={500} onChange={(event) => setCustomLength(event.target.value)} type="number" value={customLength} /></label>}
-      <div className="creation-sources"><Link2 size={15} /><textarea aria-label="参考资料" onChange={(event) => setReferences(event.target.value)} placeholder="粘贴参考链接、数据、访谈摘录或已有笔记" rows={3} value={references} /></div>
+
+      <details className="creation-advanced" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)} open={advancedOpen}>
+        <summary><span>更多创作信息</span><small>标题、内容类型与参考资料</small><ChevronDown aria-hidden="true" size={16} /></summary>
+        <div className="creation-advanced__body">
+          <label className="field">
+            <span>文章标题（可选）</span>
+            <input onChange={(event) => setTitle(event.target.value)} placeholder="留空则由写作 Agent 根据主题拟定" value={title} />
+          </label>
+          <label className="field">
+            <span>内容类型</span>
+            <select onChange={(event) => setContentType(event.target.value)} value={contentType}>
+              <option>技术文章</option><option>产品介绍</option><option>项目更新</option><option>经验复盘</option><option>观点文章</option>
+            </select>
+          </label>
+          {lengthPreset === "custom" && (
+            <label className="field creation-custom-length">
+              <span>目标字数</span>
+              <input max={20_000} min={500} onChange={(event) => setCustomLength(event.target.value)} type="number" value={customLength} />
+            </label>
+          )}
+          <label className="creation-sources">
+            <span className="creation-sources__label"><Link2 aria-hidden="true" size={15} />参考资料</span>
+            <textarea aria-label="参考资料" onChange={(event) => setReferences(event.target.value)} placeholder="粘贴链接、数据、访谈摘录、项目说明或已有笔记" rows={4} value={references} />
+          </label>
+        </div>
+      </details>
+
       {validation && <p className="form-error" role="alert">{validation}</p>}
     </div>
 
