@@ -233,7 +233,10 @@ const fn default_max_web_search_calls() -> u8 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(
+    deny_unknown_fields,
+    rename_all(serialize = "snake_case", deserialize = "camelCase")
+)]
 pub struct VisualCompositionRequest {
     #[serde(default = "default_visual_mode")]
     pub mode: String,
@@ -310,7 +313,10 @@ const fn default_generation_batch_size() -> u8 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(
+    deny_unknown_fields,
+    rename_all(serialize = "snake_case", deserialize = "camelCase")
+)]
 pub struct VisualAssetInstruction {
     pub id: String,
     pub alt: String,
@@ -5477,6 +5483,17 @@ mod tests {
         assert_eq!(composition.preferred_image_backend, "auto");
         assert_eq!(composition.generation_batch_size, 3);
         assert_eq!(composition.assets[0].description, "用于说明导出流程");
+
+        let python_payload = serde_json::to_value(&composition)
+            .expect("composition serializes for the Python runtime");
+        assert_eq!(python_payload["asset_scope"], "library");
+        assert_eq!(python_payload["preferred_image_backend"], "auto");
+        assert_eq!(python_payload["generation_batch_size"], 3);
+        assert_eq!(
+            python_payload["assets"][0]["description"],
+            "用于说明导出流程"
+        );
+        assert!(python_payload.get("assetScope").is_none());
     }
 
     #[test]
