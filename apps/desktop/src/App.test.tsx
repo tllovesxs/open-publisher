@@ -285,6 +285,41 @@ describe("desktop product flow", () => {
     await screen.findByText(/文章已生成 · 修订/);
   });
 
+  it("stops a running workflow without allowing a late result to replace the draft", async () => {
+    let finishWorkflow: (() => void) | undefined;
+    const cancelWorkflow = vi.fn<DesktopBridge["cancelWorkflow"]>(async () => undefined);
+    const runWorkflow = vi.fn<DesktopBridge["runWorkflow"]>(
+      (request) =>
+        new Promise<RunWorkflowSummary>((resolve) => {
+          finishWorkflow = () => void nativeTestBridge.runWorkflow(request).then(resolve);
+        }),
+    );
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      cancelWorkflow,
+      runWorkflow,
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "可主动停止的写作流程" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+    await screen.findByLabelText("Markdown 正文");
+    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "停止生成" })[0]!);
+    await waitFor(() => expect(cancelWorkflow).toHaveBeenCalledWith(expect.any(String)));
+    expect(await screen.findByText("文章生成失败")).toBeVisible();
+    expect(screen.getByText("已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "重试本次生成" }).length).toBeGreaterThan(0);
+
+    finishWorkflow?.();
+    await waitFor(() => expect(screen.getByText("文章生成失败")).toBeVisible());
+    expect(screen.queryByText(/文章已生成 · 修订/)).toBeNull();
+  });
+
   it("keeps the same article and offers a retry after workflow failure", async () => {
     const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
     const saveDraft = vi.spyOn(desktopBridge, "saveDraft");

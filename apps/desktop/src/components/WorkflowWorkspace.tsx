@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Search,
   ShieldCheck,
+  Square,
   Sparkles,
   XCircle,
 } from "lucide-react";
@@ -36,6 +37,8 @@ interface WorkflowWorkspaceProps {
   progress?: { title: string; detail: string; value: number | null } | null;
   retryable?: boolean;
   onRetry?: () => void;
+  onCancel?: () => void;
+  cancelling?: boolean;
 }
 
 type WorkspaceTab = "activity" | "sources";
@@ -156,7 +159,14 @@ function sourceDomain(value: string) {
   }
 }
 
-export function WorkflowWorkspace({ snapshot, progress = null, retryable = false, onRetry }: WorkflowWorkspaceProps) {
+export function WorkflowWorkspace({
+  snapshot,
+  progress = null,
+  retryable = false,
+  onRetry,
+  onCancel,
+  cancelling = false,
+}: WorkflowWorkspaceProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<WorkspaceTab>("activity");
 
@@ -258,6 +268,19 @@ export function WorkflowWorkspace({ snapshot, progress = null, retryable = false
               <strong>本次运行未完成</strong>
               <p>{snapshot.error ?? "本地运行时未返回可展示的错误信息。"}</p>
               {retryable && onRetry && <button className="button button--quiet" onClick={onRetry} type="button">重试本次生成</button>}
+            </div>
+          )}
+          {snapshot.status === "running" && onCancel && (
+            <div className="workflow-workspace__controls">
+              <button
+                className="button button--quiet button--stop-workflow"
+                disabled={cancelling}
+                onClick={onCancel}
+                type="button"
+              >
+                {cancelling ? <LoaderCircle className="spin" size={14} /> : <Square size={13} />}
+                {cancelling ? "正在停止" : "停止生成"}
+              </button>
             </div>
           )}
           <footer>最后更新于 {updatedAtLabel(snapshot.updatedAt)}</footer>

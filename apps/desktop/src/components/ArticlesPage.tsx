@@ -7,6 +7,7 @@ import {
   Save,
   Search,
   Send,
+  Square,
   Sparkles,
   X,
 } from "lucide-react";
@@ -65,6 +66,8 @@ interface ArticlesPageProps {
   contentReplacing: boolean;
   workflowFailure: WorkflowFailure | null;
   onRetryWorkflow: () => void;
+  onCancelWorkflow: () => void;
+  cancellingWorkflow: boolean;
   onDismissWorkflowProgress: () => void;
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
@@ -117,6 +120,8 @@ export function ArticlesPage({
   contentReplacing,
   workflowFailure,
   onRetryWorkflow,
+  onCancelWorkflow,
+  cancellingWorkflow,
   onDismissWorkflowProgress,
   wechatSyncStatus,
   wechatSyncRefreshing,
@@ -265,6 +270,17 @@ export function ArticlesPage({
               )}
               {workflowRunning ? "处理中" : "AI 完善全文"}
             </button>
+            {workflowRunning && (
+              <button
+                className="button button--quiet button--stop-workflow"
+                disabled={cancellingWorkflow}
+                onClick={onCancelWorkflow}
+                type="button"
+              >
+                {cancellingWorkflow ? <LoaderCircle className="spin" size={16} /> : <Square size={15} />}
+                {cancellingWorkflow ? "正在停止" : "停止生成"}
+              </button>
+            )}
             <button
               className="button button--primary"
               disabled={saving || !dirty}
@@ -330,6 +346,8 @@ export function ArticlesPage({
             selections={selections}
           />
           <WorkflowWorkspace
+            cancelling={cancellingWorkflow}
+            onCancel={onCancelWorkflow}
             onRetry={onRetryWorkflow}
             progress={workflowProgress}
             retryable={workflowFailure?.retryable}

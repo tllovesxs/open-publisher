@@ -202,6 +202,17 @@ p {
   color: var(--ink);
 }
 
+.button--stop-workflow {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--border));
+  color: var(--danger);
+}
+
+.button--stop-workflow:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .icon-button {
   display: inline-grid;
   width: 40px;
@@ -1918,6 +1929,17 @@ p {
 .workflow-workspace__failure .button {
   min-height: 31px;
   padding: 0 10px;
+  font-size: 10px;
+}
+
+.workflow-workspace__controls {
+  display: flex;
+  padding: 0 12px 12px;
+}
+
+.workflow-workspace__controls .button {
+  width: 100%;
+  min-height: 32px;
   font-size: 10px;
 }
 

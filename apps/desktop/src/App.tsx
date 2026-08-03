@@ -107,6 +107,8 @@ const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
 // on actual workflow progress, never on a cosmetic heartbeat.
 const WORKFLOW_ACTIVITY_TIMEOUT_MS = 90_000;
 const WORKFLOW_ACTIVITY_POLL_INTERVAL_MS = 160;
+const WORKFLOW_CANCELLED_BY_USER_MESSAGE =
+  "已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。";
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
 const INLINE_DATA_IMAGE_PATTERN =
   /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
@@ -936,6 +938,7 @@ export default function App() {
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [workflowRunning, setWorkflowRunning] = useState(false);
+  const [cancellingWorkflow, setCancellingWorkflow] = useState(false);
   const [creatingArticle, setCreatingArticle] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>(() => {
     const stored = loadStudioValue<unknown>(EDITOR_MODE_STORAGE_KEY, "split");
@@ -1009,6 +1012,31 @@ export default function App() {
   const rewriteUndoRef = useRef<Record<string, { before: string; after: string }>>({});
   const dismissedWorkflowProgressArticleIds = useRef(new Set<string>());
   const lastWorkflowActivityAt = useRef(Date.now());
+  const workflowExecutionSequenceRef = useRef(0);
+  const activeWorkflowExecutionRef = useRef<{ articleId: string; id: number } | null>(null);
+  const activeCreationRequestRef = useRef<FailedCreationContext | null>(null);
+
+  const beginWorkflowExecution = (articleId: string) => {
+    const id = ++workflowExecutionSequenceRef.current;
+    activeWorkflowExecutionRef.current = { articleId, id };
+    return id;
+  };
+
+  const isWorkflowExecutionCurrent = (articleId: string, id: number) =>
+    activeWorkflowExecutionRef.current?.articleId === articleId &&
+    activeWorkflowExecutionRef.current.id === id;
+
+  const ensureWorkflowExecutionCurrent = (articleId: string, id: number) => {
+    if (!isWorkflowExecutionCurrent(articleId, id)) {
+      throw new Error(WORKFLOW_CANCELLED_BY_USER_MESSAGE);
+    }
+  };
+
+  const finishWorkflowExecution = (articleId: string, id: number) => {
+    if (!isWorkflowExecutionCurrent(articleId, id)) return false;
+    activeWorkflowExecutionRef.current = null;
+    return true;
+  };
 
   const showArticleProgress = (progress: ArticleProgress) => {
     if (dismissedWorkflowProgressArticleIds.current.has(progress.articleId)) return;
@@ -2108,10 +2136,12 @@ export default function App() {
     article: Article,
     markdown: string,
     disabledNodeIds: DisabledOptionalNodeId[],
+    executionId: number,
     channels?: PlatformId[],
     agentInstructions = buildWorkflowAgentInstructions(studioAgents, studioSkills),
   ) => {
     const revisionId = await ensureRevision(article.id, markdown);
+    ensureWorkflowExecutionCurrent(article.id, executionId);
     dismissedWorkflowProgressArticleIds.current.delete(article.id);
     lastWorkflowActivityAt.current = Date.now();
     beginWorkflowWorkspace(article.id);
@@ -2128,7 +2158,9 @@ export default function App() {
     let summary: RunWorkflowSummary;
     try {
       summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
     } catch (error) {
+      if (!isWorkflowExecutionCurrent(article.id, executionId)) throw error;
       clearWriterTypewriter(article.id);
       failWorkflowWorkspace(
         article.id,
@@ -2138,6 +2170,7 @@ export default function App() {
     } finally {
       stopActivityPolling();
     }
+    ensureWorkflowExecutionCurrent(article.id, executionId);
     clearWriterTypewriter(article.id);
     completeWorkflowWorkspace(article.id, summary);
     setArticleContentReplacing(true);
@@ -2145,6 +2178,7 @@ export default function App() {
     window.setTimeout(() => setArticleContentReplacing(false), 260);
     setArticleProgress(null);
     const snapshot = await desktopBridge.runtimeSnapshot();
+    ensureWorkflowExecutionCurrent(article.id, executionId);
     setRuntime(snapshot);
     return summary;
   };
@@ -2159,6 +2193,8 @@ export default function App() {
     const previousLogs = retrying ? (creationActivity?.logs ?? []) : [];
     const agentInstructions =
       request.agentInstructions ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
+    const executionId = beginWorkflowExecution(article.id);
+    activeCreationRequestRef.current = { articleId: article.id, request };
     setCreatingArticle(true);
     setWorkflowRunning(true);
     dismissedWorkflowProgressArticleIds.current.delete(article.id);
@@ -2189,6 +2225,7 @@ export default function App() {
     let revisionSaved = false;
     try {
       const revisionId = await ensureRevision(article.id, markdown);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
       revisionSaved = true;
       setCreationActivity((current) =>
         current
@@ -2228,18 +2265,22 @@ export default function App() {
       let summary: RunWorkflowSummary;
       try {
         summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
+        ensureWorkflowExecutionCurrent(article.id, executionId);
       } catch (error) {
+        if (!isWorkflowExecutionCurrent(article.id, executionId)) throw error;
         clearWriterTypewriter(article.id);
         throw error;
       } finally {
         stopActivityPolling();
       }
+      ensureWorkflowExecutionCurrent(article.id, executionId);
       clearWriterTypewriter(article.id);
       completeWorkflowWorkspace(article.id, summary);
       setArticleContentReplacing(true);
       applyWorkflowResult(article.id, summary, request.platforms);
       window.setTimeout(() => setArticleContentReplacing(false), 260);
       const approvedVisualPlan = await requestVisualConfirmation(article.id, summary.visualPlan);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
       let composed = approvedVisualPlan
         ? await composeVisualPlan(article, summary, request, startedAt)
         : {
@@ -2248,6 +2289,7 @@ export default function App() {
             markdown: summary.outputMarkdown,
             generatedCount: 0,
           };
+      ensureWorkflowExecutionCurrent(article.id, executionId);
       if (!approvedVisualPlan && request.imagePlan.mode !== "none") {
         appendCreationActivity(
           "已跳过正文配图",
@@ -2264,6 +2306,7 @@ export default function App() {
           baseRevision: composed.revisionId,
           markdown: finalMarkdown,
         });
+        ensureWorkflowExecutionCurrent(article.id, executionId);
         composed = {
           ...composed,
           revisionId: receipt.revisionId,
@@ -2281,7 +2324,9 @@ export default function App() {
           request.platforms,
         );
       }
-      setRuntime(await desktopBridge.runtimeSnapshot());
+      const runtimeSnapshot = await desktopBridge.runtimeSnapshot();
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      setRuntime(runtimeSnapshot);
       setCreationActivity((current) =>
         current
           ? {
@@ -2308,6 +2353,7 @@ export default function App() {
         `文章已生成 · 修订 ${composed.revisionNumber}`,
       );
     } catch (error) {
+      if (!isWorkflowExecutionCurrent(article.id, executionId)) return;
       const detail = error instanceof Error ? error.message : String(error);
       const safeDetail = sanitizeActivityMessage(detail || "未知错误");
       clearWriterTypewriter(article.id);
@@ -2343,8 +2389,11 @@ export default function App() {
       setArticleProgress(null);
       setToast("生成失败，创作要求已保留，可返回创作页修改后重试");
     } finally {
-      setCreatingArticle(false);
-      setWorkflowRunning(false);
+      if (finishWorkflowExecution(article.id, executionId)) {
+        activeCreationRequestRef.current = null;
+        setCreatingArticle(false);
+        setWorkflowRunning(false);
+      }
     }
   };
 
@@ -2401,6 +2450,69 @@ export default function App() {
     void executeCreation(article, markdown, failedCreationContext.request, true);
   };
 
+  const cancelCurrentWorkflow = () => {
+    const activeExecution = activeWorkflowExecutionRef.current;
+    if (!activeExecution || !workflowRunning || cancellingWorkflow) return;
+
+    const { articleId } = activeExecution;
+    const creationContext = activeCreationRequestRef.current;
+    // Invalidate first. Any response that arrives after this point belongs to
+    // the stopped run and must never replace the user's current draft.
+    activeWorkflowExecutionRef.current = null;
+    activeCreationRequestRef.current = null;
+    if (visualConfirmation?.articleId === articleId) {
+      resolveVisualConfirmation(false);
+    }
+    clearWriterTypewriter(articleId);
+    setDirtyIds((current) => new Set(current).add(articleId));
+    failWorkflowWorkspace(articleId, WORKFLOW_CANCELLED_BY_USER_MESSAGE);
+    if (creationContext?.articleId === articleId) {
+      setFailedCreationContext(creationContext);
+    }
+    setCreationActivity((current) => {
+      if (!current || current.status !== "running") return current;
+      return {
+        ...current,
+        status: "failed",
+        phase: "已停止生成",
+        elapsedSeconds: Math.max(
+          current.elapsedSeconds,
+          Math.round((Date.now() - current.startedAt) / 1000),
+        ),
+        error: `失败原因：${WORKFLOW_CANCELLED_BY_USER_MESSAGE}`,
+        retryable: true,
+        logs: [
+          ...current.logs,
+          activityLog(
+            `workflow-cancelled-${Date.now()}`,
+            "用户已停止本次生成，已保留当前编辑器内容",
+            "error",
+          ),
+        ],
+      };
+    });
+    setArticleProgress(null);
+    setArticleContentReplacing(false);
+    setCreatingArticle(false);
+    setWorkflowRunning(false);
+    setCancellingWorkflow(true);
+    setToast("已停止生成，当前已写入的内容仍保留在编辑器中");
+
+    const releaseCancellationState = window.setTimeout(
+      () => setCancellingWorkflow(false),
+      2_000,
+    );
+    void desktopBridge
+      .cancelWorkflow(articleId)
+      .catch(() => {
+        setToast("已停止本地等待；本地服务未确认取消，旧结果不会写回文章。");
+      })
+      .finally(() => {
+        window.clearTimeout(releaseCancellationState);
+        setCancellingWorkflow(false);
+      });
+  };
+
   const createBlankArticle = () => {
     const id = `article-${Date.now()}`;
     const markdown = "# 未命名文章\n\n";
@@ -2435,6 +2547,7 @@ export default function App() {
   const improveCurrentArticle = async () => {
     if (!selectedArticle || workflowRunning) return;
     if (!requireTextModel()) return;
+    const executionId = beginWorkflowExecution(selectedArticle.id);
     setWorkflowRunning(true);
     try {
       const summary = await runWorkflowForArticle(
@@ -2446,13 +2559,18 @@ export default function App() {
             ...disabledOptionalNodesFor(studioAgents),
           ]),
         ],
+        executionId,
       );
+      ensureWorkflowExecutionCurrent(selectedArticle.id, executionId);
       setToast(`AI 处理完成 · 已生成修订 ${summary.outputRevisionNumber}`);
     } catch (error) {
+      if (!isWorkflowExecutionCurrent(selectedArticle.id, executionId)) return;
       const detail = error instanceof Error ? error.message : String(error);
       setToast(`AI 处理失败：${detail.slice(0, 120)}`);
     } finally {
-      setWorkflowRunning(false);
+      if (finishWorkflowExecution(selectedArticle.id, executionId)) {
+        setWorkflowRunning(false);
+      }
     }
   };
 
@@ -2920,6 +3038,8 @@ export default function App() {
             generatingImage={generatingImage}
             markdown={currentMarkdown}
             mediaAssets={mediaAssets}
+            cancellingWorkflow={cancellingWorkflow}
+            onCancelWorkflow={cancelCurrentWorkflow}
             onCreate={createBlankArticle}
             onDismissWorkflowProgress={dismissArticleProgress}
             onEditorModeChange={setEditorMode}
