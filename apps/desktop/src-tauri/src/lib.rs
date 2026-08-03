@@ -1,6 +1,10 @@
 mod supervisor;
 
-use std::sync::Arc;
+use std::{
+    sync::{mpsc, Arc},
+    thread,
+    time::{Duration, Instant},
+};
 
 use supervisor::{
     BatchTopicPlanRequest, BatchTopicPlanSummary, ConfigureModelRequest, ConnectionProfilePublic,
@@ -18,6 +22,73 @@ use tauri::{Emitter, Manager};
 
 struct DesktopState {
     supervisor: Arc<PythonSidecarSupervisor>,
+}
+
+const TEMPLATE_EXTRACTION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TemplateExtractionProgressEvent {
+    event_type: &'static str,
+    elapsed_seconds: u64,
+    detail: &'static str,
+}
+
+fn emit_template_extraction_progress(
+    app: &tauri::AppHandle,
+    event_type: &'static str,
+    elapsed_seconds: u64,
+    detail: &'static str,
+) {
+    let _ = app.emit(
+        "template-extraction-progress",
+        TemplateExtractionProgressEvent {
+            event_type,
+            elapsed_seconds,
+            detail,
+        },
+    );
+}
+
+fn extract_template_with_watchdog(
+    supervisor: Arc<PythonSidecarSupervisor>,
+    request: ExtractTemplateRequest,
+    app: tauri::AppHandle,
+) -> Result<TemplateExtractionSummary, String> {
+    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+    let started_at = Instant::now();
+    emit_template_extraction_progress(&app, "started", 0, "正在启动模板分析");
+
+    thread::spawn(move || {
+        let _ = result_sender.send(supervisor.extract_template(request));
+    });
+
+    loop {
+        match result_receiver.recv_timeout(TEMPLATE_EXTRACTION_HEARTBEAT_INTERVAL) {
+            Ok(result) => {
+                emit_template_extraction_progress(
+                    &app,
+                    if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                    started_at.elapsed().as_secs(),
+                    "模板分析请求已结束",
+                );
+                return result;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => emit_template_extraction_progress(
+                &app,
+                "heartbeat",
+                started_at.elapsed().as_secs(),
+                "本地运行时仍在等待模型结果",
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("template extraction worker stopped unexpectedly".to_owned())
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -239,11 +310,14 @@ async fn generate_image(
 async fn extract_template(
     request: ExtractTemplateRequest,
     state: tauri::State<'_, DesktopState>,
+    app: tauri::AppHandle,
 ) -> Result<TemplateExtractionSummary, String> {
     let supervisor = Arc::clone(&state.supervisor);
-    tauri::async_runtime::spawn_blocking(move || supervisor.extract_template(request))
-        .await
-        .map_err(|_| "template extraction task was cancelled".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        extract_template_with_watchdog(supervisor, request, app)
+    })
+    .await
+    .map_err(|_| "template extraction task was cancelled".to_owned())?
 }
 
 #[tauri::command]

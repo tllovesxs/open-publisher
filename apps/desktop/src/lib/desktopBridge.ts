@@ -394,6 +394,12 @@ export interface ExtractTemplateRequest {
   sourceMarkdown: string;
 }
 
+export interface TemplateExtractionProgressEvent {
+  eventType: "started" | "heartbeat" | "completed" | "failed";
+  elapsedSeconds: number;
+  detail: string;
+}
+
 export interface TemplateExtractionSummary {
   name: string;
   description: string;
@@ -1270,6 +1276,16 @@ export async function subscribeToRewriteEvents(
   if (!isTauriHost()) return () => undefined;
   const { listen } = await import("@tauri-apps/api/event");
   return listen<RewriteStreamEvent>("article-rewrite-stream", (event) => listener(event.payload));
+}
+
+export async function subscribeToTemplateExtractionEvents(
+  listener: (event: TemplateExtractionProgressEvent) => void,
+): Promise<() => void> {
+  if (!isTauriHost()) return () => undefined;
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<TemplateExtractionProgressEvent>("template-extraction-progress", (event) =>
+    listener(event.payload),
+  );
 }
 
 /**

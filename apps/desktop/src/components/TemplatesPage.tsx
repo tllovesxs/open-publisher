@@ -17,6 +17,10 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  subscribeToTemplateExtractionEvents,
+  type TemplateExtractionProgressEvent,
+} from "../lib/desktopBridge";
 import type {
   MarkdownTemplate,
   TemplateFixedBlock,
@@ -37,6 +41,7 @@ type EditorSource = "manual" | "extracted";
 const MAX_SOURCE_MARKDOWN_CHARACTERS = 60_000;
 const MAX_SOURCE_FILE_BYTES = 512 * 1024;
 const EXTRACTION_WAIT_LIMIT_MS = 90_000;
+const EXTRACTION_HARD_LIMIT_MS = 12 * 60 * 1000;
 
 const blankTemplate = (): MarkdownTemplate => ({
   id: `template-${Date.now()}`,
@@ -98,6 +103,7 @@ export function TemplatesPage({
   const [extractionOpen, setExtractionOpen] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
+  const [extractionStatus, setExtractionStatus] = useState<string | null>(null);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
   const [sourceFileName, setSourceFileName] = useState<string | null>(null);
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
@@ -105,6 +111,10 @@ export function TemplatesPage({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceInputRef = useRef<HTMLTextAreaElement>(null);
   const extractionAttemptRef = useRef(0);
+  const renewExtractionWatchdogRef = useRef<
+    ((event: TemplateExtractionProgressEvent) => void) | null
+  >(null);
+  const stopExtractionWatchdogRef = useRef<() => void>(() => undefined);
   const selected = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -132,6 +142,23 @@ export function TemplatesPage({
   }, [extractionOpen]);
 
   useEffect(() => {
+    let disposed = false;
+    let unsubscribe: () => void = () => undefined;
+    void subscribeToTemplateExtractionEvents((event) => {
+      if (!disposed) renewExtractionWatchdogRef.current?.(event);
+    }).then((release) => {
+      if (disposed) release();
+      else unsubscribe = release;
+    });
+    return () => {
+      disposed = true;
+      renewExtractionWatchdogRef.current = null;
+      stopExtractionWatchdogRef.current();
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (editing) setEditing(null);
@@ -148,6 +175,7 @@ export function TemplatesPage({
 
   const openExtraction = () => {
     setExtractError(null);
+    setExtractionStatus(null);
     setExtractionOpen(true);
   };
 
@@ -155,9 +183,12 @@ export function TemplatesPage({
     // The native command cannot be cancelled after dispatch. Invalidate the attempt so a
     // late response never reopens the editor or overwrites a later retry.
     extractionAttemptRef.current += 1;
+    renewExtractionWatchdogRef.current = null;
+    stopExtractionWatchdogRef.current();
     setExtracting(false);
     setExtractionOpen(false);
     setExtractError(null);
+    setExtractionStatus(null);
   };
 
   const save = () => {
@@ -201,24 +232,45 @@ export function TemplatesPage({
     extractionAttemptRef.current = attempt;
     setExtracting(true);
     setExtractError(null);
+    setExtractionStatus("正在启动模板分析");
+    let watchdogTimer: number | null = null;
+    let rejectWatchdog: (error: Error) => void = () => undefined;
+    const startedAt = Date.now();
+    const stopWatchdog = () => {
+      if (watchdogTimer !== null) window.clearTimeout(watchdogTimer);
+      watchdogTimer = null;
+    };
+    const armWatchdog = (event?: TemplateExtractionProgressEvent) => {
+      if (attempt !== extractionAttemptRef.current) return;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= EXTRACTION_HARD_LIMIT_MS) {
+        stopWatchdog();
+        rejectWatchdog(new Error("模板分析超过 12 分钟，已停止等待。请检查模型连接后重试。"));
+        return;
+      }
+      stopWatchdog();
+      watchdogTimer = window.setTimeout(() => {
+        rejectWatchdog(new Error("分析等待超过 90 秒，未收到运行心跳。请检查模型连接后重试。"));
+      }, EXTRACTION_WAIT_LIMIT_MS);
+      if (event) {
+        setExtractionStatus(
+          event.eventType === "heartbeat"
+            ? `AI 正在分析，已等待 ${event.elapsedSeconds} 秒`
+            : event.detail,
+        );
+      }
+    };
+    const watchdog = new Promise<never>((_resolve, reject) => {
+      rejectWatchdog = reject;
+      armWatchdog();
+    });
+    renewExtractionWatchdogRef.current = armWatchdog;
+    stopExtractionWatchdogRef.current = stopWatchdog;
     try {
-      const template = await new Promise<MarkdownTemplate>((resolve, reject) => {
-        const timer = window.setTimeout(() => {
-          reject(new Error("分析等待超过 90 秒，已停止等待。请检查模型连接后重试。"));
-        }, EXTRACTION_WAIT_LIMIT_MS);
-        void Promise.resolve()
-          .then(() => onExtractTemplate(sourceMarkdown))
-          .then(
-            (result) => {
-              window.clearTimeout(timer);
-              resolve(result);
-            },
-            (error: unknown) => {
-              window.clearTimeout(timer);
-              reject(error);
-            },
-          );
-      });
+      const template = await Promise.race([
+        Promise.resolve().then(() => onExtractTemplate(sourceMarkdown)),
+        watchdog,
+      ]);
       if (attempt !== extractionAttemptRef.current) return;
       setEditorSource("extracted");
       setEditing(template);
@@ -230,7 +282,12 @@ export function TemplatesPage({
       if (attempt !== extractionAttemptRef.current) return;
       setExtractError(`提取失败：${errorMessage(error)}`);
     } finally {
-      if (attempt === extractionAttemptRef.current) setExtracting(false);
+      if (attempt === extractionAttemptRef.current) {
+        renewExtractionWatchdogRef.current = null;
+        stopWatchdog();
+        setExtractionStatus(null);
+        setExtracting(false);
+      }
     }
   };
 
@@ -416,7 +473,7 @@ export function TemplatesPage({
               {extracting && (
                 <div aria-live="polite" className="template-extractor__loading">
                   <LoaderCircle aria-hidden="true" className="is-spinning" size={16} />
-                  正在分析文章结构
+                  {extractionStatus ?? "正在分析文章结构"}
                 </div>
               )}
               {extractError && <p className="form-error" role="alert">{extractError}</p>}
