@@ -238,15 +238,33 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
         artifacts = ArtifactService(repository, client.app.state.container.blob_store)
         persisted = [
             repository.get_artifact(run["state_json"][key])
-            for key in ("raw_draft_artifact_id", "risk_artifact_id")
+            for key in (
+                "raw_draft_artifact_id",
+                "risk_artifact_id",
+                "writer_prompt_artifact_id",
+            )
         ]
         assert all(artifact is not None for artifact in persisted)
         assert {artifact.kind for artifact in persisted if artifact is not None} == {
             "workflow.raw-draft",
             "workflow.risk-report",
+            "workflow.writer-prompt",
         }
         raw_draft = artifacts.read_text(run["state_json"]["raw_draft_artifact_id"])
         assert raw_draft
+        prompt_artifact = repository.get_artifact(
+            run["state_json"]["writer_prompt_artifact_id"]
+        )
+        assert prompt_artifact is not None
+        assert json.loads(artifacts.read_text(prompt_artifact.id)) == run["state_json"][
+            "writer_prompt"
+        ]
+
+    writer_prompt = run["state_json"]["writer_prompt"]
+    assert writer_prompt["id"] == "article-writer"
+    assert writer_prompt["version"] == "1.0.0"
+    assert len(writer_prompt["sha256"]) == 64
+    assert run["workflow_snapshot_json"]["writer_prompt"] == writer_prompt
 
     detail = client.get(f"/api/v1/runs/{run['id']}")
     assert detail.status_code == 200
@@ -343,6 +361,9 @@ def test_named_project_promotion_resolves_sources_before_writing(
     assert "已核验项目资料" in provider.writer_prompt
     assert "万能导 Wandao · GitHub repository" in provider.writer_prompt
     assert "不能把同类产品的常见架构" in provider.writer_prompt
+    assert "不要把用户只提供的“写文、配图、发布”等能力自动扩写" in provider.writer_prompt
+    assert "数据中台、三层架构、统一引擎" in provider.writer_prompt
+    assert "不虚构功能、技术栈、版本、发布时间、客户、案例、数据" in provider.writer_prompt
     assert run["state_json"]["web_source_count"] == 1
     detail = client.get(f"/api/v1/runs/{run['id']}").json()
     tool_events = [
@@ -353,6 +374,8 @@ def test_named_project_promotion_resolves_sources_before_writing(
 
 def test_named_project_promotion_fails_without_sources(client, article_payload) -> None:
     container = client.app.state.container
+    provider = CountingTextProvider()
+    container.model_access.text_provider = provider
     container.workflow_runner.web_search_tool = None
     article = client.post(
         "/api/v1/articles",
@@ -388,6 +411,7 @@ def test_named_project_promotion_fails_without_sources(client, article_payload) 
     assert run["status"] == "failed"
     assert "ProjectEvidenceRequiredError" in run["error"]
     assert run["output_revision_id"] is None
+    assert provider.calls == 0
 
 
 def test_writer_registers_github_repository_as_a_bounded_research_tool(
@@ -1006,6 +1030,7 @@ def test_api_customized_run_skips_optional_nodes_and_uses_dynamic_budget(
         assert {artifact.kind for artifact in run_artifacts} == {
             "workflow.raw-draft",
             "workflow.risk-report",
+            "workflow.writer-prompt",
         }
 
     article_detail = client.get(

@@ -34,6 +34,7 @@ WORKFLOW_ARTIFACT_STATE_KEYS = (
     "visual_outline_artifact_id",
     "visual_material_selection_artifact_id",
     "visual_prompts_artifact_id",
+    "writer_prompt_artifact_id",
 )
 
 
@@ -213,8 +214,14 @@ class RunController:
                     "disabled_optional_node_ids": list(disabled_optional_node_ids),
                     "required_model_calls": required_model_calls,
                 },
+                "writer_prompt": self.workflow_runner.writer_prompt_provenance.model_dump(
+                    mode="json"
+                ),
             },
             state_json={
+                "writer_prompt": self.workflow_runner.writer_prompt_provenance.model_dump(
+                    mode="json"
+                ),
                 "budget": {
                     "model_calls_limit": policy.max_model_calls,
                     "model_calls_reserved": 0,
@@ -326,6 +333,7 @@ class RunController:
                 "run_id": run.id,
                 "workflow_id": workflow.id,
                 "input_revision_id": revision.id,
+                "writer_prompt": output.writer_prompt.model_dump(mode="json"),
             }
             enabled_node_ids = set(enabled_model_node_ids)
             state_json: dict[str, object] = {
@@ -335,7 +343,14 @@ class RunController:
                 "required_model_calls": required_model_calls,
                 "input_revision_hash": revision.content_hash,
                 "budget": budget_state,
+                "writer_prompt": output.writer_prompt.model_dump(mode="json"),
             }
+            writer_prompt_artifact = self.artifact_service.put_json(
+                kind="workflow.writer-prompt",
+                value=output.writer_prompt.model_dump(mode="json"),
+                metadata=artifact_metadata,
+            )
+            state_json["writer_prompt_artifact_id"] = writer_prompt_artifact.id
             if "research" in enabled_node_ids:
                 research_artifact = self.artifact_service.put_text(
                     kind="workflow.research",

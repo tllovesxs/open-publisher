@@ -24,6 +24,10 @@ from open_publisher_runtime.domain.policies import (
     WorkflowAgentInstruction,
     WorkflowNodeId,
 )
+from open_publisher_runtime.workflows.article_writer_prompt import (
+    WriterPromptProvenance,
+    load_article_writer_prompt,
+)
 from open_publisher_runtime.workflows.baoyu_article_illustrator import (
     VisualCompositionPlan,
     build_plan_from_outline,
@@ -215,6 +219,7 @@ class PresetWorkflowOutput(BaseModel):
     risk_report: str
     visual_plan: VisualCompositionPlan
     source_evidence: list[SourceEvidence] = Field(default_factory=list)
+    writer_prompt: WriterPromptProvenance
     engine: str
 
 
@@ -249,6 +254,13 @@ class PresetArticleWorkflow:
         self.model_access = model_access
         self.web_search_tool = web_search_tool
         self.github_repository_tool = github_repository_tool
+        self._writer_prompt = load_article_writer_prompt()
+
+    @property
+    def writer_prompt_provenance(self) -> WriterPromptProvenance:
+        """Return the pinned writer-prompt identity for immutable run snapshots."""
+
+        return self._writer_prompt.provenance
 
     @staticmethod
     def _run_node(
@@ -591,27 +603,20 @@ class PresetArticleWorkflow:
                 f"\n### 完整参考文章\n"
                 f"<reference_article>\n{reference_template.source_markdown}\n</reference_article>"
             )
+        writing_brief = (
+            f"标题：{state['title']}\n"
+            f"主题与用户要求：\n{state['topic']}"
+        )
         response = self.model_access.generate_agent_text_stream(
             TextGenerationRequest(
                 purpose="draft",
-                prompt=(
-                    "你是这篇文章唯一的主写作 Agent。完成资料判断后，直接交付一篇可发布的完整 "
-                    "Markdown 文章。不要输出大纲、写作过程、元说明、代码围栏或工具调用说明。"
-                    "自行完成结构、表达与事实边界的把控：开头应尽快给出读者收益或判断，正文每节只"
-                    "承担一个信息任务，结尾必须收束，不能在段落、列表或小节中途停止。"
-                    "创作要求中的篇幅是交付约束。优先使用具体名词、可验证表述和自然中文，避免空泛"
-                    "的‘首先/其次/最后’、重复结论和无依据的夸张。"
-                    "如果作者素材中包含‘写作模板规范’，把其中的文风、结构和排版规则视为硬约束；"
-                    "模板固定片段由桌面端在生成后确定性插入，严禁自行输出固定片段或花括号占位符。"
-                    "只能使用主题、作者素材和工具来源中的事实；资料不足时明确限定表述，不得补造"
-                    "功能、数据、案例、人物或发布时间。"
-                    "具名项目的宣传、介绍、更新或发布文章必须以项目资料为准：没有明确来源的能力"
-                    "不写，不能把同类产品的常见架构、客户案例或效果数据套到项目上。"
-                    f"\n\n## 写作 Brief\n标题：{state['title']}\n"
-                    f"主题与用户要求：\n{state['topic']}\n\n"
-                    f"## 作者提供的素材\n{author_material}"
-                    f"{reference_instruction}{evidence_instruction}"
-                    f"{search_instruction}{self._agent_guidance(state, 'draft')}"
+                prompt=self._writer_prompt.render(
+                    writing_brief=writing_brief,
+                    author_material=author_material,
+                    reference_instruction=reference_instruction,
+                    evidence_instruction=evidence_instruction,
+                    search_instruction=search_instruction,
+                    agent_guidance=self._agent_guidance(state, "draft"),
                 ),
                 context={
                     "title": state["title"],
@@ -945,6 +950,7 @@ class PresetArticleWorkflow:
                 workflow_input.visual_composition,
             ),
             source_evidence=state["source_evidence"],
+            writer_prompt=self.writer_prompt_provenance,
             engine=engine,
         )
 

@@ -86,6 +86,7 @@ def test_complete_demo_closes_the_local_loop_without_network(client, monkeypatch
         "workflow.visual-outline",
         "workflow.visual-material-selection",
         "workflow.visual-prompts",
+        "workflow.writer-prompt",
         "platform-variant.csdn",
         "platform-variant.wechat",
         "platform-variant.toutiao",
@@ -129,6 +130,7 @@ def test_complete_demo_honors_optional_node_selection(client) -> None:
     assert {asset["kind"] for asset in payload["content_package"]["assets"]} == {
         "workflow.raw-draft",
         "workflow.risk-report",
+        "workflow.writer-prompt",
         "platform-variant.wechat",
     }
 
