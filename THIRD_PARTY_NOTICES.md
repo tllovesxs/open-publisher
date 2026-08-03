@@ -44,6 +44,19 @@ Copyright (c) 2026 Jim Liu. The bundled upstream documentation is available unde
 > DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## GetDesign / awesome-design-md
+
+- Project: <https://github.com/VoltAgent/awesome-design-md>
+- Tool version: `getdesign@0.6.24`
+- License reported by the npm package: MIT
+- Use in Open Publisher: visual research for the desktop UI refactor
+- Generated reference: `docs/design/references/airbnb/DESIGN.md`
+- Copied brand assets, logos, fonts, screenshots or application code: none
+
+The generated design analysis is a research reference. Open Publisher uses its own product
+structure, components, color tokens and typography, and does not bundle Airbnb Cereal or other
+Airbnb brand assets.
+
 ## Dependency notices
 
 JavaScript, Rust, and Python package dependencies retain their own licenses. Before a public

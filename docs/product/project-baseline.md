@@ -1856,10 +1856,11 @@ P0 必须全部满足：
 1. 本文：产品与技术唯一基线；
 2. `docs/adr/`：解释为什么偏离或升级基线；
 3. `packages/contracts/`：跨语言机器可验证规范；
-4. `docs/architecture/`：具体实现说明；
-5. `docs/product/v0.1-acceptance.md`：历史版本验收快照；
-6. README：只做已实现能力简介和开发入口；
-7. 代码注释：解释局部实现，不定义产品范围。
+4. `docs/design/ui-refactor-plan.md`：桌面端视觉、布局、组件和交互重构规范；
+5. `docs/architecture/`：具体实现说明；
+6. `docs/product/v0.1-acceptance.md`：历史版本验收快照；
+7. README：只做已实现能力简介和开发入口；
+8. 代码注释：解释局部实现，不定义产品范围。
 
 旧文档中的“七 Agent 默认链”“WebView 永不接触明文但实际可回显”“所有平台均支持”等冲突描述必须逐步修正，不得以旧文档规避本文。
 
