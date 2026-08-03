@@ -123,7 +123,7 @@ class StubGitHubRepositoryTool:
 
     @staticmethod
     def inspect(repository: str) -> list[SourceEvidence]:
-        assert repository == "example/wandao"
+        assert repository in {"example/wandao", "https://github.com/example/wandao"}
         return [
             SourceEvidence(
                 source_id="github-repository",
@@ -138,6 +138,72 @@ class StubGitHubRepositoryTool:
         return json.dumps(
             {"sources": [source.prompt_card() for source in sources]},
             ensure_ascii=False,
+        )
+
+
+class ProjectInfoSearchTool:
+    name = "web_search"
+    max_results = 5
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    @staticmethod
+    def definition() -> dict[str, object]:
+        return {
+            "type": "function",
+            "function": {"name": "web_search", "parameters": {"type": "object"}},
+        }
+
+    def search(self, query: str, *, max_results: int | None = None) -> list[SourceEvidence]:
+        assert max_results == 3
+        self.queries.append(query)
+        return [
+            SourceEvidence(
+                source_id="search-result",
+                title="万能导 Wandao · GitHub repository",
+                url="https://github.com/tllovesxs/wandao",
+                content=(
+                    "万能导是多平台知识库 Markdown 导入导出工具，"
+                    "重点处理目录结构、正文格式、图片和附件。"
+                ),
+            )
+        ]
+
+    @staticmethod
+    def tool_result(sources: list[SourceEvidence]) -> str:
+        return json.dumps(
+            {"sources": [source.prompt_card() for source in sources]},
+            ensure_ascii=False,
+        )
+
+
+class EvidenceBoundDraftProvider(MockTextProvider):
+    def __init__(self) -> None:
+        self.writer_prompt = ""
+
+    def generate_with_tools_stream(
+        self,
+        request,
+        *,
+        tools,
+        execute_tool,
+        on_delta,
+        max_tool_calls,
+    ):
+        assert tools
+        assert max_tool_calls == 1
+        self.writer_prompt = request.prompt
+        text = (
+            "# 万能导：把知识库迁移回自己手里\n\n"
+            "万能导面向多平台知识库的 Markdown 导入导出，并尽量保留目录、正文、"
+            "图片与附件。[source-1]"
+        )
+        on_delta(text)
+        return TextGenerationResponse(
+            text=text,
+            provider="evidence-test",
+            model="evidence-test",
         )
 
 
@@ -230,6 +296,100 @@ def test_preset_workflow_runs_with_deterministic_mock(client, article_payload) -
     }
 
 
+def test_named_project_promotion_resolves_sources_before_writing(
+    client, article_payload
+) -> None:
+    provider = EvidenceBoundDraftProvider()
+    search = ProjectInfoSearchTool()
+    container = client.app.state.container
+    container.model_access.text_provider = provider
+    container.workflow_runner.web_search_tool = search
+    article = client.post(
+        "/api/v1/articles",
+        json={
+            **article_payload,
+            "title": "写一篇万能导项目的宣传",
+            "markdown": (
+                "# 写一篇万能导项目的宣传\n\n## 创作要求\n\n"
+                "- 主题：写一篇万能导项目的宣传\n- 类型：技术文章"
+            ),
+        },
+    ).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "topic": "写一篇万能导项目的宣传",
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "completed"
+    assert search.queries == ["万能导 GitHub 官方项目"]
+    assert "已核验项目资料" in provider.writer_prompt
+    assert "万能导 Wandao · GitHub repository" in provider.writer_prompt
+    assert "不能把同类产品的常见架构" in provider.writer_prompt
+    assert run["state_json"]["web_source_count"] == 1
+    detail = client.get(f"/api/v1/runs/{run['id']}").json()
+    tool_events = [
+        event for event in detail["events"] if event["event_type"] == "run.node_tool_called"
+    ]
+    assert tool_events[0]["payload_json"]["tool"] == "web_search"
+
+
+def test_named_project_promotion_fails_without_sources(client, article_payload) -> None:
+    container = client.app.state.container
+    container.workflow_runner.web_search_tool = None
+    article = client.post(
+        "/api/v1/articles",
+        json={
+            **article_payload,
+            "title": "写一篇万能导项目的宣传",
+            "markdown": "# 写一篇万能导项目的宣传\n\n没有提供项目资料。",
+        },
+    ).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "topic": "写一篇万能导项目的宣传",
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "failed"
+    assert "ProjectEvidenceRequiredError" in run["error"]
+    assert run["output_revision_id"] is None
+
+
 def test_writer_registers_github_repository_as_a_bounded_research_tool(
     client,
     article_payload,
@@ -271,7 +431,7 @@ def test_writer_registers_github_repository_as_a_bounded_research_tool(
 
     assert response.status_code == 201, response.text
     run = response.json()
-    assert run["status"] == "completed"
+    assert run["status"] == "completed", run.get("error")
     assert provider.tool_names == ["github_repository"]
     assert run["state_json"]["web_source_count"] == 1
 

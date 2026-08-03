@@ -73,7 +73,7 @@ export const defaultAgents: StudioAgent[] = [
     role: "主笔",
     description: "依据已确认的结构完成 Markdown 初稿。",
     prompt:
-      "直接回答读者关心的问题。使用短段落、具体名词和可验证的表述，不编造案例或数据。",
+      "直接回答读者关心的问题。涉及具名项目时先核验官方资料或作者素材；没有可验证依据就停止并提示补充资料。使用短段落、具体名词和可验证的表述，不编造能力、案例或数据。",
     skillIds: ["md-structure", "natural-chinese"],
     enabled: true,
     runtimeNodeId: "draft",
