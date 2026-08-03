@@ -3817,10 +3817,20 @@ fn validate_model_configuration(
 fn validate_image_request(
     mut request: GenerateImageRequest,
 ) -> Result<GenerateImageRequest, String> {
-    request.prompt = request.prompt.trim().to_owned();
+    // Baoyu prompt artifacts are intentionally structured Markdown. Newlines
+    // and tabs are presentation whitespace, not unsafe control characters.
+    request.prompt = request
+        .prompt
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_owned();
     if request.prompt.is_empty()
         || request.prompt.chars().count() > 4_000
-        || request.prompt.chars().any(char::is_control)
+        || request
+            .prompt
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
     {
         return Err("配图提示词应为 1–4000 个可见字符。".to_owned());
     }
@@ -5487,6 +5497,27 @@ mod tests {
         assert!(validate_image_request(GenerateImageRequest {
             prompt: "cover".to_owned(),
             size: "999x999".to_owned(),
+            model: None,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn image_generation_accepts_multiline_baoyu_prompt_artifacts() {
+        let normalized = validate_image_request(GenerateImageRequest {
+            prompt: "# 文章配图\r\n\r\nLAYOUT: 清晰的 3:2 信息图。\n\tCOLORS: 克制的蓝灰色。"
+                .to_owned(),
+            size: "1536x1024".to_owned(),
+            model: None,
+        })
+        .expect("structured prompt artifact is valid");
+        assert_eq!(
+            normalized.prompt,
+            "# 文章配图\n\nLAYOUT: 清晰的 3:2 信息图。\n\tCOLORS: 克制的蓝灰色。"
+        );
+        assert!(validate_image_request(GenerateImageRequest {
+            prompt: "safe\u{001b}[31m text".to_owned(),
+            size: "1536x1024".to_owned(),
             model: None,
         })
         .is_err());
