@@ -433,6 +433,51 @@ def test_active_run_endpoint_exposes_live_draft_output_when_audit_write_is_unava
     assert response.status_code == 201
 
 
+def test_watchdog_cancellation_fails_a_silent_run_without_writing_a_revision(
+    client, article_payload
+) -> None:
+    article = client.post("/api/v1/articles", json=article_payload).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+    provider = BlockingStreamingDraftProvider()
+    client.app.state.container.model_access.text_provider = provider
+    response_box: dict[str, object] = {}
+
+    def start_run() -> None:
+        response_box["response"] = client.post(
+            "/api/v1/runs",
+            json={
+                "workflow_id": workflow["id"],
+                "article_id": article["article"]["id"],
+                "revision_id": article["revision"]["id"],
+            },
+        )
+
+    worker = threading.Thread(target=start_run)
+    worker.start()
+    assert provider.draft_delta_emitted.wait(timeout=5)
+
+    active = client.get("/api/v1/runs/active", params={"article_id": article["article"]["id"]})
+    assert active.status_code == 200, active.text
+    run_id = active.json()["run"]["id"]
+    cancelled = client.post(f"/api/v1/runs/{run_id}/cancel", json={})
+
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "failed"
+    assert "WatchdogExpired" in cancelled.json()["error"]
+    provider.release_draft.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    response = response_box.get("response")
+    assert response is not None
+    assert response.status_code == 201
+    run = response.json()
+    assert run["status"] == "failed"
+    assert run["output_revision_id"] is None
+    assert client.get(
+        "/api/v1/runs/active", params={"article_id": article["article"]["id"]}
+    ).json() is None
+
+
 def test_visual_agent_receives_selected_asset_text_metadata_only(
     client, article_payload
 ) -> None:

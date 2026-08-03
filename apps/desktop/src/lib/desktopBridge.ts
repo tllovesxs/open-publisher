@@ -551,6 +551,7 @@ export interface DesktopBridge {
   cancelGenerationBatch(request: GenerationBatchRequest): Promise<GenerationBatchDetail>;
   retryGenerationItem(request: GenerationItemRequest): Promise<GenerationBatchDetail>;
   getWorkflowActivity(articleId: string): Promise<WorkflowActivitySummary | null>;
+  cancelWorkflow(articleId: string): Promise<void>;
   createPublishPlan(request: CreatePublishPlanRequest): Promise<PublishPlanSummary>;
   getPublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   approvePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
@@ -910,6 +911,9 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
   async getWorkflowActivity() {
     return null;
   },
+  async cancelWorkflow() {
+    return undefined;
+  },
   async createPublishPlan(request) {
     await pause(100);
     const article = mockArticles.get(request.articleId);
@@ -1183,6 +1187,7 @@ const tauriBridge: DesktopBridge = {
     invoke<GenerationBatchDetail>("retry_generation_item", { request }),
   getWorkflowActivity: (articleId) =>
     invoke<WorkflowActivitySummary | null>("workflow_activity", { articleId }),
+  cancelWorkflow: (articleId) => invoke<void>("cancel_workflow", { articleId }),
   createPublishPlan: (request) =>
     invoke<PublishPlanSummary>("create_publish_plan", { request }),
   getPublishPlan: (request) =>
@@ -1242,6 +1247,7 @@ const browserPreviewBridge: DesktopBridge = {
   cancelGenerationBatch: desktopHostRequired,
   retryGenerationItem: desktopHostRequired,
   getWorkflowActivity: desktopHostRequired,
+  cancelWorkflow: desktopHostRequired,
   createPublishPlan: desktopHostRequired,
   getPublishPlan: desktopHostRequired,
   approvePublishPlan: desktopHostRequired,
@@ -1306,6 +1312,7 @@ export const desktopBridge: DesktopBridge = {
   cancelGenerationBatch: (request) => activeBridge().cancelGenerationBatch(request),
   retryGenerationItem: (request) => activeBridge().retryGenerationItem(request),
   getWorkflowActivity: (articleId) => activeBridge().getWorkflowActivity(articleId),
+  cancelWorkflow: (articleId) => activeBridge().cancelWorkflow(articleId),
   createPublishPlan: (request) => activeBridge().createPublishPlan(request),
   getPublishPlan: (request) => activeBridge().getPublishPlan(request),
   approvePublishPlan: (request) => activeBridge().approvePublishPlan(request),

@@ -103,7 +103,9 @@ const EDITOR_MODE_STORAGE_KEY = "open-publisher-studio-editor-mode";
 const WORKFLOW_NODES_STORAGE_KEY = "open-publisher-studio-workflow-nodes";
 const WORKFLOW_WORKSPACES_STORAGE_KEY = "open-publisher-studio-workflow-workspaces";
 const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
-const WORKFLOW_ACTIVITY_TIMEOUT_MS = 120_000;
+// This matches the Python-side cancellation reason. It is intentionally based
+// on actual workflow progress, never on a cosmetic heartbeat.
+const WORKFLOW_ACTIVITY_TIMEOUT_MS = 90_000;
 const WORKFLOW_ACTIVITY_POLL_INTERVAL_MS = 160;
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
 const INLINE_DATA_IMAGE_PATTERN =
@@ -1638,6 +1640,7 @@ export default function App() {
   ) =>
     new Promise<Result>((resolve, reject) => {
       let settled = false;
+      let cancellationRequested = false;
       const finish = (callback: (value: Result) => void, value: Result) => {
         if (settled) return;
         settled = true;
@@ -1652,17 +1655,28 @@ export default function App() {
       };
       const timeout = window.setInterval(() => {
         if (Date.now() - lastWorkflowActivityAt.current < WORKFLOW_ACTIVITY_TIMEOUT_MS) return;
+        if (cancellationRequested) return;
+        cancellationRequested = true;
         showArticleProgress({
           articleId,
           title: "本地 Agent 已停止返回进度",
-          detail: "等待已结束，请重试本次生成。",
+          detail: "正在停止当前运行并保留创作要求。",
           value: null,
         });
-        fail(
-          new Error(
-            "本地 Agent 连续 2 分钟没有返回新的进度，可能已停止或网络请求卡住。请重试本次生成。",
-          ),
+        const stalled = new Error(
+          "本地 Agent 连续 90 秒没有返回新的进度，已停止等待。创作要求已保留，可重试本次生成。",
         );
+        // Wait briefly for the sidecar to persist its cancellation. A failed
+        // local connection must never leave the editor locked, so the fallback
+        // releases the UI even if that request cannot be delivered.
+        const releaseTimer = window.setTimeout(() => fail(stalled), 2_000);
+        void desktopBridge
+          .cancelWorkflow(articleId)
+          .catch(() => undefined)
+          .finally(() => {
+            window.clearTimeout(releaseTimer);
+            fail(stalled);
+          });
       }, 5_000);
       workflowPromise.then(
         (result) => finish(resolve, result),

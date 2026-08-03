@@ -13,6 +13,7 @@ class LiveWorkflowActivityStore:
 
     max_events_per_run: int = 512
     _events_by_run: dict[str, deque[RuntimeEvent]] = field(default_factory=dict)
+    _cancellation_reasons: dict[str, str] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
     def append(self, event: RuntimeEvent) -> None:
@@ -28,3 +29,17 @@ class LiveWorkflowActivityStore:
     def snapshot(self, run_id: str) -> list[RuntimeEvent]:
         with self._lock:
             return list(self._events_by_run.get(run_id, ()))
+
+    def request_cancellation(self, run_id: str, reason: str) -> None:
+        """Signal a running worker without exposing provider transport to the UI."""
+
+        with self._lock:
+            self._cancellation_reasons[run_id] = reason
+
+    def cancellation_reason(self, run_id: str) -> str | None:
+        with self._lock:
+            return self._cancellation_reasons.get(run_id)
+
+    def clear_run(self, run_id: str) -> None:
+        with self._lock:
+            self._cancellation_reasons.pop(run_id, None)

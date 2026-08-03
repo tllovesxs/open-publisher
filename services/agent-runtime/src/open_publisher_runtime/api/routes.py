@@ -97,6 +97,7 @@ from open_publisher_runtime.domain.entities import (
     RuntimeEvent,
     Workflow,
     WorkflowRun,
+    utc_now,
 )
 from open_publisher_runtime.domain.enums import RunStatus
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
@@ -170,6 +171,8 @@ def _services(
         article_service=articles,
         workflow_runner=container.workflow_runner,
         node_event_recorder=record_live_node_event,
+        cancellation_checker=container.live_workflow_activity.cancellation_reason,
+        run_finished_callback=container.live_workflow_activity.clear_run,
     )
     publishing = PublishOutboxService(
         repository=repository,
@@ -730,6 +733,46 @@ def get_active_run(
         key=_workflow_event_sort_key,
     )
     return RunDetail(run=run, events=events)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=WorkflowRun)
+def cancel_run(
+    run_id: str,
+    session: SessionDep,
+    container: ContainerDep,
+) -> WorkflowRun:
+    """End an abandoned local run before a new retry is allowed to begin.
+
+    The in-flight model HTTP call cannot be safely killed from another thread.
+    It receives a cooperative cancellation signal and has its own bounded
+    transport timeout. The durable run is failed immediately so the desktop is
+    never held hostage by a silent provider connection.
+    """
+
+    repository = SqlAlchemyRuntimeRepository(session)
+    run = repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
+        return run
+
+    reason = "WatchdogExpired: 连续 90 秒没有收到模型的实际进展，已停止等待"
+    container.live_workflow_activity.request_cancellation(run.id, reason)
+    run.status = RunStatus.FAILED
+    run.error = reason
+    run.completed_at = utc_now()
+    repository.update_run(run)
+    repository.add_event(
+        RuntimeEvent(
+            run_id=run.id,
+            aggregate_type="workflow_run",
+            aggregate_id=run.id,
+            event_type="run.failed",
+            payload_json={"error_type": "WatchdogExpired", "cancelled": True},
+        )
+    )
+    repository.commit()
+    return run
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)

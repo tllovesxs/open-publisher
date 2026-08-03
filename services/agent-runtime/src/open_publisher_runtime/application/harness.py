@@ -62,6 +62,12 @@ class EventRecorder:
 
 
 NodeEventRecorder = Callable[[str, str, str, dict[str, object] | None], None]
+RunCancellationChecker = Callable[[str], str | None]
+RunFinishedCallback = Callable[[str], None]
+
+
+class WorkflowCancelledError(RuntimeError):
+    """A desktop watchdog ended a run before it could write a new revision."""
 
 
 class WorkflowService:
@@ -102,6 +108,8 @@ class RunController:
         article_service: ArticleService,
         workflow_runner: PresetArticleWorkflow,
         node_event_recorder: NodeEventRecorder | None = None,
+        cancellation_checker: RunCancellationChecker | None = None,
+        run_finished_callback: RunFinishedCallback | None = None,
     ) -> None:
         self.repository = repository
         self.artifact_service = artifact_service
@@ -109,6 +117,8 @@ class RunController:
         self.workflow_runner = workflow_runner
         self.events = EventRecorder(repository)
         self.node_event_recorder = node_event_recorder
+        self.cancellation_checker = cancellation_checker
+        self.run_finished_callback = run_finished_callback
 
     def _record_node_event(
         self,
@@ -246,7 +256,23 @@ class RunController:
         # The running claim and audit events must be visible before model I/O starts.
         self.repository.commit()
 
+        def ensure_not_cancelled() -> None:
+            if self.cancellation_checker is None:
+                return
+            reason = self.cancellation_checker(run.id)
+            if reason:
+                raise WorkflowCancelledError(reason)
+
+        def record_node_event(
+            node_id: str,
+            phase: str,
+            payload: dict[str, object] | None = None,
+        ) -> None:
+            ensure_not_cancelled()
+            self._record_node_event(run.id, node_id, phase, payload)
+
         try:
+            ensure_not_cancelled()
             if policy.max_model_calls < required_model_calls:
                 raise ValueError(
                     "run policy model-call budget is smaller than the preset requirement "
@@ -282,13 +308,9 @@ class RunController:
                 ),
                 disabled_optional_node_ids=disabled_optional_node_ids,
                 max_parallel=policy.max_parallel,
-                on_node_event=lambda node_id, phase, payload=None: self._record_node_event(
-                    run.id,
-                    node_id,
-                    phase,
-                    payload,
-                ),
+                on_node_event=record_node_event,
             )
+            ensure_not_cancelled()
             elapsed_seconds = monotonic() - workflow_started
             budget_state["model_calls_used"] = base_required_model_calls
             run.state_json = {**run.state_json, "budget": budget_state}
@@ -449,6 +471,12 @@ class RunController:
         except Exception as error:  # noqa: BLE001 - boundary converts failure into durable state
             self.repository.rollback()
             persisted_run = self.repository.get_run(run.id)
+            if (
+                isinstance(error, WorkflowCancelledError)
+                and persisted_run is not None
+                and persisted_run.status is RunStatus.FAILED
+            ):
+                return persisted_run
             if persisted_run is not None:
                 run = persisted_run
             run.status = RunStatus.FAILED
@@ -464,6 +492,9 @@ class RunController:
             )
             self.repository.commit()
             return run
+        finally:
+            if self.run_finished_callback is not None:
+                self.run_finished_callback(run.id)
 
     def resume(self, *, run_id: str, action: str, comment: str | None = None) -> WorkflowRun:
         run = self.repository.get_run(run_id)

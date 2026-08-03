@@ -65,6 +65,14 @@ class _TextStreamResponse:
         yield from self.lines
 
 
+class _SilentTextStreamResponse(_TextStreamResponse):
+    def __init__(self) -> None:
+        super().__init__([])
+
+    def iter_lines(self) -> Iterator[str]:
+        raise httpx.ReadTimeout("provider stopped returning SSE fragments")
+
+
 def _provider(**overrides: object) -> OpenAICompatibleImageProvider:
     options: dict[str, object] = {
         "base_url": "https://models.example/v1",
@@ -154,6 +162,28 @@ def test_text_provider_streams_delta_content_and_rejects_empty_stream(
         lambda *_args, **_kwargs: _TextStreamResponse(["data: [DONE]"]),
     )
     with pytest.raises(RuntimeError, match="without article content"):
+        provider.generate_stream(
+            TextGenerationRequest(purpose="draft", prompt="write"),
+            lambda _: None,
+        )
+
+
+def test_text_provider_stops_a_silent_stream_at_the_idle_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "stream",
+        lambda *_args, **_kwargs: _SilentTextStreamResponse(),
+    )
+    provider = OpenAICompatibleTextProvider(
+        base_url="https://models.example/v1",
+        api_key="not-a-real-secret",
+        default_model="text-model",
+        timeout_seconds=300,
+    )
+
+    with pytest.raises(TimeoutError, match="75 秒内没有返回首段正文"):
         provider.generate_stream(
             TextGenerationRequest(purpose="draft", prompt="write"),
             lambda _: None,

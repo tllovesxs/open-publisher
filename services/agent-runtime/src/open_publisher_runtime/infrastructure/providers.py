@@ -17,6 +17,13 @@ from open_publisher_runtime.application.model_access import (
     TextGenerationResponse,
 )
 
+# A user-configured model timeout is an upper bound for a complete request, but
+# it must not leave a streamed editor response waiting indefinitely for the
+# next SSE chunk.  These caps apply to model transport only; image generation
+# keeps its independently configured timeout.
+MAX_TEXT_REQUEST_TIMEOUT_SECONDS = 90.0
+MAX_STREAM_IDLE_TIMEOUT_SECONDS = 75.0
+
 
 def _unique_strings(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
@@ -298,6 +305,37 @@ class OpenAICompatibleTextProvider:
     def name(self) -> str:
         return "openai-compatible"
 
+    def _request_timeout(self) -> float:
+        """Bound non-streaming writer calls even when a saved profile is generous."""
+
+        return min(self.timeout_seconds, MAX_TEXT_REQUEST_TIMEOUT_SECONDS)
+
+    def _stream_timeout(self) -> httpx.Timeout:
+        """Limit both time-to-first-token and silence between SSE fragments."""
+
+        request_timeout = self._request_timeout()
+        return httpx.Timeout(
+            connect=request_timeout,
+            read=min(request_timeout, MAX_STREAM_IDLE_TIMEOUT_SECONDS),
+            write=request_timeout,
+            pool=request_timeout,
+        )
+
+    def _post_chat_completion(self, payload: dict[str, Any]) -> httpx.Response:
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+                timeout=self._request_timeout(),
+            )
+        except httpx.TimeoutException as error:
+            raise TimeoutError(
+                f"模型请求在 {self._request_timeout():.0f} 秒内没有完成"
+            ) from error
+        response.raise_for_status()
+        return response
+
     def generate(self, request: TextGenerationRequest) -> TextGenerationResponse:
         request_payload = {
             "model": request.model or self.default_model,
@@ -308,13 +346,7 @@ class OpenAICompatibleTextProvider:
         output_limit = request.max_output_tokens or self.max_output_tokens
         if output_limit is not None:
             request_payload["max_tokens"] = output_limit
-        response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=request_payload,
-            timeout=self.timeout_seconds,
-        )
-        response.raise_for_status()
+        response = self._post_chat_completion(request_payload)
         payload = response.json()
         usage = payload.get("usage") or {}
         return TextGenerationResponse(
@@ -388,13 +420,7 @@ class OpenAICompatibleTextProvider:
             output_limit = request.max_output_tokens or self.max_output_tokens
             if output_limit is not None:
                 request_payload["max_tokens"] = output_limit
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=request_payload,
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
+            response = self._post_chat_completion(request_payload)
             payload = response.json()
             choices = payload.get("choices")
             choice = choices[0] if isinstance(choices, list) and choices else {}
@@ -482,47 +508,54 @@ class OpenAICompatibleTextProvider:
         text_parts: list[str] = []
         response_model = request.model or self.default_model
         usage: dict[str, int] = {}
-        with httpx.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=request_payload,
-            timeout=self.timeout_seconds,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                payload_text = line[5:].strip()
-                if payload_text == "[DONE]":
-                    break
-                try:
-                    payload = json.loads(payload_text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload.get("model"), str):
-                    response_model = payload["model"]
-                usage_payload = payload.get("usage")
-                if isinstance(usage_payload, dict):
-                    usage = {
-                        "input_tokens": int(usage_payload.get("prompt_tokens", 0)),
-                        "output_tokens": int(usage_payload.get("completion_tokens", 0)),
-                    }
-                choices = payload.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                choice = choices[0] if isinstance(choices[0], dict) else {}
-                delta = choice.get("delta")
-                content = delta.get("content") if isinstance(delta, dict) else None
-                if not isinstance(content, str):
-                    # Some compatible providers send a complete message even
-                    # when the request asked for a stream. Treat it as one
-                    # visible block instead of leaving the editor empty.
-                    message = choice.get("message")
-                    content = message.get("content") if isinstance(message, dict) else None
-                if isinstance(content, str) and content:
-                    text_parts.append(content)
-                    on_delta(content)
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=request_payload,
+                timeout=self._stream_timeout(),
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload_text = line[5:].strip()
+                    if payload_text == "[DONE]":
+                        break
+                    try:
+                        payload = json.loads(payload_text)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload.get("model"), str):
+                        response_model = payload["model"]
+                    usage_payload = payload.get("usage")
+                    if isinstance(usage_payload, dict):
+                        usage = {
+                            "input_tokens": int(usage_payload.get("prompt_tokens", 0)),
+                            "output_tokens": int(usage_payload.get("completion_tokens", 0)),
+                        }
+                    choices = payload.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0] if isinstance(choices[0], dict) else {}
+                    delta = choice.get("delta")
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if not isinstance(content, str):
+                        # Some compatible providers send a complete message even
+                        # when the request asked for a stream. Treat it as one
+                        # visible block instead of leaving the editor empty.
+                        message = choice.get("message")
+                        content = message.get("content") if isinstance(message, dict) else None
+                    if isinstance(content, str) and content:
+                        text_parts.append(content)
+                        on_delta(content)
+        except httpx.TimeoutException as error:
+            phase = "返回首段正文" if not text_parts else "继续返回正文"
+            raise TimeoutError(
+                "模型流在 "
+                f"{MAX_STREAM_IDLE_TIMEOUT_SECONDS:.0f} 秒内没有{phase}，已停止本次写作"
+            ) from error
         if not text_parts:
             raise RuntimeError("model stream completed without article content")
         return TextGenerationResponse(

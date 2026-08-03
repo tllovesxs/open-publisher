@@ -225,6 +225,17 @@ async fn workflow_activity(
 }
 
 #[tauri::command]
+async fn cancel_workflow(
+    article_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.cancel_workflow(article_id))
+        .await
+        .map_err(|_| "workflow cancellation task was cancelled".to_owned())?
+}
+
+#[tauri::command]
 async fn create_publish_plan(
     request: CreatePublishPlanRequest,
     state: tauri::State<'_, DesktopState>,
@@ -429,6 +440,7 @@ pub fn run() {
             cancel_generation_batch,
             retry_generation_item,
             workflow_activity,
+            cancel_workflow,
             create_publish_plan,
             get_publish_plan,
             approve_publish_plan,

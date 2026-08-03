@@ -779,6 +779,7 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
         &self,
         article_id: String,
     ) -> Result<Option<WorkflowActivitySummary>, String>;
+    fn cancel_workflow(&self, article_id: String) -> Result<(), String>;
     fn create_publish_plan(
         &self,
         request: CreatePublishPlanRequest,
@@ -967,6 +968,7 @@ enum ApiRoute<'a> {
     CancelGenerationBatch(&'a str),
     RetryGenerationItem(&'a str),
     ActiveRun(&'a str),
+    CancelRun(&'a str),
     PublishPlans,
     PublishPlan(&'a str),
     ApprovePublishPlan(&'a str),
@@ -1003,6 +1005,7 @@ impl ApiRoute<'_> {
             Self::ActiveRun(article_id) => {
                 format!("/api/v1/runs/active?article_id={article_id}")
             }
+            Self::CancelRun(run_id) => format!("/api/v1/runs/{run_id}/cancel"),
             Self::PublishPlans => "/api/v1/publish/plans".to_owned(),
             Self::PublishPlan(plan_id) => format!("/api/v1/publish/plans/{plan_id}"),
             Self::ApprovePublishPlan(plan_id) => {
@@ -2494,6 +2497,37 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         let detail: Option<RunDetailWire> =
             self.get_json(&connection, ApiRoute::ActiveRun(&mapping.article_id))?;
         detail.map(summarize_workflow_activity).transpose()
+    }
+
+    fn cancel_workflow(&self, article_id: String) -> Result<(), String> {
+        if article_id.trim().is_empty() || article_id.len() > 256 {
+            return Err("articleId must contain between 1 and 256 bytes".to_owned());
+        }
+        let (connection, mapping) = {
+            let mut state = self.lock_state()?;
+            self.ensure_started_locked(&mut state)?;
+            let connection = state
+                .connection
+                .clone()
+                .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+            let mapping = self.article_mapping(&mut state, &connection, &article_id)?;
+            (connection, mapping)
+        };
+        let active: Option<RunDetailWire> =
+            self.get_json(&connection, ApiRoute::ActiveRun(&mapping.article_id))?;
+        let Some(active) = active else {
+            return Ok(());
+        };
+        let run_id = validate_backend_id(active.run.id, "workflow run")?;
+        let cancelled: WorkflowRunWire = self.post_json(
+            &connection,
+            ApiRoute::CancelRun(&run_id),
+            &EmptyRequestWire {},
+        )?;
+        if cancelled.id != run_id || cancelled.status != "failed" {
+            return Err("local Python runtime did not cancel the active workflow".to_owned());
+        }
+        Ok(())
     }
 
     fn create_publish_plan(
