@@ -76,4 +76,23 @@ describe("WorkflowWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "重试本次生成" }));
     expect(onRetry).toHaveBeenCalledOnce();
   });
+
+  it("uses a compact current-task card when embedded in the AI sidebar", () => {
+    const onCancel = vi.fn();
+    render(
+      <WorkflowWorkspace
+        embedded
+        onCancel={onCancel}
+        progress={{ title: "正在撰写正文", detail: "写作 Agent 正在输出正文。", value: 42 }}
+        snapshot={snapshot()}
+      />,
+    );
+
+    expect(screen.getByRole("region", { name: "当前 AI 任务" })).toHaveTextContent("当前任务");
+    expect(screen.getByText("正在撰写正文")).toBeVisible();
+    expect(screen.queryByText("AI 创作动态")).toBeNull();
+    expect(screen.queryByRole("tab", { name: /创作进度/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
 });

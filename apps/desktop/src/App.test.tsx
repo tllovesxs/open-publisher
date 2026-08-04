@@ -272,7 +272,7 @@ describe("desktop product flow", () => {
       { timeout: 5_000 },
     );
     expect(screen.queryByRole("button", { name: "关闭进度提示" })).toBeNull();
-    expect(screen.getByText("正文正在流式写入")).toBeVisible();
+    expect(screen.getByText(new RegExp(`已流式写入 ${streamedMarkdown.replace(/\s/g, "").length.toLocaleString("zh-CN")} 字`))).toBeVisible();
     expect(runWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         agentInstructions: expect.arrayContaining([

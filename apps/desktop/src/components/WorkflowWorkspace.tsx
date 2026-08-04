@@ -183,6 +183,7 @@ export function WorkflowWorkspace({
 
   useEffect(() => {
     if (snapshot?.status === "running" || snapshot?.status === "failed") setOpen(true);
+    if (snapshot?.status === "completed") setOpen(false);
   }, [snapshot?.runId, snapshot?.status]);
 
   const visibleActivityEvents = useMemo(() => compactActivity(snapshot?.events ?? []).slice(-6), [snapshot?.events]);
@@ -197,6 +198,123 @@ export function WorkflowWorkspace({
   const statusLabel =
     snapshot.status === "running" ? "正在创作" : snapshot.status === "completed" ? "创作完成" : "需要重试";
   const latest = progress ? null : visibleActivityEvents[visibleActivityEvents.length - 1];
+  const latestLabel = progress?.title ?? (latest ? eventLabel(latest) : statusLabel);
+  const latestDetail = progress?.detail ?? (
+    latest?.eventType === "run.node_tool_called" && latest.toolQuery
+      ? `${latest.toolName === "github_repository" ? "项目" : "查询"}：${latest.toolQuery}`
+      : snapshot.status === "completed"
+        ? `已完成本次文章处理 · ${updatedAtLabel(snapshot.updatedAt)}`
+        : snapshot.status === "failed"
+          ? "运行中断，可查看原因后重试"
+          : "AI 正在处理文章内容"
+  );
+
+  if (embedded) {
+    const StatusIcon = snapshot.status === "running" ? LoaderCircle : snapshot.status === "failed" ? AlertCircle : Check;
+
+    return (
+      <section
+        className={`workflow-task is-${snapshot.status}${open ? " is-expanded" : ""}`}
+        aria-label="当前 AI 任务"
+      >
+        <div className="workflow-task__summary">
+          <span className={`workflow-task__state is-${snapshot.status}`} aria-hidden="true">
+            <StatusIcon className={snapshot.status === "running" ? "spin" : undefined} size={15} />
+          </span>
+          <div className="workflow-task__copy">
+            <span>当前任务</span>
+            <strong>{latestLabel}</strong>
+            <small title={latestDetail}>{latestDetail}</small>
+          </div>
+          <button
+            aria-expanded={open}
+            aria-label={open ? "收起任务详情" : "展开任务详情"}
+            className="workflow-task__expand"
+            onClick={() => setOpen((current) => !current)}
+            title={open ? "收起任务详情" : "展开任务详情"}
+            type="button"
+          >
+            {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          </button>
+        </div>
+
+        {snapshot.status === "running" && progress && (
+          <div className="workflow-task__progress" aria-label={progress.value === null ? "任务进行中" : `当前进度 ${progress.value}%`}>
+            <span
+              className={progress.value === null ? "is-indeterminate" : undefined}
+              style={progress.value === null ? undefined : ({ "--progress": `${progress.value}%` } as CSSProperties)}
+            />
+          </div>
+        )}
+
+        {snapshot.status === "running" && onCancel && (
+          <div className="workflow-task__actions">
+            <button
+              aria-label="停止生成"
+              className="button button--quiet button--stop-workflow"
+              disabled={cancelling}
+              onClick={onCancel}
+              type="button"
+            >
+              {cancelling ? <LoaderCircle className="spin" size={13} /> : <Square size={12} />}
+              {cancelling ? "正在停止" : "停止"}
+            </button>
+          </div>
+        )}
+
+        {snapshot.status === "failed" && (
+          <div className="workflow-task__failure" role="alert">
+            <strong>文章生成失败</strong>
+            <p>{failureDetail ?? snapshot.error ?? "本地运行时未返回可展示的错误信息。"}</p>
+            {retryable && onRetry && <button className="button button--quiet" onClick={onRetry} type="button">重试本次生成</button>}
+          </div>
+        )}
+
+        {open && (
+          <div className="workflow-task__details">
+            {visibleActivityEvents.length > 0 && (
+              <ol aria-label="本次任务记录" className="workflow-task__events">
+                {visibleActivityEvents.slice(-4).reverse().map((event) => {
+                  const Icon = eventIcon(event);
+                  const state = eventState(event);
+                  return (
+                    <li className={`is-${state}`} key={event.id}>
+                      <Icon aria-hidden="true" className={state === "running" ? "spin" : undefined} size={13} />
+                      <span>{eventLabel(event)}</span>
+                      <time dateTime={event.createdAt}>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(event.createdAt))}</time>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            {streamedCharacters > 0 && !progress && (
+              <p className="workflow-task__streamed"><FileText aria-hidden="true" size={13} /> 已流式写入 {streamedCharacters.toLocaleString("zh-CN")} 字</p>
+            )}
+            {sources.length > 0 && (
+              <details className="workflow-task__sources">
+                <summary>参考资料 {sources.length}</summary>
+                <div>
+                  {sources.map((source) => (
+                    <a href={source.url} key={source.url} rel="noreferrer" target="_blank">{source.title || sourceDomain(source.url)}</a>
+                  ))}
+                </div>
+              </details>
+            )}
+            {failureLogs.length > 0 && (
+              <details className="workflow-task__logs">
+                <summary>执行日志 {failureLogs.length}</summary>
+                <ol>
+                  {failureLogs.slice(-6).reverse().map((entry) => (
+                    <li className={`is-${entry.tone}`} key={entry.id}>{entry.message}</li>
+                  ))}
+                </ol>
+              </details>
+            )}
+          </div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <aside
