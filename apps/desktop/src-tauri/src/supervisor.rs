@@ -492,6 +492,27 @@ pub struct RewriteArticleSummary {
     pub mocked: bool,
 }
 
+/// A bounded request for the visual Agent to plan illustrations for an
+/// existing draft. The plan remains side-effect-free until the desktop applies
+/// the selected assets or generated images to a revision.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ComposeVisualRequest {
+    pub article_id: String,
+    pub markdown: String,
+    pub instruction: String,
+    pub visual_composition: VisualCompositionRequest,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposeVisualSummary {
+    pub plan: VisualCompositionPlanSummary,
+    pub provider: String,
+    pub model: String,
+    pub mocked: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RewriteStreamEvent {
@@ -802,6 +823,8 @@ pub trait SidecarSupervisor: Send + Sync + 'static {
         request: RewriteArticleRequest,
         on_event: &mut dyn FnMut(RewriteStreamEvent),
     ) -> Result<RewriteArticleSummary, String>;
+    fn compose_visual(&self, request: ComposeVisualRequest)
+        -> Result<ComposeVisualSummary, String>;
     fn generate_image(&self, request: GenerateImageRequest)
         -> Result<GenerateImageSummary, String>;
     fn extract_template(
@@ -975,6 +998,7 @@ enum ApiRoute<'a> {
     EnqueuePublishPlan(&'a str),
     ProcessPublishJob(&'a str),
     RewriteArticleStream,
+    ComposeVisual,
     GenerateImage,
     ExtractTemplate,
     Connections,
@@ -1018,6 +1042,7 @@ impl ApiRoute<'_> {
                 format!("/api/v1/publish/jobs/{job_id}/process")
             }
             Self::RewriteArticleStream => "/api/v1/editor/rewrite/stream".to_owned(),
+            Self::ComposeVisual => "/api/v1/editor/visual-compose".to_owned(),
             Self::GenerateImage => "/api/v1/images/generate".to_owned(),
             Self::ExtractTemplate => "/api/v1/templates/extract".to_owned(),
             Self::Connections => "/api/v1/connections".to_owned(),
@@ -1110,6 +1135,14 @@ struct RewriteArticleRequestWire<'a> {
 struct RewriteConversationMessageWire<'a> {
     role: &'a str,
     text: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct ComposeVisualRequestWire<'a> {
+    article_id: &'a str,
+    markdown: &'a str,
+    instruction: &'a str,
+    visual_composition: &'a VisualCompositionRequest,
 }
 
 #[derive(Debug, Serialize)]
@@ -1372,6 +1405,15 @@ struct ExtractTemplateResponseWire {
     usage_instructions: String,
     analysis_version: String,
     source_fingerprint: String,
+    provider: String,
+    model: String,
+    mocked: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeVisualResponseWire {
+    plan: Value,
     provider: String,
     model: String,
     mocked: bool,
@@ -2698,6 +2740,56 @@ impl SidecarSupervisor for PythonSidecarSupervisor {
         )
     }
 
+    fn compose_visual(
+        &self,
+        request: ComposeVisualRequest,
+    ) -> Result<ComposeVisualSummary, String> {
+        validate_compose_visual_request(&request)?;
+        let mut state = self.lock_state()?;
+        self.ensure_started_locked(&mut state)?;
+        let connection = state
+            .connection
+            .clone()
+            .ok_or_else(|| "Python sidecar connection is unavailable".to_owned())?;
+        let payload = ComposeVisualRequestWire {
+            article_id: &request.article_id,
+            markdown: &request.markdown,
+            instruction: &request.instruction,
+            visual_composition: &request.visual_composition,
+        };
+        let response: ComposeVisualResponseWire =
+            self.post_json(&connection, ApiRoute::ComposeVisual, &payload)?;
+
+        // The sidecar plans directly from this request's Markdown. Its plan
+        // hash is therefore an integrity field rather than a persisted
+        // revision reference; validate its shape and all placement fields
+        // before it crosses into the WebView.
+        let source_revision_hash = response
+            .plan
+            .get("source_revision_hash")
+            .and_then(Value::as_str)
+            .filter(|value| valid_hash(value))
+            .ok_or_else(|| "local Python runtime omitted a valid visual plan hash".to_owned())?
+            .to_owned();
+        let mut plan_state = HashMap::new();
+        plan_state.insert("visual_composition_plan".to_owned(), response.plan);
+        let plan = workflow_visual_plan(&plan_state, &source_revision_hash)?
+            .ok_or_else(|| "local Python runtime did not return a visual plan".to_owned())?;
+        if response.provider.trim().is_empty()
+            || response.provider.len() > 100
+            || response.model.trim().is_empty()
+            || response.model.len() > 200
+        {
+            return Err("local Python runtime returned invalid visual model metadata".to_owned());
+        }
+        Ok(ComposeVisualSummary {
+            plan,
+            provider: response.provider,
+            model: response.model,
+            mocked: response.mocked,
+        })
+    }
+
     fn generate_image(
         &self,
         request: GenerateImageRequest,
@@ -3639,6 +3731,15 @@ fn validate_rewrite_article_request(request: &RewriteArticleRequest) -> Result<(
         validate_instruction_text(&message.text, "文章修改会话内容", 8_000)?;
     }
     Ok(())
+}
+
+fn validate_compose_visual_request(request: &ComposeVisualRequest) -> Result<(), String> {
+    if request.article_id.trim().is_empty() || request.article_id.len() > 256 {
+        return Err("articleId must contain between 1 and 256 bytes".to_owned());
+    }
+    validate_instruction_text(&request.markdown, "文章正文", 200_000)?;
+    validate_instruction_text(&request.instruction, "配图要求", 4_000)?;
+    validate_visual_composition(&request.visual_composition)
 }
 
 fn supported_platform(platform: &str) -> bool {

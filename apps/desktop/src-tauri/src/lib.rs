@@ -7,16 +7,16 @@ use std::{
 };
 
 use supervisor::{
-    BatchTopicPlanRequest, BatchTopicPlanSummary, ConfigureModelRequest, ConnectionProfilePublic,
-    CreateConnectionProfileRequest, CreateGenerationBatchRequest, CreatePublishPlanRequest,
-    ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary, GenerationBatchDetail,
-    GenerationBatchRequest, GenerationItemRequest, GitHubApplicationInfo,
-    ModelConfigurationSummary, ModelConnectionTestSummary, ModelSecretKind,
-    ProcessPublishJobRequest, ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary,
-    PythonSidecarSupervisor, RewriteArticleRequest, RewriteArticleSummary, RunWorkflowRequest,
-    RunWorkflowSummary, RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor,
-    StoredArticleSummary, TemplateExtractionSummary, WechatSyncBridgeStatus,
-    WorkflowActivitySummary,
+    BatchTopicPlanRequest, BatchTopicPlanSummary, ComposeVisualRequest, ComposeVisualSummary,
+    ConfigureModelRequest, ConnectionProfilePublic, CreateConnectionProfileRequest,
+    CreateGenerationBatchRequest, CreatePublishPlanRequest, ExtractTemplateRequest,
+    GenerateImageRequest, GenerateImageSummary, GenerationBatchDetail, GenerationBatchRequest,
+    GenerationItemRequest, GitHubApplicationInfo, ModelConfigurationSummary,
+    ModelConnectionTestSummary, ModelSecretKind, ProcessPublishJobRequest,
+    ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary, PythonSidecarSupervisor,
+    RewriteArticleRequest, RewriteArticleSummary, RunWorkflowRequest, RunWorkflowSummary,
+    RuntimeSnapshot, SaveDraftReceipt, SaveDraftRequest, SidecarSupervisor, StoredArticleSummary,
+    TemplateExtractionSummary, WechatSyncBridgeStatus, WorkflowActivitySummary,
 };
 use tauri::{Emitter, Manager};
 
@@ -307,6 +307,17 @@ async fn rewrite_article(
 }
 
 #[tauri::command]
+async fn compose_visual(
+    request: ComposeVisualRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<ComposeVisualSummary, String> {
+    let supervisor = Arc::clone(&state.supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.compose_visual(request))
+        .await
+        .map_err(|_| "visual composition task was cancelled".to_owned())?
+}
+
+#[tauri::command]
 async fn generate_image(
     request: GenerateImageRequest,
     state: tauri::State<'_, DesktopState>,
@@ -447,6 +458,7 @@ pub fn run() {
             enqueue_publish_plan,
             process_publish_job,
             rewrite_article,
+            compose_visual,
             generate_image,
             extract_template,
             list_connection_profiles,

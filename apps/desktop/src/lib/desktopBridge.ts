@@ -236,6 +236,21 @@ export interface VisualCompositionPlanSummary {
   placements: VisualPlacementSummary[];
 }
 
+/** A side-effect-free visual Agent request for an already-open article. */
+export interface ComposeVisualRequest {
+  articleId: string;
+  markdown: string;
+  instruction: string;
+  visualComposition: VisualCompositionRequest;
+}
+
+export interface ComposeVisualSummary {
+  plan: VisualCompositionPlanSummary;
+  provider: string;
+  model: string;
+  mocked: boolean;
+}
+
 /** Safe, backend-originated lifecycle data for a currently running workflow. */
 export interface WorkflowActivityEvent {
   id: string;
@@ -565,6 +580,7 @@ export interface DesktopBridge {
   enqueuePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   processPublishJob(request: ProcessPublishJobRequest): Promise<ProcessPublishJobSummary>;
   rewriteArticle(request: RewriteArticleRequest): Promise<RewriteArticleSummary>;
+  composeVisual(request: ComposeVisualRequest): Promise<ComposeVisualSummary>;
   generateImage(request: GenerateImageRequest): Promise<GenerateImageSummary>;
   extractTemplate(request: ExtractTemplateRequest): Promise<TemplateExtractionSummary>;
   listConnectionProfiles(): Promise<ConnectionProfilePublic[]>;
@@ -659,7 +675,7 @@ const mockTemplateMarkdown = (sourceMarkdown: string) => {
 };
 
 const mockVisualPlanFor = (
-  request: RunWorkflowRequest,
+  request: Pick<RunWorkflowRequest, "visualComposition">,
   outputMarkdown: string,
 ): VisualCompositionPlanSummary | null => {
   const composition = request.visualComposition;
@@ -1032,6 +1048,22 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       mocked: true,
     };
   },
+  async composeVisual(request) {
+    await pause(120);
+    const plan = mockVisualPlanFor(
+      { visualComposition: request.visualComposition },
+      request.markdown,
+    );
+    if (!plan) {
+      throw new Error("请先选择自动配图或指定配图数量。");
+    }
+    return {
+      plan,
+      provider: "mock",
+      model: mockModelConfiguration?.textModel ?? "deterministic-mock-v1",
+      mocked: true,
+    };
+  },
   async generateImage() {
     await pause(100);
     const imageId = nextMockId("generated-image");
@@ -1207,6 +1239,8 @@ const tauriBridge: DesktopBridge = {
     invoke<ProcessPublishJobSummary>("process_publish_job", { request }),
   rewriteArticle: (request) =>
     invoke<RewriteArticleSummary>("rewrite_article", { request }),
+  composeVisual: (request) =>
+    invoke<ComposeVisualSummary>("compose_visual", { request }),
   generateImage: (request) =>
     invoke<GenerateImageSummary>("generate_image", { request }),
   extractTemplate: (request) =>
@@ -1261,6 +1295,7 @@ const browserPreviewBridge: DesktopBridge = {
   enqueuePublishPlan: desktopHostRequired,
   processPublishJob: desktopHostRequired,
   rewriteArticle: desktopHostRequired,
+  composeVisual: desktopHostRequired,
   generateImage: desktopHostRequired,
   extractTemplate: desktopHostRequired,
   listConnectionProfiles: async () => [],
@@ -1326,6 +1361,7 @@ export const desktopBridge: DesktopBridge = {
   enqueuePublishPlan: (request) => activeBridge().enqueuePublishPlan(request),
   processPublishJob: (request) => activeBridge().processPublishJob(request),
   rewriteArticle: (request) => activeBridge().rewriteArticle(request),
+  composeVisual: (request) => activeBridge().composeVisual(request),
   generateImage: (request) => activeBridge().generateImage(request),
   extractTemplate: (request) => activeBridge().extractTemplate(request),
   listConnectionProfiles: () => activeBridge().listConnectionProfiles(),
