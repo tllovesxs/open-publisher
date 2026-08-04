@@ -1,6 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
-import App, { applyTemplateFixedBlocks, buildCreationSeed, normalizeTemplate } from "./App";
+import App, {
+  applyTemplateFixedBlocks,
+  buildCreationSeed,
+  normalizeTemplate,
+  persistedFailedCreationContext,
+  replaceStudioValue,
+} from "./App";
 import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
   type DesktopBridge,
@@ -388,6 +394,91 @@ describe("desktop product flow", () => {
         ]),
       );
     });
+  });
+
+  it("keeps the editor usable when the optional failed-run cache exceeds browser storage quota", async () => {
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      runWorkflow: async () => {
+        throw new Error("model connection interrupted");
+      },
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "缓存空间已满时仍可恢复的文章" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    expect(await screen.findByText("文章生成失败")).toBeVisible();
+    expect(screen.getByText("失败原因：model connection interrupted")).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "工作台暂时无法加载" })).toBeNull();
+  });
+
+  it("stores a compact failed-run recovery record and absorbs a storage quota error", () => {
+    const imageData = `data:image/png;base64,${"a".repeat(500_000)}`;
+    const persisted = persistedFailedCreationContext({
+      articleId: "article-1",
+      templateId: "template-1",
+      imageAssetIds: ["asset-1"],
+      request: {
+        topic: "为项目写一篇更新文章",
+        title: "",
+        references: "不会写入失败恢复缓存。".repeat(2_000),
+        contentType: "技术文章",
+        tone: "专业清晰",
+        length: "约 3,000 字",
+        platforms: [],
+        preset: "standard",
+        disabledNodeIds: [],
+        template: normalizeTemplate({
+          id: "template-1",
+          name: "高保真模板",
+          description: "",
+          category: "测试",
+          markdown: "# {{title}}",
+          isBuiltIn: false,
+          referenceMarkdown: "原文内容".repeat(10_000),
+        }),
+        imageAssets: [{
+          id: "asset-1",
+          name: "large-image.png",
+          src: imageData,
+          alt: "大型测试图片",
+          description: "不应写入本地恢复缓存",
+          tags: [],
+          source: "uploaded",
+          createdAt: "2026-08-04T00:00:00.000Z",
+        }],
+        imagePlan: { mode: "auto", targetCount: 0 },
+        webSearchMode: "auto",
+        agentInstructions: [{
+          id: "writer",
+          name: "写作智能体",
+          role: "writer",
+          nodeId: "draft",
+          prompt: "系统提示词".repeat(10_000),
+          skills: [],
+        }],
+      },
+    });
+    const serialized = JSON.stringify(persisted);
+    expect(serialized).not.toContain("data:image/");
+    expect(serialized).not.toContain("不会写入失败恢复缓存");
+    expect(serialized).not.toContain("原文内容");
+    expect(serialized).not.toContain("系统提示词");
+    expect(serialized.length).toBeLessThan(2_000);
+
+    const storage = {
+      removeItem: vi.fn(),
+      setItem: vi.fn(() => {
+        throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+      }),
+    };
+    expect(replaceStudioValue("open-publisher-failed-creation", persisted, storage)).toBe(false);
+    expect(storage.removeItem).toHaveBeenCalledWith("open-publisher-failed-creation");
+    expect(storage.setItem).toHaveBeenCalledTimes(2);
   });
 
   it("uses the visual plan to generate a missing image and persist the composed Markdown", async () => {

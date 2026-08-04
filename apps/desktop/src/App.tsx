@@ -76,9 +76,30 @@ interface PublishSession {
   receipts: PublishReceiptSummary[];
 }
 
-interface FailedCreationContext {
+export interface FailedCreationContext {
   articleId: string;
   request: CreationRequest;
+  templateId: string | null;
+  imageAssetIds: string[];
+}
+
+interface PersistedFailedCreationContext {
+  schemaVersion: 1;
+  articleId: string;
+  request: {
+    topic: string;
+    title: string;
+    contentType: string;
+    tone: string;
+    length: string;
+    platforms: PlatformId[];
+    preset: "fast" | "standard" | "deep";
+    disabledNodeIds: DisabledOptionalNodeId[];
+    imagePlan: CreationRequest["imagePlan"];
+    webSearchMode: CreationRequest["webSearchMode"];
+    templateId: string | null;
+    imageAssetIds: string[];
+  };
 }
 
 interface ArticleProgress {
@@ -111,6 +132,7 @@ const WORKFLOW_ACTIVITY_POLL_INTERVAL_MS = 160;
 const WORKFLOW_CANCELLED_BY_USER_MESSAGE =
   "已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。";
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
+const MAX_FAILED_RECOVERY_TEXT_LENGTH = 1_200;
 const INLINE_DATA_IMAGE_PATTERN =
   /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
 const SUPPORTED_LOCAL_IMAGE_TYPES = new Set([
@@ -168,6 +190,95 @@ function loadStudioValue<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** Web Storage is only a convenience cache. A quota error must never break writing. */
+type StudioStorage = Pick<Storage, "removeItem" | "setItem">;
+
+export function replaceStudioValue(
+  key: string,
+  value: unknown,
+  storage: StudioStorage = window.localStorage,
+) {
+  try {
+    const serialized = JSON.stringify(value);
+    storage.setItem(key, serialized);
+    return true;
+  } catch {
+    try {
+      // An older version may have stored a full Base64 asset under this key.
+      // Clear only the same cache key, then retry the compact replacement once.
+      const serialized = JSON.stringify(value);
+      storage.removeItem(key);
+      storage.setItem(key, serialized);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function replaceStudioTextValue(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    try {
+      window.localStorage.removeItem(key);
+      window.localStorage.setItem(key, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function removeStudioValue(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Browser storage is non-critical; canonical documents live in the local runtime.
+  }
+}
+
+function recoveryString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value.slice(0, MAX_FAILED_RECOVERY_TEXT_LENGTH) : fallback;
+}
+
+export function persistedFailedCreationContext(
+  context: FailedCreationContext,
+): PersistedFailedCreationContext {
+  const request = context.request;
+  return {
+    schemaVersion: 1,
+    articleId: context.articleId,
+    request: {
+      topic: recoveryString(request.topic),
+      title: recoveryString(request.title),
+      contentType: recoveryString(request.contentType),
+      tone: recoveryString(request.tone),
+      length: recoveryString(request.length),
+      platforms: request.platforms.slice(0, 16),
+      preset: request.preset,
+      disabledNodeIds: request.disabledNodeIds.slice(0, 8),
+      imagePlan: {
+        mode: request.imagePlan.mode,
+        targetCount: Math.max(0, Math.min(4, request.imagePlan.targetCount)),
+      },
+      webSearchMode: request.webSearchMode,
+      templateId: context.templateId,
+      imageAssetIds: context.imageAssetIds.slice(0, 16),
+    },
+  };
+}
+
+function createFailedCreationContext(articleId: string, request: CreationRequest): FailedCreationContext {
+  return {
+    articleId,
+    request,
+    templateId: request.template?.id ?? null,
+    imageAssetIds: request.imageAssets.map((asset) => asset.id).filter(Boolean).slice(0, 16),
+  };
 }
 
 function isStoredWorkflowWorkspace(value: unknown): value is WorkflowWorkspaceSnapshot {
@@ -693,16 +804,54 @@ function loadCreationActivity(): CreationActivity | null {
 function loadFailedCreationContext(): FailedCreationContext | null {
   const stored = loadStudioValue<unknown>(FAILED_CREATION_STORAGE_KEY, null);
   if (!stored || typeof stored !== "object") return null;
-  const context = stored as Partial<FailedCreationContext>;
+  const context = stored as Partial<PersistedFailedCreationContext>;
+  const request = context.request;
   if (
     typeof context.articleId !== "string" ||
     !context.articleId ||
-    !context.request ||
-    typeof context.request !== "object"
+    !request ||
+    typeof request !== "object"
   ) {
     return null;
   }
-  return context as FailedCreationContext;
+  const candidate = request as Partial<PersistedFailedCreationContext["request"]>;
+  const webSearchMode = candidate.webSearchMode === "off" || candidate.webSearchMode === "required"
+    ? candidate.webSearchMode
+    : "auto";
+  const preset = candidate.preset === "fast" || candidate.preset === "deep" ? candidate.preset : "standard";
+  const imagePlanMode = candidate.imagePlan?.mode;
+  const imagePlan = {
+    mode: imagePlanMode === "none" || imagePlanMode === "fixed" ? imagePlanMode : "auto",
+    targetCount: Math.max(0, Math.min(4, Number(candidate.imagePlan?.targetCount) || 0)),
+  } satisfies CreationRequest["imagePlan"];
+  return {
+    articleId: context.articleId,
+    request: {
+      topic: recoveryString(candidate.topic),
+      title: recoveryString(candidate.title),
+      references: "",
+      contentType: recoveryString(candidate.contentType, "技术文章"),
+      tone: recoveryString(candidate.tone, "专业清晰"),
+      length: recoveryString(candidate.length, "约 3,000 字"),
+      platforms: Array.isArray(candidate.platforms)
+        ? candidate.platforms.filter((platform): platform is PlatformId =>
+            typeof platform === "string" && platforms.some((item) => item.id === platform),
+          )
+        : [],
+      preset,
+      disabledNodeIds: Array.isArray(candidate.disabledNodeIds)
+        ? candidate.disabledNodeIds.filter(isOptionalWorkflowNodeId)
+        : [],
+      template: null,
+      imageAssets: [],
+      imagePlan,
+      webSearchMode,
+    },
+    templateId: typeof candidate.templateId === "string" ? candidate.templateId : null,
+    imageAssetIds: Array.isArray(candidate.imageAssetIds)
+      ? candidate.imageAssetIds.filter((id): id is string => typeof id === "string").slice(0, 16)
+      : [],
+  };
 }
 
 function preferredTheme(): Theme {
@@ -1233,7 +1382,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("open-publisher-theme", theme);
+    replaceStudioTextValue("open-publisher-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -1301,54 +1450,61 @@ export default function App() {
 
   useEffect(() => {
     if (!creationActivity) {
-      window.localStorage.removeItem(CREATION_ACTIVITY_STORAGE_KEY);
+      removeStudioValue(CREATION_ACTIVITY_STORAGE_KEY);
       return;
     }
-    window.localStorage.setItem(
+    replaceStudioValue(
       CREATION_ACTIVITY_STORAGE_KEY,
-      JSON.stringify(creationActivity),
+      creationActivity,
     );
   }, [creationActivity]);
 
   useEffect(() => {
     if (!failedCreationContext) {
-      window.localStorage.removeItem(FAILED_CREATION_STORAGE_KEY);
+      removeStudioValue(FAILED_CREATION_STORAGE_KEY);
       return;
     }
-    window.localStorage.setItem(
+    const persisted = replaceStudioValue(
       FAILED_CREATION_STORAGE_KEY,
-      JSON.stringify(failedCreationContext),
+      persistedFailedCreationContext(failedCreationContext),
     );
+    if (!persisted) {
+      setToast("失败记录未写入浏览器缓存；当前文章和本次重试仍可用。");
+    }
   }, [failedCreationContext]);
 
   useEffect(() => {
-    window.localStorage.setItem(TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+    if (!replaceStudioValue(TEMPLATES_STORAGE_KEY, templates)) {
+      setToast("模板缓存空间不足；本次编辑仍保留，建议减少过大的参考模板。");
+    }
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       setSelectedTemplateId(templates[0]?.id ?? null);
     }
   }, [selectedTemplateId, templates]);
 
   useEffect(() => {
-    window.localStorage.setItem(SELECTED_TEMPLATE_STORAGE_KEY, JSON.stringify(selectedTemplateId));
+    replaceStudioValue(SELECTED_TEMPLATE_STORAGE_KEY, selectedTemplateId);
   }, [selectedTemplateId]);
 
   useEffect(() => {
-    window.localStorage.setItem(SELECTED_MEDIA_STORAGE_KEY, JSON.stringify(selectedMediaIds));
+    replaceStudioValue(SELECTED_MEDIA_STORAGE_KEY, selectedMediaIds);
   }, [selectedMediaIds]);
 
   useEffect(() => {
-    window.localStorage.setItem(EDITOR_MODE_STORAGE_KEY, JSON.stringify(editorMode));
+    replaceStudioValue(EDITOR_MODE_STORAGE_KEY, editorMode);
   }, [editorMode]);
 
   useEffect(() => {
-    window.localStorage.setItem(WORKFLOW_NODES_STORAGE_KEY, JSON.stringify([...disabledNodes]));
+    replaceStudioValue(WORKFLOW_NODES_STORAGE_KEY, [...disabledNodes]);
   }, [disabledNodes]);
 
   useEffect(() => {
-    window.localStorage.setItem(
+    if (!replaceStudioValue(
       WORKFLOW_WORKSPACES_STORAGE_KEY,
-      JSON.stringify(workflowWorkspaces),
-    );
+      workflowWorkspaces,
+    )) {
+      setToast("执行记录未写入浏览器缓存；文章和运行状态不受影响。");
+    }
   }, [workflowWorkspaces]);
 
   useEffect(() => {
@@ -2180,7 +2336,7 @@ export default function App() {
     const agentInstructions =
       request.agentInstructions ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
     const executionId = beginWorkflowExecution(article.id);
-    activeCreationRequestRef.current = { articleId: article.id, request };
+    activeCreationRequestRef.current = createFailedCreationContext(article.id, request);
     setCreatingArticle(true);
     setWorkflowRunning(true);
     lastWorkflowActivityAt.current = Date.now();
@@ -2346,7 +2502,7 @@ export default function App() {
       if (!revisionSaved) {
         setDirtyIds((current) => new Set(current).add(article.id));
       }
-      setFailedCreationContext({ articleId: article.id, request });
+      setFailedCreationContext(createFailedCreationContext(article.id, request));
       setCreationActivity((current) =>
         current
           ? {
@@ -2417,9 +2573,20 @@ export default function App() {
 
   const retryCreation = () => {
     if (!failedCreationContext || creatingArticle || workflowRunning) return;
+    const retryRequest: CreationRequest = {
+      ...failedCreationContext.request,
+      template: failedCreationContext.templateId
+        ? templates.find((template) => template.id === failedCreationContext.templateId) ?? null
+        : failedCreationContext.request.template,
+      imageAssets: failedCreationContext.imageAssetIds.length > 0
+        ? failedCreationContext.imageAssetIds
+            .map((id) => mediaAssets.find((asset) => asset.id === id))
+            .filter((asset): asset is MediaAsset => Boolean(asset))
+        : failedCreationContext.request.imageAssets,
+    };
     if (!requireTextModel()) return;
     if (
-      compositionCanRequireGeneratedImages(failedCreationContext.request) &&
+      compositionCanRequireGeneratedImages(retryRequest) &&
       !requireImageModel()
     ) {
       return;
@@ -2432,7 +2599,7 @@ export default function App() {
       return;
     }
     const markdown = drafts[article.id] ?? article.markdown;
-    void executeCreation(article, markdown, failedCreationContext.request, true);
+    void executeCreation(article, markdown, retryRequest, true);
   };
 
   const cancelCurrentWorkflow = () => {

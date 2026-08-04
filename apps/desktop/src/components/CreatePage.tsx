@@ -118,6 +118,21 @@ function loadDraft(): CreationDraft {
   }
 }
 
+function saveDraft(draft: CreationDraft) {
+  try {
+    // Keep the convenience cache bounded; the submitted article itself is
+    // persisted by the local runtime rather than Web Storage.
+    window.localStorage.setItem(CREATION_DRAFT_STORAGE_KEY, JSON.stringify({
+      ...draft,
+      topic: draft.topic.slice(0, 20_000),
+      title: draft.title.slice(0, 1_200),
+      references: draft.references.slice(0, 100_000),
+    }));
+  } catch {
+    // A full browser cache must not make the compose page unusable.
+  }
+}
+
 function formatLength(preset: LengthPreset, customLength: string) {
   if (preset !== "custom") return lengthOptions.find((option) => option.id === preset)?.instruction ?? "";
   const count = Number(customLength);
@@ -150,10 +165,10 @@ export function CreatePage(props: CreatePageProps) {
   const promptId = useId();
 
   useEffect(() => {
-    window.localStorage.setItem(CREATION_DRAFT_STORAGE_KEY, JSON.stringify({
+    saveDraft({
       topic, title, references, tone, contentType, lengthPreset, customLength,
       imagePlanMode, imageCount, webSearchMode,
-    } satisfies CreationDraft));
+    });
   }, [contentType, customLength, imageCount, imagePlanMode, lengthPreset, references, title, tone, topic, webSearchMode]);
 
   const creationRequest = (): CreationRequest | null => {
