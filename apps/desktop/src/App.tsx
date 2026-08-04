@@ -509,9 +509,23 @@ function compactInlineDataImages(markdown: string, knownAssets: MediaAsset[]) {
   return { markdown: compactMarkdown, createdAssets };
 }
 
-function visualCompositionFromCreation(
+function boundedVisualInstructionText(value: string, maximum: number) {
+  const normalized = value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .trim();
+  return Array.from(normalized).slice(0, maximum).join("").trim();
+}
+
+export function visualCompositionFromCreation(
   request: CreationRequest,
 ): VisualCompositionRequest {
+  const visualAssetAlt = (asset: MediaAsset) =>
+    boundedVisualInstructionText(asset.alt || asset.name, 160)
+      .replace(/\s+/g, " ")
+      .trim() || "文章配图";
   const visualAssetDescription = (asset: MediaAsset) => {
     const hasStructuredDescription = Boolean(
       asset.visualDescription?.trim() ||
@@ -519,20 +533,24 @@ function visualCompositionFromCreation(
         (asset.tags && asset.tags.length > 0) ||
         (asset.usageHint?.trim() && asset.usageHint.trim() !== asset.description.trim()),
     );
-    if (!hasStructuredDescription) return asset.description.trim().slice(0, 600);
-    return [
-      asset.visualDescription?.trim() && `图片内容：${asset.visualDescription.trim()}`,
-      asset.usageHint?.trim() && `使用场景：${asset.usageHint.trim()}`,
-      asset.generationPrompt?.trim() && `生成提示词：${asset.generationPrompt.trim()}`,
-      asset.tags && asset.tags.length > 0 && `标签：${asset.tags.join("、")}`,
-    ].filter(Boolean).join("\n").slice(0, 1_200);
+    const description = hasStructuredDescription
+      ? [
+          asset.visualDescription?.trim() && `图片内容：${asset.visualDescription.trim()}`,
+          asset.usageHint?.trim() && `使用场景：${asset.usageHint.trim()}`,
+          asset.generationPrompt?.trim() && `生成提示词：${asset.generationPrompt.trim()}`,
+          asset.tags && asset.tags.length > 0 && `标签：${asset.tags.join("、")}`,
+        ].filter(Boolean).join("\n")
+      : asset.description;
+    // The sidecar protocol caps asset descriptions at 600 Unicode characters
+    // and accepts only tabs/newlines as control whitespace.
+    return boundedVisualInstructionText(description, 600) || `已选素材：${visualAssetAlt(asset)}`;
   };
   return {
     mode: request.imagePlan.mode,
     targetCount: request.imagePlan.targetCount,
     assets: request.imageAssets.slice(0, 6).map((asset) => ({
       id: asset.id,
-      alt: asset.alt.trim().slice(0, 160) || asset.name.slice(0, 160),
+      alt: visualAssetAlt(asset),
       description: visualAssetDescription(asset),
     })),
     assetScope: request.imageAssets.length > 0 ? "selected_only" : "none",

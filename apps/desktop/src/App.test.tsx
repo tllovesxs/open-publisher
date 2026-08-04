@@ -6,6 +6,7 @@ import App, {
   normalizeTemplate,
   persistedFailedCreationContext,
   replaceStudioValue,
+  visualCompositionFromCreation,
 } from "./App";
 import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
@@ -122,6 +123,43 @@ describe("desktop product flow", () => {
     expect(seed).toContain("open-publisher-reference-template:v1:");
     expect(seed).toContain("独特的参考表达只用于分析。");
     expect(seed).not.toContain("phrase_blacklist");
+  });
+
+  it("normalizes selected asset metadata to the visual sidecar protocol limits", () => {
+    const description = `图片内容\r\n${"可用于解释工作流的图示。".repeat(120)}\u0007`;
+    const composition = visualCompositionFromCreation({
+      topic: "测试文章",
+      title: "",
+      references: "",
+      contentType: "技术文章",
+      tone: "专业清晰",
+      length: "约 3,000 字",
+      platforms: [],
+      preset: "standard",
+      disabledNodeIds: [],
+      template: null,
+      imageAssets: [{
+        id: "asset-1",
+        name: "工作流图\r\n",
+        alt: "工作流图\u0000\r\n",
+        description: "",
+        visualDescription: description,
+        usageHint: "",
+        generationPrompt: "",
+        tags: [],
+        src: "data:image/png;base64,abc",
+        source: "uploaded",
+        createdAt: "2026-08-04T00:00:00.000Z",
+      }],
+      imagePlan: { mode: "auto", targetCount: 0 },
+      webSearchMode: "auto",
+    });
+
+    const asset = composition.assets[0]!;
+    expect(Array.from(asset.description)).toHaveLength(600);
+    expect(asset.description).not.toMatch(/[\r\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/);
+    expect(Array.from(asset.alt)).toHaveLength(4);
+    expect(asset.alt).toBe("工作流图");
   });
 
   it("uses the built-in Baoyu article-illustration Skill for the fixed visual workflow", () => {
