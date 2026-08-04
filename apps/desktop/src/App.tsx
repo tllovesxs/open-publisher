@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
 import { ArticlesPage } from "./components/ArticlesPage";
 import type { MarkdownSelection, RewriteCandidate } from "./components/ArticleAssistant";
+import { PageErrorBoundary } from "./components/PageErrorBoundary";
 import {
   CreatePage,
   type CreationActivity,
@@ -3198,14 +3199,16 @@ export default function App() {
         </header>
 
         <main className="page-viewport" id="main-content">
-          {loadingArticles && activeNav === "articles" ? (
-            <div className="page-loading" role="status">
-              <span className="spinner" />
-              正在读取本地文章
-            </div>
-          ) : (
-            renderPage()
-          )}
+          <PageErrorBoundary onReturnToCreate={() => navigate("create")} resetKey={activeNav}>
+            {loadingArticles && activeNav === "articles" ? (
+              <div className="page-loading" role="status">
+                <span className="spinner" />
+                正在读取本地文章
+              </div>
+            ) : (
+              renderPage()
+            )}
+          </PageErrorBoundary>
         </main>
       </div>
 

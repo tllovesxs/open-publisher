@@ -128,7 +128,10 @@ function eventIcon(event: WorkflowActivityEvent) {
 function uniqueSources(events: WorkflowActivityEvent[]) {
   const sources = new Map<string, WorkflowSourceSummary>();
   events.forEach((event) => {
-    event.sources?.forEach((source) => sources.set(source.url, source));
+    if (!Array.isArray(event.sources)) return;
+    event.sources.forEach((source) => {
+      if (source && typeof source.url === "string") sources.set(source.url, source);
+    });
   });
   return Array.from(sources.values());
 }
@@ -144,6 +147,7 @@ function stageKey(event: WorkflowActivityEvent) {
 function compactActivity(events: WorkflowActivityEvent[]) {
   const stages = new Map<string, WorkflowActivityEvent>();
   for (const event of events) {
+    if (!event || typeof event.id !== "string" || typeof event.eventType !== "string" || typeof event.createdAt !== "string") continue;
     if (event.eventType === "run.node_output_delta") continue;
     const key = stageKey(event);
     const current = stages.get(key);
@@ -153,6 +157,7 @@ function compactActivity(events: WorkflowActivityEvent[]) {
 }
 
 function updatedAtLabel(value: number) {
+  if (!Number.isFinite(value)) return "刚刚";
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
@@ -186,11 +191,18 @@ export function WorkflowWorkspace({
     if (snapshot?.status === "completed") setOpen(false);
   }, [snapshot?.runId, snapshot?.status]);
 
-  const visibleActivityEvents = useMemo(() => compactActivity(snapshot?.events ?? []).slice(-6), [snapshot?.events]);
-  const sources = useMemo(() => uniqueSources(snapshot?.events ?? []), [snapshot?.events]);
-  const streamedCharacters = useMemo(
-    () => (snapshot?.events ?? []).reduce((total, event) => total + (event.draftDelta?.replace(/\s/g, "").length ?? 0), 0),
+  const events = useMemo(
+    () => Array.isArray(snapshot?.events) ? snapshot.events : [],
     [snapshot?.events],
+  );
+  const visibleActivityEvents = useMemo(() => compactActivity(events).slice(-6), [events]);
+  const sources = useMemo(() => uniqueSources(events), [events]);
+  const streamedCharacters = useMemo(
+    () => events.reduce(
+      (total, event) => total + (typeof event.draftDelta === "string" ? event.draftDelta.replace(/\s/g, "").length : 0),
+      0,
+    ),
+    [events],
   );
 
   if (!snapshot) return null;

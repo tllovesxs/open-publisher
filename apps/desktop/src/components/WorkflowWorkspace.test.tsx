@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { vi } from "vitest";
+import type { WorkflowActivityEvent } from "../lib/desktopBridge";
 import { WorkflowWorkspace, type WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
 
 const createdAt = "2026-08-02T03:15:00.000Z";
@@ -94,5 +95,20 @@ describe("WorkflowWorkspace", () => {
     expect(screen.queryByRole("tab", { name: /创作进度/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "停止生成" }));
     expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the article panel usable when a persisted activity event is malformed", () => {
+    render(
+      <WorkflowWorkspace
+        embedded
+        snapshot={{
+          ...snapshot(),
+          events: [{ id: "legacy-event", eventType: "run.node_output_delta", nodeId: "draft", createdAt: "invalid", draftDelta: { legacy: true } }] as unknown as WorkflowActivityEvent[],
+          updatedAt: Number.NaN,
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("region", { name: "当前 AI 任务" })).toBeVisible();
   });
 });

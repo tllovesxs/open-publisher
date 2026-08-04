@@ -775,6 +775,19 @@ p {
   width: min(1040px, 100%);
 }
 
+.page-error {
+  display: grid;
+  max-width: 460px;
+  align-content: center;
+  justify-items: start;
+  gap: 12px;
+}
+
+.page-error > svg { color: var(--danger); }
+.page-error h1 { margin: 0; font-size: 20px; }
+.page-error p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.page-error > div { display: flex; flex-wrap: wrap; gap: 8px; }
+
 .page-heading--create {
   margin-bottom: 24px;
 }
