@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type {
   VisualCompositionPlanSummary,
   WorkflowActivityEvent,
-  WorkflowNodeId,
+  WorkflowActivityNodeId,
   WorkflowSourceSummary,
 } from "../lib/desktopBridge";
 
@@ -51,12 +51,13 @@ interface WorkflowWorkspaceProps {
 
 type WorkspaceTab = "activity" | "sources";
 
-const nodeLabel: Record<WorkflowNodeId, string> = {
+const nodeLabel: Record<WorkflowActivityNodeId, string> = {
   research: "资料整理",
   outline: "大纲规划",
   draft: "正文撰写",
   "natural-style": "自然表达",
   review: "内容审阅",
+  "reference-safety": "资料核验",
   risk: "风险检查",
   visual: "配图规划",
 };
@@ -130,7 +131,14 @@ function uniqueSources(events: WorkflowActivityEvent[]) {
   events.forEach((event) => {
     if (!Array.isArray(event.sources)) return;
     event.sources.forEach((source) => {
-      if (source && typeof source.url === "string") sources.set(source.url, source);
+      if (!source || typeof source.url !== "string" || !source.url.trim()) return;
+      sources.set(source.url, {
+        sourceId: typeof source.sourceId === "string" ? source.sourceId : source.url,
+        title: typeof source.title === "string" ? source.title : "未命名资料",
+        url: source.url,
+        excerpt: typeof source.excerpt === "string" ? source.excerpt : "",
+        publishedDate: typeof source.publishedDate === "string" ? source.publishedDate : null,
+      });
     });
   });
   return Array.from(sources.values());
@@ -162,6 +170,19 @@ function updatedAtLabel(value: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(value);
+}
+
+function eventTimeLabel(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "刚刚";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp);
+}
+
+function logDateTime(value: number) {
+  return Number.isFinite(value) ? new Date(value).toISOString() : undefined;
 }
 
 function sourceDomain(value: string) {
@@ -293,7 +314,7 @@ export function WorkflowWorkspace({
                     <li className={`is-${state}`} key={event.id}>
                       <Icon aria-hidden="true" className={state === "running" ? "spin" : undefined} size={13} />
                       <span>{eventLabel(event)}</span>
-                      <time dateTime={event.createdAt}>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(event.createdAt))}</time>
+                      <time dateTime={event.createdAt}>{eventTimeLabel(event.createdAt)}</time>
                     </li>
                   );
                 })}
@@ -380,7 +401,7 @@ export function WorkflowWorkspace({
                       {event.eventType === "run.node_tool_called" && event.toolQuery && <small>{event.toolName === "github_repository" ? "项目：" : "查询："}{event.toolQuery}</small>}
                       {event.eventType === "run.node_tool_called" && <small>已整理 {event.sources?.length ?? 0} 条可引用资料</small>}
                     </div>
-                    <time dateTime={event.createdAt}>{new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(event.createdAt))}</time>
+                    <time dateTime={event.createdAt}>{eventTimeLabel(event.createdAt)}</time>
                   </li>
                 );
               })}
@@ -418,12 +439,14 @@ export function WorkflowWorkspace({
                   <ol>
                     {failureLogs.slice(-8).map((entry) => (
                       <li className={`is-${entry.tone}`} key={entry.id}>
-                        <time dateTime={new Date(entry.timestamp).toISOString()}>
-                          {new Intl.DateTimeFormat("zh-CN", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                            second: "2-digit",
-                          }).format(entry.timestamp)}
+                        <time dateTime={logDateTime(entry.timestamp)}>
+                          {Number.isFinite(entry.timestamp)
+                            ? new Intl.DateTimeFormat("zh-CN", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit",
+                              }).format(entry.timestamp)
+                            : "刚刚"}
                         </time>
                         <span>{entry.message}</span>
                       </li>

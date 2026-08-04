@@ -133,7 +133,14 @@ export type DisabledOptionalNodeId =
   | "review"
   | "visual";
 
+/** Nodes the user can configure as part of a workflow instruction. */
 export type WorkflowNodeId = DisabledOptionalNodeId | "draft" | "risk";
+
+/**
+ * The runtime may also report its internal reference-safety gate in activity
+ * events. It is intentionally not configurable from the desktop UI.
+ */
+export type WorkflowActivityNodeId = WorkflowNodeId | "reference-safety";
 
 /** A text-only Skill snapshot. The desktop bridge never executes Skill code. */
 export interface WorkflowSkillInstruction {
@@ -233,7 +240,7 @@ export interface VisualCompositionPlanSummary {
 export interface WorkflowActivityEvent {
   id: string;
   eventType: string;
-  nodeId: WorkflowNodeId | null;
+  nodeId: WorkflowActivityNodeId | null;
   createdAt: string;
   /** Bounded text chunk emitted only by the writing Agent. */
   draftDelta?: string;

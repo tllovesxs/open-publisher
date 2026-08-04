@@ -792,6 +792,21 @@ p {
 .page-error p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .page-error > div { display: flex; flex-wrap: wrap; gap: 8px; }
 
+.application-error {
+  display: grid;
+  width: min(520px, calc(100% - 40px));
+  min-height: 100dvh;
+  margin: 0 auto;
+  align-content: center;
+  justify-items: start;
+  gap: 14px;
+  color: var(--ink);
+}
+
+.application-error > svg { color: var(--danger); }
+.application-error h1 { margin: 0; font-size: 20px; }
+.application-error p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
 .page-heading--create {
   margin-bottom: 24px;
 }

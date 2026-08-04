@@ -286,6 +286,34 @@ describe("desktop product flow", () => {
     await screen.findByText(/文章已生成 · 修订/);
   });
 
+  it("keeps the article workspace rendered when runtime activity contains a legacy timestamp", async () => {
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      getWorkflowActivity: async () => ({
+        runId: "legacy-activity-run",
+        status: "running" as const,
+        events: [{
+          id: "reference-safety-started",
+          eventType: "run.node_started",
+          nodeId: "reference-safety",
+          createdAt: "legacy-timestamp",
+        }],
+      }),
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "兼容旧运行记录的创作流程" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    expect(await screen.findByLabelText("Markdown 正文")).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getAllByText("资料核验正在处理")).not.toHaveLength(0);
+    });
+  });
+
   it("stops a running workflow without allowing a late result to replace the draft", async () => {
     let finishWorkflow: (() => void) | undefined;
     const cancelWorkflow = vi.fn<DesktopBridge["cancelWorkflow"]>(async () => undefined);

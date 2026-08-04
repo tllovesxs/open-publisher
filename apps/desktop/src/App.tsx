@@ -41,6 +41,7 @@ import {
   type VisualCompositionRequest,
   type VisualPlacementSummary,
   type WorkflowActivityEvent,
+  type WorkflowActivityNodeId,
   type WorkflowAgentInstruction,
   type WorkflowNodeId,
   type WechatSyncBridgeStatus,
@@ -150,8 +151,8 @@ function isOptionalWorkflowNodeId(
   );
 }
 
-function isWorkflowNodeId(value: string | undefined): value is WorkflowNodeId {
-  return value === "draft" || value === "risk" || isOptionalWorkflowNodeId(value);
+function isWorkflowNodeId(value: string | undefined): value is WorkflowActivityNodeId {
+  return value === "draft" || value === "risk" || value === "reference-safety" || isOptionalWorkflowNodeId(value);
 }
 
 function creationAgentLabels(
@@ -580,18 +581,19 @@ function activityLog(
   };
 }
 
-const workflowNodeLabel: Record<WorkflowNodeId, string> = {
+const workflowNodeLabel: Record<WorkflowActivityNodeId, string> = {
   research: "资料整理",
   outline: "大纲规划",
   draft: "正文撰写",
   "natural-style": "自然表达",
   review: "内容审阅",
+  "reference-safety": "资料核验",
   risk: "风险检查",
   visual: "配图规划",
 };
 
 function workflowAgentLabel(
-  nodeId: WorkflowNodeId,
+  nodeId: WorkflowActivityNodeId,
   agents: WorkflowAgentInstruction[],
 ) {
   return (

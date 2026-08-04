@@ -111,4 +111,22 @@ describe("WorkflowWorkspace", () => {
 
     expect(screen.getByRole("region", { name: "当前 AI 任务" })).toBeVisible();
   });
+
+  it("keeps rendering an activity event when its persisted timestamp is invalid", () => {
+    render(
+      <WorkflowWorkspace
+        snapshot={snapshot({
+          events: [{
+            id: "legacy-started",
+            eventType: "run.node_started",
+            nodeId: "reference-safety",
+            createdAt: "not-a-date",
+          }],
+        })}
+      />,
+    );
+
+    expect(screen.getAllByText("资料核验正在处理")).toHaveLength(2);
+    expect(screen.getByText("刚刚")).toBeVisible();
+  });
 });
