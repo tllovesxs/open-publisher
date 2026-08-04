@@ -5076,3 +5076,52 @@ p {
     linear-gradient(var(--surface), var(--surface)) padding-box,
     var(--chrome-border-gradient) border-box;
 }
+
+/*
+ * Geometry follows the writing workspace hierarchy: the application frame is
+ * gently rounded, working panels are softer than controls, and controls stay
+ * compact. This avoids turning the editor into a grid of oversized cards.
+ */
+@media (min-width: 821px) {
+  .app-shell {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .app-navigation,
+  .app-workspace {
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: 18px;
+  }
+
+  .app-workspace {
+    background: var(--chrome-border-gradient) border-box;
+  }
+}
+
+.button,
+.icon-button,
+.brand-mark,
+.app-navigation__item,
+.article-search input,
+.article-list-item,
+.field input,
+.field textarea,
+.field select,
+.article-picker select,
+.inline-alert {
+  border-radius: 10px;
+}
+
+.model-chip,
+.creation-toolbar__choice,
+.creation-toolbar__more,
+.creation-sources {
+  border-radius: 12px;
+}
+
+.creation-composer,
+.creation-advanced {
+  border-radius: 14px;
+}
