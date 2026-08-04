@@ -125,6 +125,27 @@ describe("desktop product flow", () => {
     expect(seed).not.toContain("phrase_blacklist");
   });
 
+  it("preserves long author reference material in the creation seed", () => {
+    const references = `项目资料段落。${"细节".repeat(50_000)}`;
+    const seed = buildCreationSeed({
+      topic: "基于完整资料写作",
+      title: "",
+      references,
+      contentType: "技术文章",
+      tone: "专业清晰",
+      length: "约 120,000 字",
+      platforms: [],
+      preset: "standard",
+      disabledNodeIds: [],
+      template: null,
+      imageAssets: [],
+      imagePlan: { mode: "none", targetCount: 0 },
+      webSearchMode: "off",
+    });
+
+    expect(seed).toContain(references);
+  });
+
   it("normalizes selected asset metadata to the visual sidecar protocol limits", () => {
     const description = `图片内容\r\n${"可用于解释工作流的图示。".repeat(120)}\u0007`;
     const composition = visualCompositionFromCreation({

@@ -403,7 +403,7 @@ export function normalizeTemplate(value: unknown): MarkdownTemplate | null {
         }))
     : [];
   const referenceMarkdown = typeof candidate.referenceMarkdown === "string"
-    ? candidate.referenceMarkdown.replace(/\r\n?/g, "\n").trim().slice(0, 60_000)
+    ? candidate.referenceMarkdown.replace(/\r\n?/g, "\n").trim()
     : "";
   const mode = candidate.mode === "reference" && referenceMarkdown ? "reference" : "scaffold";
   return {
@@ -926,13 +926,6 @@ function storedArticleToArticle(stored: StoredArticleSummary): Article {
   };
 }
 
-const MAX_CREATION_SEED_CHARACTERS = 78_000;
-
-function truncateCharacters(value: string, maximum: number) {
-  const characters = [...value];
-  return characters.length <= maximum ? value : `${characters.slice(0, Math.max(0, maximum - 1)).join("")}…`;
-}
-
 function highFidelityReferenceBlock(template: MarkdownTemplate) {
   if (
     template.mode !== "reference"
@@ -958,12 +951,8 @@ function highFidelityReferenceBlock(template: MarkdownTemplate) {
 export function buildCreationSeed(request: CreationRequest) {
   const title = request.title || request.topic;
   const referenceBlock = request.template ? highFidelityReferenceBlock(request.template) : "";
-  const maxReferenceCharacters = Math.max(
-    0,
-    MAX_CREATION_SEED_CHARACTERS - [...referenceBlock].length - 4_000,
-  );
   const referenceNotes = request.references
-    ? `\n\n## 参考资料\n\n${truncateCharacters(request.references, maxReferenceCharacters)}`
+    ? `\n\n## 参考资料\n\n${request.references}`
     : "";
   const templateHeadings = request.template
     ? request.template.markdown
@@ -986,12 +975,14 @@ export function buildCreationSeed(request: CreationRequest) {
 - 风格：${request.tone}
 - 篇幅：${request.length}
 ${referenceNotes}${template}${referenceBlock ? `\n\n${referenceBlock}` : ""}`.trim();
-  if ([...seed].length <= MAX_CREATION_SEED_CHARACTERS) return seed;
-  if (referenceBlock) {
-    const minimalSeed = `# ${title}\n\n## 创作要求\n\n- 主题：${request.topic}\n- 类型：${request.contentType}\n- 风格：${request.tone}\n- 篇幅：${request.length}\n\n${referenceBlock}`;
-    return truncateCharacters(minimalSeed, MAX_CREATION_SEED_CHARACTERS);
-  }
-  return truncateCharacters(seed, MAX_CREATION_SEED_CHARACTERS);
+  return seed;
+}
+
+function workflowTopic(article: Article) {
+  const source = (article.deck || article.title).trim();
+  // The short sidecar field is metadata only. The full author brief remains
+  // in the saved Markdown revision passed to the writing Agent.
+  return Array.from(source).slice(0, 500).join("").trim() || "文章创作";
 }
 
 function renderFixedBlock(content: string, article: Article, request: CreationRequest) {
@@ -2308,7 +2299,7 @@ export default function App() {
     const workflowPromise = desktopBridge.runWorkflow({
       articleId: article.id,
       revisionId,
-      topic: article.deck || article.title,
+      topic: workflowTopic(article),
       disabledOptionalNodeIds: disabledNodeIds,
       agentInstructions,
       webSearchMode: "auto",
@@ -2410,7 +2401,7 @@ export default function App() {
       const workflowPromise = desktopBridge.runWorkflow({
         articleId: article.id,
         revisionId,
-        topic: article.deck || article.title,
+        topic: workflowTopic(article),
         disabledOptionalNodeIds: visualNodeDisabledIds(
           request.disabledNodeIds,
           request.imagePlan,

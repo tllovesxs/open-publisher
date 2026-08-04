@@ -38,8 +38,6 @@ interface TemplatesPageProps {
 
 type EditorSource = "manual" | "extracted";
 
-const MAX_SOURCE_MARKDOWN_CHARACTERS = 60_000;
-const MAX_SOURCE_FILE_BYTES = 512 * 1024;
 const EXTRACTION_WAIT_LIMIT_MS = 90_000;
 const EXTRACTION_HARD_LIMIT_MS = 12 * 60 * 1000;
 
@@ -127,7 +125,6 @@ export function TemplatesPage({
   }, [query, templates]);
   const sourceCharacterCount = [...sourceMarkdown].length;
   const canExtract = sourceMarkdown.trim().length > 0
-    && sourceCharacterCount <= MAX_SOURCE_MARKDOWN_CHARACTERS
     && rightsConfirmed
     && !extracting;
 
@@ -206,10 +203,6 @@ export function TemplatesPage({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (file.size > MAX_SOURCE_FILE_BYTES) {
-      setExtractError("导入文件超过 512 KB，请先保留需要复用的文章正文。");
-      return;
-    }
     try {
       const content = await file.text();
       setSourceMarkdown(content);
@@ -223,7 +216,7 @@ export function TemplatesPage({
   const extractTemplate = async () => {
     if (!canExtract) {
       setExtractError(rightsConfirmed
-        ? "请先粘贴或导入一篇不超过 60000 字符的 Markdown 文章。"
+        ? "请先粘贴或导入一篇 Markdown 文章。"
         : "请确认你拥有这篇文章的使用授权后再创建参考模板。",
       );
       return;
@@ -456,10 +449,7 @@ export function TemplatesPage({
                 />
               </label>
               <div className="template-extractor__meta" id="template-source-count">
-                <span>{sourceCharacterCount.toLocaleString()} / 60,000 字符</span>
-                {sourceCharacterCount > MAX_SOURCE_MARKDOWN_CHARACTERS && (
-                  <span className="template-extractor__limit">内容超出限制</span>
-                )}
+                <span>{sourceCharacterCount.toLocaleString()} 字符</span>
               </div>
               <label className="template-extractor__rights">
                 <input

@@ -625,8 +625,8 @@ const requireMockPlan = (planId: string) => {
 
 const mockTemplateMarkdown = (sourceMarkdown: string) => {
   const normalized = sourceMarkdown.replace(/\r\n?/g, "\n").trim();
-  if (!normalized || normalized.length > 60_000) {
-    throw new Error("待提取的 Markdown 应为 1–60000 个可见字符。");
+  if (!normalized) {
+    throw new Error("待提取的 Markdown 不能为空。");
   }
   if ([...normalized].some((character) => {
     const code = character.charCodeAt(0);

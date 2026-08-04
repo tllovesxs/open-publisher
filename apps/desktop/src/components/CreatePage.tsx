@@ -120,14 +120,7 @@ function loadDraft(): CreationDraft {
 
 function saveDraft(draft: CreationDraft) {
   try {
-    // Keep the convenience cache bounded; the submitted article itself is
-    // persisted by the local runtime rather than Web Storage.
-    window.localStorage.setItem(CREATION_DRAFT_STORAGE_KEY, JSON.stringify({
-      ...draft,
-      topic: draft.topic.slice(0, 20_000),
-      title: draft.title.slice(0, 1_200),
-      references: draft.references.slice(0, 100_000),
-    }));
+    window.localStorage.setItem(CREATION_DRAFT_STORAGE_KEY, JSON.stringify(draft));
   } catch {
     // A full browser cache must not make the compose page unusable.
   }
@@ -180,11 +173,11 @@ export function CreatePage(props: CreatePageProps) {
     }
     const length = formatLength(lengthPreset, customLength);
     if (!length) {
-      setValidation("自定义字数请填写 500 到 20,000 之间的整数。");
+      setValidation("自定义字数请填写正整数。");
       return null;
     }
-    if (lengthPreset === "custom" && (Number(customLength) < 500 || Number(customLength) > 20_000)) {
-      setValidation("自定义字数请填写 500 到 20,000 之间的整数。");
+    if (lengthPreset === "custom" && Number(customLength) < 1) {
+      setValidation("自定义字数请填写正整数。");
       return null;
     }
     setValidation(null);
@@ -343,7 +336,7 @@ export function CreatePage(props: CreatePageProps) {
           {lengthPreset === "custom" && (
             <label className="field creation-custom-length">
               <span>目标字数</span>
-              <input max={20_000} min={500} onChange={(event) => setCustomLength(event.target.value)} type="number" value={customLength} />
+              <input min={1} onChange={(event) => setCustomLength(event.target.value)} type="number" value={customLength} />
             </label>
           )}
           <label className="creation-sources">

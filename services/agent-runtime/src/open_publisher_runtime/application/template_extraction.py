@@ -13,7 +13,6 @@ from open_publisher_runtime.application.model_access import (
     TextGenerationRequest,
 )
 
-MAX_TEMPLATE_SOURCE_CHARS = 60_000
 MAX_TEMPLATE_MARKDOWN_CHARS = 32_768
 PLACEHOLDER_PATTERN = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 RAW_URL_PATTERN = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
@@ -127,8 +126,6 @@ def _normalized_source(source_markdown: str) -> str:
     normalized = source_markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
         raise TemplateExtractionError("source markdown cannot be blank")
-    if len(normalized) > MAX_TEMPLATE_SOURCE_CHARS:
-        raise TemplateExtractionError("source markdown exceeds the extraction limit")
     if "\x00" in normalized:
         raise TemplateExtractionError("source markdown contains an unsupported control character")
     return normalized

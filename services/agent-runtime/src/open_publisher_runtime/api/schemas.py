@@ -60,7 +60,7 @@ class ModelTestResponse(ApiModel):
 
 
 class TemplateExtractionRequest(ApiModel):
-    source_markdown: str = Field(min_length=1, max_length=60_000)
+    source_markdown: str = Field(min_length=1)
 
     @field_validator("source_markdown")
     @classmethod

@@ -69,9 +69,9 @@ OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
 REQUIRED_NODE_IDS = ("draft",)
 NodeEventCallback = Callable[[str, str, dict[str, object] | None], None]
 # The provider default deliberately keeps short utility calls inexpensive. The
-# writer is different: the UI offers a 5,500-7,000 character long-form preset,
-# which cannot fit inside the general 1,400-token ceiling.
-DRAFT_MAX_OUTPUT_TOKENS = 8_192
+# writer is different: authors can request long-form drafts, so allow the
+# largest output supported by the local OpenAI-compatible provider contract.
+DRAFT_MAX_OUTPUT_TOKENS = 32_768
 REFERENCE_TEMPLATE_MARKER = "open-publisher-reference-template:v1:"
 REFERENCE_ARTICLE_TAG_PATTERN = re.compile(
     r"<(?P<tag>open-publisher-reference-[a-z0-9-]{1,160})>"

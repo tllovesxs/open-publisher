@@ -3854,13 +3854,12 @@ fn validate_template_extraction_request(
         .trim()
         .to_owned();
     if request.source_markdown.is_empty()
-        || request.source_markdown.chars().count() > 60_000
         || request
             .source_markdown
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
     {
-        return Err("待提取的 Markdown 应为 1–60000 个可见字符。".to_owned());
+        return Err("待提取的 Markdown 不能为空且不能包含不支持的控制字符。".to_owned());
     }
     Ok(request)
 }

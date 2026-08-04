@@ -196,8 +196,8 @@ def test_template_extraction_validates_source_before_calling_model(client) -> No
     response = client.post("/api/v1/templates/extract", json={"source_markdown": "  "})
     assert response.status_code == 422
 
-    oversized = client.post(
+    long_source = client.post(
         "/api/v1/templates/extract",
         json={"source_markdown": "x" * 60_001},
     )
-    assert oversized.status_code == 422
+    assert long_source.status_code == 200

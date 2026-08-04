@@ -1121,7 +1121,7 @@ def test_writer_uses_long_form_output_budget(client, article_payload) -> None:
     assert response.status_code == 201, response.text
     assert len(provider.requests) == 1
     assert provider.requests[0].purpose == "draft"
-    assert provider.requests[0].max_output_tokens == 8_192
+    assert provider.requests[0].max_output_tokens == 32_768
 
 
 def test_customized_budget_still_rejects_less_than_enabled_call_count(

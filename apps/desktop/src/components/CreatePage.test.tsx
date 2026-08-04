@@ -71,4 +71,19 @@ describe("CreatePage", () => {
 
     expect(screen.getByLabelText("目标字数")).toBeVisible();
   });
+
+  it("accepts a long custom article target without imposing a product cap", () => {
+    const { onCreate } = renderCreatePage();
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "一篇需要分段完成的长文" },
+    });
+    fireEvent.change(screen.getByLabelText("篇幅"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("目标字数"), { target: { value: "120000" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      length: "约 120,000 字",
+    }));
+  });
 });
