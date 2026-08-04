@@ -186,3 +186,32 @@ def test_auto_visual_plan_scales_from_completed_markdown_length() -> None:
     assert auto_image_count("字" * 1_500) == 2
     assert auto_image_count("字" * 3_000) == 3
     assert auto_image_count("字" * 4_000) == 4
+
+
+def test_editor_visual_compose_returns_an_anchored_plan(client) -> None:
+    response = client.post(
+        "/api/v1/editor/visual-compose",
+        json={
+            "article_id": "article-visual-compose",
+            "markdown": MARKDOWN,
+            "instruction": "请为文章配两张解释架构和实践流程的插图。",
+            "visual_composition": {
+                "mode": "fixed",
+                "target_count": 2,
+                "asset_scope": "none",
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["mocked"] is True
+    assert len(payload["plan"]["placements"]) == 2
+    assert all(
+        placement["anchor_excerpt"] or placement["after_heading"]
+        for placement in payload["plan"]["placements"]
+    )
+    assert all(
+        placement["generation_prompt"]
+        for placement in payload["plan"]["placements"]
+    )

@@ -27,7 +27,7 @@ from open_publisher_runtime.domain.entities import (
     Workflow,
     WorkflowRun,
 )
-from open_publisher_runtime.domain.policies import RunPolicy
+from open_publisher_runtime.domain.policies import RunPolicy, VisualCompositionRequest
 
 
 class ApiModel(BaseModel):
@@ -318,6 +318,22 @@ class RewriteArticleResponse(ApiModel):
     summary: str
     provider: str
     model: str
+    mocked: bool
+
+
+class EditorVisualComposeRequest(ApiModel):
+    """A bounded request for the visual Agent to plan an existing article."""
+
+    article_id: str = Field(min_length=1, max_length=200)
+    markdown: str = Field(min_length=1, max_length=200_000)
+    instruction: str = Field(min_length=1, max_length=4_000)
+    visual_composition: VisualCompositionRequest
+
+
+class EditorVisualComposeResponse(ApiModel):
+    plan: dict[str, Any]
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
     mocked: bool
 
 

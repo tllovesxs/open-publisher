@@ -31,7 +31,12 @@ import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
 import { PublishDialog } from "./PublishDialog";
 import type { WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
-import type { RewriteArticleSummary, WechatSyncBridgeStatus } from "../lib/desktopBridge";
+import type {
+  RewriteArticleSummary,
+  RewriteConversationMessage,
+  WechatSyncBridgeStatus,
+} from "../lib/desktopBridge";
+import type { AssistantActivity } from "./ArticleAssistant";
 
 interface WorkflowProgress {
   articleId: string;
@@ -87,6 +92,11 @@ interface ArticlesPageProps {
     conversation: Array<{ role: "user" | "assistant"; text: string }>,
     requestId: string,
   ) => Promise<RewriteArticleSummary>;
+  onComposeVisual: (
+    instruction: string,
+    conversation: RewriteConversationMessage[],
+    onActivity: (activity: AssistantActivity) => void,
+  ) => Promise<{ summary: string }>;
   onApplyRewriteCandidate: (candidate: RewriteCandidate) => Promise<void>;
   canUndoRewrite: boolean;
   onUndoRewrite: () => Promise<void>;
@@ -165,6 +175,7 @@ export function ArticlesPage({
   onRefreshWechatSync,
   onPublishToPlatforms,
   onRewriteArticle,
+  onComposeVisual,
   onApplyRewriteCandidate,
   canUndoRewrite,
   onUndoRewrite,
@@ -451,6 +462,7 @@ export function ArticlesPage({
               ));
             }}
             onRewrite={onRewriteArticle}
+            onComposeVisual={onComposeVisual}
             onUndoLastRewrite={onUndoRewrite}
             selections={selections}
             workflowFailure={workflowFailure}

@@ -36,6 +36,8 @@ from open_publisher_runtime.api.schemas import (
     CreateRunRequest,
     DemoRequest,
     DemoResponse,
+    EditorVisualComposeRequest,
+    EditorVisualComposeResponse,
     EnqueueResponse,
     ExportContentPackageRequest,
     GeneratedImageArtifactPublic,
@@ -101,6 +103,13 @@ from open_publisher_runtime.domain.entities import (
 )
 from open_publisher_runtime.domain.enums import RunStatus
 from open_publisher_runtime.infrastructure.repository import SqlAlchemyRuntimeRepository
+from open_publisher_runtime.workflows.baoyu_article_illustrator import (
+    build_plan_from_outline,
+    material_selection_prompt,
+    read_baoyu_resource,
+    select_material_sources,
+    target_image_count,
+)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 ContainerDep = Annotated[RuntimeContainer, Depends(get_container)]
@@ -409,6 +418,74 @@ def _rewrite_stream_events(
         yield _sse_event(event_type, payload if isinstance(payload, dict) else {})
 
 
+def _compose_visual_plan(
+    request: EditorVisualComposeRequest,
+    container: RuntimeContainer,
+) -> EditorVisualComposeResponse:
+    """Run only the bundled Baoyu visual planning stages for an existing draft."""
+
+    composition = request.visual_composition
+    expected_count = target_image_count(request.markdown, composition)
+    baoyu_system = read_baoyu_resource("prompts/system.md")
+    outline_response = container.model_access.generate_text(
+        TextGenerationRequest(
+            purpose="editor-visual-plan",
+            prompt=(
+                "You are the planning phase of the bundled Baoyu Article Illustrator. "
+                "Return a native Markdown outline only, never JSON and never article edits. "
+                f"Plan exactly {expected_count} illustrations. The user's visual request is: "
+                f"{request.instruction.strip()}\n\n"
+                "Use YAML frontmatter with type, density, style, palette, image_count; then "
+                "`## Illustration N` with **Position**, **Purpose**, **Visual Content**, "
+                "**Type Application**, and **Filename**. Position must point to a real prose "
+                "paragraph, not merely a heading. When the request names a location, honor it; "
+                "otherwise prefer core arguments, comparisons and processes. Do not select or "
+                "generate image files yet.\n\n"
+                f"# Bundled Baoyu system prompt\n\n{baoyu_system}\n\n"
+                f"# Article\n\n{request.markdown}"
+            ),
+            context={
+                "source_markdown": request.markdown,
+                "visual_composition": composition.model_dump(mode="json"),
+                "instruction": request.instruction.strip(),
+            },
+            max_output_tokens=2_400,
+        )
+    )
+    plan = build_plan_from_outline(
+        markdown=request.markdown,
+        request=composition,
+        outline_markdown=outline_response.text,
+    )
+    selection_response = container.model_access.generate_text(
+        TextGenerationRequest(
+            purpose="editor-visual-material-selection",
+            prompt=(
+                material_selection_prompt(plan)
+                + "\n\n# User visual request\n\n"
+                + request.instruction.strip()
+            ),
+            context={
+                "source_markdown": request.markdown,
+                "visual_composition": composition.model_dump(mode="json"),
+                "instruction": request.instruction.strip(),
+            },
+            max_output_tokens=1_400,
+        )
+    )
+    plan = select_material_sources(
+        plan=plan,
+        request=composition,
+        selection_markdown=selection_response.text,
+    )
+    return EditorVisualComposeResponse(
+        plan=plan.model_dump(mode="json"),
+        provider=outline_response.provider,
+        model=outline_response.model,
+        mocked=outline_response.mocked and selection_response.mocked,
+    )
+
+
 @router.post("/editor/rewrite", response_model=RewriteArticleResponse)
 def rewrite_article(
     request: RewriteArticleRequest,
@@ -420,6 +497,21 @@ def rewrite_article(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="article rewrite failed",
+        ) from error
+
+
+@router.post("/editor/visual-compose", response_model=EditorVisualComposeResponse)
+def compose_editor_visuals(
+    request: EditorVisualComposeRequest,
+    container: ContainerDep,
+) -> EditorVisualComposeResponse:
+    try:
+        return _compose_visual_plan(request, container)
+    except Exception as error:
+        logger.warning("Editor visual composition failed: %s", type(error).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="visual composition failed",
         ) from error
 
 

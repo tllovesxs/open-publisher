@@ -375,7 +375,7 @@ describe("desktop product flow", () => {
 
     expect(await screen.findByLabelText("Markdown 正文")).toBeVisible();
     await waitFor(() => {
-      expect(screen.getAllByText("资料核验正在处理")).not.toHaveLength(0);
+      expect(screen.getAllByText("正在执行文章工作流")).not.toHaveLength(0);
     });
   });
 
@@ -405,12 +405,12 @@ describe("desktop product flow", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "停止生成" })[0]!);
     await waitFor(() => expect(cancelWorkflow).toHaveBeenCalledWith(expect.any(String)));
-    expect(await screen.findByText("文章生成失败")).toBeVisible();
+    expect(await screen.findByText("本次工作流未完成")).toBeVisible();
     expect(screen.getByText("失败原因：已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。")).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "重试本次生成" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "重试这次工作流" }).length).toBeGreaterThan(0);
 
     finishWorkflow?.();
-    await waitFor(() => expect(screen.getByText("文章生成失败")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("本次工作流未完成")).toBeVisible());
     expect(screen.queryByText(/文章已生成 · 修订/)).toBeNull();
   });
 
@@ -429,9 +429,9 @@ describe("desktop product flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
-    expect(await screen.findByText("文章生成失败")).toBeVisible();
+    expect(await screen.findByText("本次工作流未完成")).toBeVisible();
     expect(screen.getByText("失败原因：upstream timeout")).toBeVisible();
-    fireEvent.click(screen.getAllByRole("button", { name: "重试本次生成" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "重试这次工作流" })[0]!);
 
     await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(2));
     await screen.findByText(/文章已生成 · 修订/);
@@ -470,7 +470,7 @@ describe("desktop product flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
-    expect(await screen.findByText("文章生成失败")).toBeVisible();
+    expect(await screen.findByText("本次工作流未完成")).toBeVisible();
     expect(screen.getByText("失败原因：model connection interrupted")).toBeVisible();
     expect(screen.queryByRole("heading", { name: "工作台暂时无法加载" })).toBeNull();
   });

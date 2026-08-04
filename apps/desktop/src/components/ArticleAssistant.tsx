@@ -2,13 +2,11 @@ import {
   Bot,
   ChevronLeft,
   ChevronRight,
-  FileText,
   LoaderCircle,
-  MessageSquareText,
   RotateCcw,
   SendHorizontal,
   Sparkles,
-  WandSparkles,
+  Square,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -17,10 +15,7 @@ import {
   type RewriteArticleSummary,
   type RewriteConversationMessage,
 } from "../lib/desktopBridge";
-import {
-  WorkflowWorkspace,
-  type WorkflowWorkspaceSnapshot,
-} from "./WorkflowWorkspace";
+import type { WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
 
 export interface MarkdownSelection {
   start: number;
@@ -33,6 +28,12 @@ export interface RewriteCandidate {
   selections: MarkdownSelection[];
   model: string;
   summary: string;
+}
+
+export interface AssistantActivity {
+  title: string;
+  detail: string;
+  value: number | null;
 }
 
 interface Message extends RewriteConversationMessage {
@@ -52,6 +53,11 @@ interface ArticleAssistantProps {
     conversation: RewriteConversationMessage[],
     requestId: string,
   ) => Promise<RewriteArticleSummary>;
+  onComposeVisual: (
+    instruction: string,
+    conversation: RewriteConversationMessage[],
+    onActivity: (activity: AssistantActivity) => void,
+  ) => Promise<{ summary: string }>;
   onApplyCandidate: (candidate: RewriteCandidate) => Promise<void>;
   onUndoLastRewrite: () => Promise<void>;
   workflowSnapshot?: WorkflowWorkspaceSnapshot | null;
@@ -129,6 +135,10 @@ function visibleEditorialNote(markup: string) {
   return markup.slice(contentStart, end < 0 ? undefined : end).trimStart();
 }
 
+function isVisualRequest(instruction: string) {
+  return /(配图|插图|插入.{0,8}图|加.{0,6}图片|图片|图像|封面)/u.test(instruction);
+}
+
 export function ArticleAssistant({
   articleId,
   selections,
@@ -136,6 +146,7 @@ export function ArticleAssistant({
   onClearSelections,
   onRemoveSelection,
   onRewrite,
+  onComposeVisual,
   onApplyCandidate,
   onUndoLastRewrite,
   workflowSnapshot = null,
@@ -148,12 +159,12 @@ export function ArticleAssistant({
 }: ArticleAssistantProps) {
   const [open, setOpen] = useState(true);
   const [instruction, setInstruction] = useState("");
-  const [scope, setScope] = useState<"selection" | "article">("article");
   const [working, setWorking] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [messages, setMessages] = useState<Message[]>(() => loadSession(articleId));
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [liveNote, setLiveNote] = useState("");
+  const [liveProgress, setLiveProgress] = useState<number | null>(null);
   const activeRequestRef = useRef<string | null>(null);
   const streamedMarkupRef = useRef("");
   const streamedNoteRef = useRef("");
@@ -177,6 +188,7 @@ export function ArticleAssistant({
     setInstruction("");
     setLiveStatus(null);
     setLiveNote("");
+    setLiveProgress(null);
     activeRequestRef.current = null;
     streamedMarkupRef.current = "";
     streamedNoteRef.current = "";
@@ -188,13 +200,8 @@ export function ArticleAssistant({
   }, [articleId, messages]);
 
   useEffect(() => {
-    if (!selections.length) {
-      if (scope === "selection") setScope("article");
-      return;
-    }
-    setScope("selection");
-    setOpen(true);
-  }, [selections]);
+    if (selections.length) setOpen(true);
+  }, [selections.length]);
 
   useEffect(() => {
     let disposed = false;
@@ -240,7 +247,7 @@ export function ArticleAssistant({
     ].slice(-24));
   };
 
-  const activeSelections = scope === "selection" ? selections : [];
+  const activeSelections = selections;
   const scopeLabel = activeSelections.length
     ? `${activeSelections.length} 个选中文本片段`
     : "整篇文章";
@@ -257,20 +264,36 @@ export function ArticleAssistant({
         } satisfies WorkflowWorkspaceSnapshot
       : null
   );
+  const workflowActive = activeWorkflowSnapshot?.status === "running";
 
   const submit = async (nextInstruction = instruction) => {
     const normalized = nextInstruction.trim();
     if (!normalized || working || undoing) return;
+    const visual = isVisualRequest(normalized);
     const requestId = `rewrite-${crypto.randomUUID?.() ?? Date.now()}`;
     activeRequestRef.current = requestId;
     streamedMarkupRef.current = "";
     streamedNoteRef.current = "";
     typewriterQueueRef.current = "";
     setLiveNote("");
-    setLiveStatus("AI 正在读取文章与已选片段");
+    setLiveProgress(null);
+    setLiveStatus(visual ? "视觉 Agent 正在读取文章结构" : "AI 正在读取文章与已选片段");
     setWorking(true);
     addMessage("user", `${scopeLabel}：${normalized}`);
     try {
+      if (visual) {
+        const result = await onComposeVisual(
+          normalized,
+          messages.slice(-12).map(({ role, text }) => ({ role, text })),
+          (activity) => {
+            setLiveStatus(activity.detail || activity.title);
+            setLiveProgress(activity.value);
+          },
+        );
+        addMessage("assistant", result.summary);
+        setInstruction("");
+        return;
+      }
       const result = await onRewrite(
         normalized,
         activeSelections,
@@ -297,6 +320,7 @@ export function ArticleAssistant({
       activeRequestRef.current = null;
       setWorking(false);
       setLiveStatus(null);
+      setLiveProgress(null);
     }
   };
 
@@ -333,39 +357,6 @@ export function ArticleAssistant({
 
       {open && (
         <div className="article-assistant__content">
-          {activeWorkflowSnapshot && (
-            <WorkflowWorkspace
-              cancelling={cancellingWorkflow}
-              embedded
-              failureDetail={workflowFailure?.detail}
-              failureLogs={workflowFailure?.logs}
-              onCancel={onCancelWorkflow}
-              onRetry={onRetryWorkflow}
-              progress={workflowProgress}
-              retryable={workflowFailure?.retryable ?? workflowRetryable}
-              snapshot={activeWorkflowSnapshot}
-            />
-          )}
-          <div className="article-assistant__scope" role="group" aria-label="修改范围">
-            <button
-              aria-pressed={scope === "article"}
-              className={scope === "article" ? "is-active" : ""}
-              onClick={() => setScope("article")}
-              type="button"
-            >
-              <FileText size={13} /> 全文
-            </button>
-            <button
-              aria-pressed={scope === "selection"}
-              className={scope === "selection" ? "is-active" : ""}
-              disabled={!selections.length}
-              onClick={() => setScope("selection")}
-              type="button"
-            >
-              <MessageSquareText size={13} /> 已选片段 {selections.length || ""}
-            </button>
-          </div>
-
           {selections.length > 0 && (
             <section className="article-assistant__selections" aria-label="已选文本片段">
               <div className="article-assistant__selections-head">
@@ -406,13 +397,46 @@ export function ArticleAssistant({
                 {message.text}
               </p>
             ))}
+            {activeWorkflowSnapshot && (
+              <section
+                className={`article-assistant__activity${workflowFailure ? " is-error" : ""}`}
+                role="status"
+              >
+                <header>
+                  {workflowFailure ? <X size={14} /> : <LoaderCircle className="spin" size={14} />}
+                  <strong>{workflowFailure ? "本次工作流未完成" : workflowProgress?.title ?? "正在执行文章工作流"}</strong>
+                </header>
+                <p>{workflowFailure?.detail ?? workflowProgress?.detail ?? "正在等待 Agent 返回新的进度。"}</p>
+                {workflowProgress?.value !== null && workflowProgress?.value !== undefined && !workflowFailure && (
+                  <span className="article-assistant__progress" aria-label={`进度 ${workflowProgress.value}%`}>
+                    <i style={{ width: `${Math.max(3, workflowProgress.value)}%` }} />
+                  </span>
+                )}
+                {workflowFailure?.logs.length ? (
+                  <details>
+                    <summary>查看执行记录</summary>
+                    <ol>
+                      {workflowFailure.logs.slice(-5).map((entry) => <li key={entry.id}>{entry.message}</li>)}
+                    </ol>
+                  </details>
+                ) : null}
+                {workflowFailure && workflowRetryable && onRetryWorkflow ? (
+                  <button className="text-button" onClick={onRetryWorkflow} type="button">重试这次工作流</button>
+                ) : null}
+              </section>
+            )}
             {(working || liveNote) && (
-              <section className="article-assistant__live" role="status">
+              <section className="article-assistant__activity" role="status">
                 <header>
                   {working ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}
-                  {working ? liveStatus || "AI 正在生成修改" : "AI 编辑说明"}
+                  <strong>{working ? liveStatus || "AI 正在生成修改" : "AI 编辑说明"}</strong>
                 </header>
                 {liveNote && <p>{liveNote}</p>}
+                {liveProgress !== null && (
+                  <span className="article-assistant__progress" aria-label={`进度 ${liveProgress}%`}>
+                    <i style={{ width: `${Math.max(3, liveProgress)}%` }} />
+                  </span>
+                )}
               </section>
             )}
           </div>
@@ -440,7 +464,7 @@ export function ArticleAssistant({
             <label>
               <span className="visually-hidden">对文章的修改要求</span>
               <textarea
-                disabled={working || undoing}
+                disabled={working || undoing || workflowActive}
                 onChange={(event) => setInstruction(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -453,13 +477,19 @@ export function ArticleAssistant({
               />
             </label>
             <button
-              aria-label="应用 AI 修改"
+              aria-label={workflowActive ? "停止生成" : "应用 AI 修改"}
               className="article-assistant__send"
-              disabled={!instruction.trim() || working || undoing}
-              onClick={() => void submit()}
+              disabled={workflowActive ? cancellingWorkflow : !instruction.trim() || working || undoing}
+              onClick={() => {
+                if (workflowActive) onCancelWorkflow?.();
+                else void submit();
+              }}
+              title={workflowActive ? "停止生成" : "发送修改要求"}
               type="button"
             >
-              {working ? <LoaderCircle className="spin" size={16} /> : <SendHorizontal size={16} />}
+              {workflowActive
+                ? (cancellingWorkflow ? <LoaderCircle className="spin" size={16} /> : <Square size={14} fill="currentColor" />)
+                : (working ? <LoaderCircle className="spin" size={16} /> : <SendHorizontal size={16} />)}
             </button>
           </div>
         </div>

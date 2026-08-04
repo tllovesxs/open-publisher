@@ -1813,7 +1813,7 @@ p {
 .article-assistant:not(.is-open) .article-assistant__toggle { justify-content: center; padding: 8px; }
 .article-assistant:not(.is-open) .article-assistant__toggle-copy,.article-assistant:not(.is-open) .article-assistant__toggle > svg { display: none; }
 
-.article-assistant__content { display: grid; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr) auto; animation: workspace-content-enter 180ms ease-out; }
+.article-assistant__content { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto; animation: workspace-content-enter 180ms ease-out; }
 .article-assistant__scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .article-assistant__scope button { display: inline-flex; min-height: 32px; align-items: center; justify-content: center; gap: 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); font-size: 11px; }
 .article-assistant__scope button:hover:not(:disabled) { background: var(--surface-muted); color: var(--ink-soft); }
@@ -1860,6 +1860,18 @@ p {
 .article-assistant__quick-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .article-assistant__quick-actions button { min-height: 24px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 9px; }
 .article-assistant__quick-actions button:hover { background: var(--surface-muted); color: var(--accent-ink); }
+
+.article-assistant__activity { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--ink); }
+.article-assistant__activity.is-error { border-color: color-mix(in srgb, var(--danger) 46%, var(--border)); background: color-mix(in srgb, var(--danger-soft) 24%, var(--surface)); }
+.article-assistant__activity header { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 11px; }
+.article-assistant__activity header svg { color: var(--accent-ink); }
+.article-assistant__activity.is-error header svg,.article-assistant__activity.is-error header strong { color: var(--danger); }
+.article-assistant__activity p { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+.article-assistant__activity details { color: var(--muted); font-size: 10px; }
+.article-assistant__activity summary { cursor: pointer; }
+.article-assistant__activity ol { display: grid; gap: 4px; margin: 7px 0 0; padding-left: 17px; }
+.article-assistant__progress { display: block; height: 3px; overflow: hidden; border-radius: 999px; background: var(--surface-muted); }
+.article-assistant__progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease-out; }
 
 .workflow-workspace {
   display: grid;
@@ -4247,7 +4259,7 @@ p {
 }
 
 .article-assistant__content {
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .article-assistant__scope button.is-active {
@@ -5062,6 +5074,49 @@ p {
   background: rgb(255 255 255 / 7%);
 }
 
+/* Keep the editor and assistant in one writing workspace on narrow desktops.
+   Stacking is reserved for true phone-sized windows. */
+@media (min-width: 721px) and (max-width: 1180px) {
+  .article-editor__body {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .article-assistant,
+  .article-assistant.is-open {
+    width: 52px;
+    min-height: 0;
+    border-top: 0;
+    border-left: 1px solid var(--chrome-border);
+  }
+
+  .article-assistant.is-open {
+    width: clamp(284px, 34vw, 344px);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .article-assistant:not(.is-open) .article-assistant__toggle {
+    justify-content: center;
+    padding: 8px;
+  }
+
+  .article-assistant:not(.is-open) .article-assistant__toggle-copy,
+  .article-assistant:not(.is-open) .article-assistant__toggle > svg {
+    display: none;
+  }
+}
+
+.article-assistant__message.is-assistant,
+.article-assistant__activity,
+.article-assistant__live {
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .article-assistant__activity {
+  background: rgb(255 255 255 / 7%);
+}
+
 :root[data-theme="dark"] .model-chip,
 :root[data-theme="dark"] .creation-toolbar__choice,
 :root[data-theme="dark"] .creation-toolbar__more {
@@ -5124,4 +5179,58 @@ p {
 .creation-composer,
 .creation-advanced {
   border-radius: 14px;
+}
+
+/*
+ * The desktop frame carries the roundness; working content stays quiet and
+ * continuous inside it. This keeps the writing surface calm while removing
+ * the square, window-in-window feel from the surrounding chrome.
+ */
+@media (min-width: 821px) {
+  .app-shell {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .app-navigation,
+  .app-workspace {
+    border-radius: 20px;
+  }
+
+  .workspace-topbar {
+    border-top-right-radius: 19px;
+  }
+
+  .page-viewport {
+    overflow: hidden;
+    border-bottom-right-radius: 19px;
+  }
+}
+
+/* Article collaboration keeps the same softer geometry without turning the
+   editor itself into a set of detached cards. */
+.article-assistant__message,
+.article-assistant__live,
+.article-assistant__candidate,
+.article-assistant__activity {
+  border-radius: 12px;
+}
+
+.article-assistant__selection-chip,
+.article-assistant__selection-preview,
+.article-assistant__composer textarea,
+.article-assistant__send,
+.editor-toolbar__tools > button,
+.mode-switch > button,
+.platform-segments {
+  border-radius: 10px;
+}
+
+.article-progress,
+.article-workflow-failure,
+.publish-dialog,
+.visual-confirmation-dialog,
+.creation-picker__dialog,
+.image-insert-dialog__panel {
+  border-radius: 16px;
 }
