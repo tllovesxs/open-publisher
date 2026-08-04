@@ -69,9 +69,14 @@ OPTIONAL_NODE_IDS: tuple[OptionalWorkflowNodeId, ...] = (
 REQUIRED_NODE_IDS = ("draft",)
 NodeEventCallback = Callable[[str, str, dict[str, object] | None], None]
 # The provider default deliberately keeps short utility calls inexpensive. The
-# writer is different: authors can request long-form drafts, so allow the
-# largest output supported by the local OpenAI-compatible provider contract.
-DRAFT_MAX_OUTPUT_TOKENS = 32_768
+# writer derives its own budget from the author-selected length in the saved
+# creation brief. This avoids turning every ordinary article into a maximum-
+# sized request while retaining room for genuinely long-form work.
+DEFAULT_DRAFT_OUTPUT_TOKENS = 8_192
+MAX_DRAFT_OUTPUT_TOKENS = 32_768
+CREATION_LENGTH_PATTERN = re.compile(
+    r"(?m)^-\s*篇幅：\s*(?:约\s*)?(?P<characters>[0-9][0-9,，]*)\s*字"
+)
 REFERENCE_TEMPLATE_MARKER = "open-publisher-reference-template:v1:"
 REFERENCE_ARTICLE_TAG_PATTERN = re.compile(
     r"<(?P<tag>open-publisher-reference-[a-z0-9-]{1,160})>"
@@ -125,6 +130,28 @@ def _author_reference_material(source_markdown: str) -> str:
 
     match = REFERENCE_SECTION_PATTERN.search(source_markdown)
     return match.group("content").strip() if match is not None else ""
+
+
+def _draft_output_token_budget(source_markdown: str) -> int:
+    """Map the author-visible character target to a bounded model budget.
+
+    Chinese Markdown often consumes around one token per visible character,
+    but headings, code and mixed-language passages vary. The multiplier keeps
+    ordinary drafts comfortably within their requested length without sending
+    a 32k-token request when the author asked for a short article.
+    """
+
+    match = CREATION_LENGTH_PATTERN.search(source_markdown)
+    if match is None:
+        return DEFAULT_DRAFT_OUTPUT_TOKENS
+    try:
+        target_characters = int(match.group("characters").replace(",", "").replace("，", ""))
+    except ValueError:
+        return DEFAULT_DRAFT_OUTPUT_TOKENS
+    return min(
+        MAX_DRAFT_OUTPUT_TOKENS,
+        max(1_200, int(target_characters * 1.6)),
+    )
 
 
 def _evidence_prompt_cards(sources: Sequence[SourceEvidence]) -> str:
@@ -465,16 +492,20 @@ class PresetArticleWorkflow:
             return appended
 
         def execute_tool(name: str, arguments: dict[str, object]) -> str:
+            query_summary = ""
             if self.web_search_tool is not None and name == self.web_search_tool.name:
                 query = arguments.get("query")
                 if not isinstance(query, str):
                     raise ValueError("web_search requires a text query")
                 requested_count = arguments.get("max_results")
                 max_results = requested_count if isinstance(requested_count, int) else None
-                sources = self.web_search_tool.search(query, max_results=max_results)
                 query_summary = " ".join(query.split())[:500]
-                tool_result = self.web_search_tool.tool_result
                 source_origin = "web_search"
+                try:
+                    sources = self.web_search_tool.search(query, max_results=max_results)
+                except Exception as error:
+                    return tool_unavailable(name, query_summary, error)
+                tool_result = self.web_search_tool.tool_result
             elif (
                 self.github_repository_tool is not None
                 and name == self.github_repository_tool.name
@@ -484,10 +515,13 @@ class PresetArticleWorkflow:
                     raise ValueError(
                         "github_repository requires a repository URL or owner/repository"
                     )
-                sources = self.github_repository_tool.inspect(repository)
                 query_summary = repository.strip()[:500]
-                tool_result = self.github_repository_tool.tool_result
                 source_origin = "github_repository"
+                try:
+                    sources = self.github_repository_tool.inspect(repository)
+                except Exception as error:
+                    return tool_unavailable(name, query_summary, error)
+                tool_result = self.github_repository_tool.tool_result
             else:
                 raise ValueError("writer requested a tool that is not available")
             appended_sources = append_sources(sources, source_origin=source_origin)
@@ -519,6 +553,22 @@ class PresetArticleWorkflow:
             # needs the actual observation rather than an empty tool response.
             return tool_result(sources)
 
+        def tool_unavailable(name: str, query: str, error: Exception) -> str:
+            if on_node_event is not None:
+                on_node_event(
+                    "draft",
+                    "tool_failed",
+                    {
+                        "tool": name,
+                        "query": query,
+                        "error_type": type(error).__name__,
+                    },
+                )
+            return (
+                f"工具 {name} 当前无法读取该资料。不要引用或推断该资料中的任何事实；"
+                "仅使用作者已提供、可自行核验的内容继续写作。"
+            )
+
         project_lookup = _project_lookup_query(state["topic"])
         author_reference = _author_reference_material(state["source_markdown"])
         supplied_github_url = GITHUB_REPOSITORY_URL_PATTERN.search(
@@ -546,6 +596,11 @@ class PresetArticleWorkflow:
                 {"repository": supplied_github_url.group(0)},
             )
             remaining_tool_calls -= 1
+            if not source_evidence and not author_reference:
+                raise ProjectEvidenceRequiredError(
+                    "提供的 GitHub 仓库当前无法访问，且没有可核验的项目资料。"
+                    "请确认仓库链接或在参考资料中补充项目说明后重试。"
+                )
         elif project_lookup is not None and not author_reference:
             if (
                 state["web_search_mode"] == "off"
@@ -642,7 +697,7 @@ class PresetArticleWorkflow:
                     "research_report": state["research_report"],
                     "outline": state["outline"],
                 },
-                max_output_tokens=DRAFT_MAX_OUTPUT_TOKENS,
+                max_output_tokens=_draft_output_token_budget(state["source_markdown"]),
             ),
             tools=tools,
             execute_tool=execute_tool,
@@ -682,7 +737,7 @@ class PresetArticleWorkflow:
                 # a successful-but-truncated final revision.
                 max_output_tokens=max(
                     1_600,
-                    min(DRAFT_MAX_OUTPUT_TOKENS, len(state["raw_draft"]) + 800),
+                    min(MAX_DRAFT_OUTPUT_TOKENS, len(state["raw_draft"]) + 800),
                 ),
             )
         )

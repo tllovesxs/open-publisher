@@ -141,6 +141,12 @@ class StubGitHubRepositoryTool:
         )
 
 
+class UnavailableGitHubRepositoryTool(StubGitHubRepositoryTool):
+    @staticmethod
+    def inspect(_repository: str) -> list[SourceEvidence]:
+        raise RuntimeError("repository is unavailable")
+
+
 class ProjectInfoSearchTool:
     name = "web_search"
     max_results = 5
@@ -511,6 +517,59 @@ def test_writer_registers_github_repository_as_a_bounded_research_tool(
     ]
     assert tool_events[0]["payload_json"]["tool"] == "github_repository"
     assert tool_events[0]["payload_json"]["sources"][0]["url"] == "https://github.com/example/wandao"
+
+
+def test_writer_continues_from_author_material_when_github_is_unavailable(
+    client,
+    article_payload,
+) -> None:
+    container = client.app.state.container
+    container.model_access.text_provider = CountingTextProvider()
+    container.workflow_runner.github_repository_tool = UnavailableGitHubRepositoryTool()
+    article = client.post(
+        "/api/v1/articles",
+        json={
+            **article_payload,
+            "markdown": (
+                "# 项目更新\n\n## 参考资料\n\n"
+                "这是作者确认的项目说明。\n\n"
+                "仓库：https://github.com/example/unavailable"
+            ),
+        },
+    ).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "topic": "介绍这个项目的更新",
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "completed"
+    detail = client.get(f"/api/v1/runs/{response.json()['id']}").json()
+    tool_failures = [
+        event for event in detail["events"] if event["event_type"] == "run.node_tool_failed"
+    ]
+    assert tool_failures[0]["payload_json"] == {
+        "node_id": "draft",
+        "tool": "github_repository",
+        "query": "https://github.com/example/unavailable",
+        "error_type": "RuntimeError",
+    }
 
 
 def test_reference_template_keeps_source_private_and_applies_style_context(client) -> None:
@@ -1121,7 +1180,44 @@ def test_writer_uses_long_form_output_budget(client, article_payload) -> None:
     assert response.status_code == 201, response.text
     assert len(provider.requests) == 1
     assert provider.requests[0].purpose == "draft"
-    assert provider.requests[0].max_output_tokens == 32_768
+    assert provider.requests[0].max_output_tokens == 8_192
+
+
+def test_writer_scales_output_budget_for_an_explicit_long_form_brief(
+    client, article_payload
+) -> None:
+    provider = RecordingTextProvider()
+    client.app.state.container.model_access.text_provider = provider
+    article = client.post(
+        "/api/v1/articles",
+        json={
+            **article_payload,
+            "markdown": "# 初稿\n\n- 篇幅：约 20,000 字\n\n这是第一版内容。",
+        },
+    ).json()
+    workflow = client.get("/api/v1/workflows").json()[0]
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "workflow_id": workflow["id"],
+            "article_id": article["article"]["id"],
+            "revision_id": article["revision"]["id"],
+            "policy": {
+                "disabled_optional_node_ids": [
+                    "research",
+                    "outline",
+                    "natural-style",
+                    "review",
+                    "visual",
+                ],
+                "max_model_calls": 1,
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert provider.requests[0].max_output_tokens == 32_000
 
 
 def test_customized_budget_still_rejects_less_than_enabled_call_count(
