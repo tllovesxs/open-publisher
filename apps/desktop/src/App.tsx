@@ -2,7 +2,11 @@ import { Check, Image, Menu, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
 import { ArticlesPage } from "./components/ArticlesPage";
-import type { MarkdownSelection, RewriteCandidate } from "./components/ArticleAssistant";
+import type {
+  AssistantActivity,
+  MarkdownSelection,
+  RewriteCandidate,
+} from "./components/ArticleAssistant";
 import { PageErrorBoundary } from "./components/PageErrorBoundary";
 import {
   CreatePage,
@@ -643,6 +647,14 @@ function insertVisualMarkdown(
     lines.splice(insertion.line, 0, "", insertion.markup, "");
   }
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+function requestedVisualCount(instruction: string): number | null {
+  const arabicMatch = instruction.match(/(?:配|插|加|补).{0,12}?([1-6])\s*(?:张|幅|个)?(?:配图|插图|图片|图像|图)/u);
+  if (arabicMatch?.[1]) return Number(arabicMatch[1]);
+  const chineseMatch = instruction.match(/(?:配|插|加|补).{0,12}?([一二三四五六])\s*(?:张|幅|个)?(?:配图|插图|图片|图像|图)/u);
+  const values: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
+  return chineseMatch?.[1] ? values[chineseMatch[1]] ?? null : null;
 }
 
 function buildWorkflowAgentInstructions(
@@ -2735,6 +2747,206 @@ export default function App() {
     }
   };
 
+  const composeVisualForCurrentArticle = async (
+    instruction: string,
+    _conversation: RewriteConversationMessage[],
+    onActivity: (activity: AssistantActivity) => void,
+  ): Promise<{ summary: string }> => {
+    if (!selectedArticle || workflowRunning || saving) {
+      throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
+    }
+    if (!requireTextModel()) {
+      throw new Error("请先完成文本模型配置。");
+    }
+    if (!currentMarkdown.trim()) {
+      throw new Error("当前文章没有可供视觉 Agent 分析的正文。");
+    }
+
+    const article = selectedArticle;
+    const sourceMarkdown = currentMarkdown;
+    const requestedCount = requestedVisualCount(instruction);
+    const visualAssets = (selectedMedia.length > 0 ? selectedMedia : mediaAssets).slice(0, 6);
+    const assetScope = selectedMedia.length > 0
+      ? "selected_only"
+      : visualAssets.length > 0
+        ? "library"
+        : "none";
+    const visualComposition: VisualCompositionRequest = {
+      mode: requestedCount ? "fixed" : "auto",
+      targetCount: requestedCount ?? 0,
+      assets: visualAssets.map((asset) => {
+        const description = [
+          asset.visualDescription?.trim() && `图片内容：${asset.visualDescription.trim()}`,
+          asset.usageHint?.trim() && `使用场景：${asset.usageHint.trim()}`,
+          asset.generationPrompt?.trim() && `生成提示词：${asset.generationPrompt.trim()}`,
+          asset.tags && asset.tags.length > 0 && `标签：${asset.tags.join("、")}`,
+          asset.description?.trim() && `补充说明：${asset.description.trim()}`,
+        ].filter(Boolean).join("\n");
+        return {
+          id: asset.id,
+          alt: boundedVisualInstructionText(asset.alt || asset.name, 160) || "文章配图",
+          description: boundedVisualInstructionText(description, 600) || "可用于补充文章内容的本地素材。",
+        };
+      }),
+      assetScope,
+      preferredType: "infographic",
+      density: requestedCount && requestedCount >= 3 ? "per-section" : "balanced",
+      style: "清晰、克制的中文技术文章插图，不含品牌标识或额外文字",
+      palette: null,
+      preferredImageBackend: "auto",
+      generationBatchSize: 4,
+      skipConfirmation: true,
+    };
+
+    onActivity({
+      title: "视觉 Agent 正在规划配图",
+      detail: "正在理解文章结构，并确定每张图片适合插入的位置。",
+      value: 10,
+    });
+    const result: { plan: VisualCompositionPlanSummary } = await desktopBridge.composeVisual({
+      articleId: article.id,
+      markdown: sourceMarkdown,
+      instruction,
+      visualComposition,
+    });
+    const plan = result.plan;
+    if (plan.placements.length !== plan.targetCount) {
+      throw new Error("视觉 Agent 返回的配图数量无效，文章未插入图片。请重试本次操作。");
+    }
+    if (plan.targetCount === 0) {
+      onActivity({
+        title: "视觉 Agent 已完成分析",
+        detail: "当前文章无需补充正文配图。",
+        value: 100,
+      });
+      return { summary: "视觉 Agent 判断当前文章无需补充正文配图。" };
+    }
+
+    onActivity({
+      title: "正在匹配素材与生成提示词",
+      detail: `视觉 Agent 已规划 ${plan.targetCount} 张配图，正在准备执行。`,
+      value: 25,
+    });
+    const assetsById = new Map(visualAssets.map((asset) => [asset.id, asset]));
+    const generatedPlacements = plan.placements.filter((placement) => !placement.assetId);
+    if (generatedPlacements.length > 0 && (
+      !modelConfiguration?.imageBaseUrl ||
+      !modelConfiguration.imageModel ||
+      !modelConfiguration.imageSecretConfigured
+    )) {
+      throw new Error("视觉 Agent 已选出需要生成的配图，但未配置生图模型。");
+    }
+
+    const imageModel = modelConfiguration?.imageModel ?? null;
+    const generatedAssets: MediaAsset[] = [];
+    let completedCount = 0;
+    const executePlacement = async (placement: VisualPlacementSummary, index: number) => {
+      if (placement.assetId) {
+        const asset = assetsById.get(placement.assetId);
+        if (!asset) {
+          throw new Error("视觉 Agent 选择了当前可用素材之外的图片，请重试本次配图。");
+        }
+        completedCount += 1;
+        onActivity({
+          title: "正在插入素材库图片",
+          detail: `已安排第 ${index + 1}/${plan.targetCount} 张素材。`,
+          value: 25 + Math.round((completedCount / plan.targetCount) * 62),
+        });
+        return { placement, asset };
+      }
+      if (!placement.generationPrompt) {
+        throw new Error("视觉 Agent 未为待生成图片提供可执行的提示词。");
+      }
+      onActivity({
+        title: "正在并发生成正文配图",
+        detail: `正在生成第 ${index + 1}/${plan.targetCount} 张配图。`,
+        value: 28 + Math.round((completedCount / plan.targetCount) * 56),
+      });
+      const imageResult = await desktopBridge.generateImage({
+        prompt: placement.generationPrompt,
+        size: "1536x1024",
+        model: imageModel,
+      });
+      const image = imageResult.images[0];
+      if (!image) {
+        throw new Error(`第 ${index + 1} 张配图未返回可保存的图片数据。`);
+      }
+      const asset: MediaAsset = {
+        id: `generated-${image.id}`,
+        name: `${article.title} 正文配图 ${index + 1}`.slice(0, 120),
+        alt: escapeImageAlt(placement.alt),
+        description: `由 AI 根据文章小节“${placement.afterHeading ?? "文章核心观点"}”生成。`,
+        visualDescription: placement.alt,
+        usageHint: `适合插入“${placement.afterHeading ?? "文章核心观点"}”之后，用于补充正文说明。`,
+        generationPrompt: placement.generationPrompt,
+        tags: ["AI 生成", "正文配图"],
+        descriptionSource: "generation_prompt",
+        src: image.dataUrl,
+        source: "generated",
+        createdAt: "刚刚生成",
+      };
+      generatedAssets.push(asset);
+      completedCount += 1;
+      onActivity({
+        title: "正在并发生成正文配图",
+        detail: `已完成第 ${completedCount}/${plan.targetCount} 张配图。`,
+        value: 25 + Math.round((completedCount / plan.targetCount) * 62),
+      });
+      return { placement, asset };
+    };
+
+    const placements: Array<{ placement: VisualPlacementSummary; asset: MediaAsset }> = [];
+    const batchSize = Math.max(1, Math.min(4, Number(plan.settings.generation_batch_size ?? 4)));
+    for (let offset = 0; offset < plan.placements.length; offset += batchSize) {
+      const batch = plan.placements.slice(offset, offset + batchSize);
+      const batchResults = await Promise.all(
+        batch.map((placement, index) => executePlacement(placement, offset + index)),
+      );
+      placements.push(...batchResults);
+    }
+
+    const nextMarkdown = insertVisualMarkdown(sourceMarkdown, placements);
+    onActivity({
+      title: "正在写入 Markdown",
+      detail: "配图已按文章结构定位，正在保存新的文章修订。",
+      value: 92,
+    });
+    setArticleContentReplacing(true);
+    try {
+      await persistRevision(article.id, nextMarkdown, false);
+      rewriteUndoRef.current[article.id] = {
+        before: sourceMarkdown,
+        after: nextMarkdown,
+      };
+      setRewriteUndoArticleId(article.id);
+      if (generatedAssets.length > 0) {
+        setMediaAssets((current) => [
+          ...generatedAssets,
+          ...current.filter(
+            (asset) => !generatedAssets.some((created) => created.id === asset.id),
+          ),
+        ]);
+        setSelectedMediaIds((current) => [
+          ...new Set([...current, ...generatedAssets.map((asset) => asset.id)]),
+        ]);
+        setGeneratedImages((current) => ({
+          ...current,
+          [article.id]: (current[article.id] ?? 0) + generatedAssets.length,
+        }));
+      }
+    } finally {
+      window.setTimeout(() => setArticleContentReplacing(false), 260);
+    }
+    onActivity({
+      title: "配图已写入文章",
+      detail: `已按文章结构插入 ${placements.length} 张配图。`,
+      value: 100,
+    });
+    return {
+      summary: `已按文章结构插入 ${placements.length} 张配图，其中 ${generatedAssets.length} 张为新生成图片。`,
+    };
+  };
+
   const rewriteCurrentArticle = async (
     instruction: string,
     selections: MarkdownSelection[],
@@ -3214,6 +3426,7 @@ export default function App() {
             onPlatformChange={setSelectedPlatform}
             onPublishToPlatforms={publishCurrentArticleToWechatSync}
             onRefreshWechatSync={() => void refreshWechatSyncStatus()}
+            onComposeVisual={composeVisualForCurrentArticle}
             onRewriteArticle={rewriteCurrentArticle}
             onUndoRewrite={undoLastArticleRewrite}
             onRunWorkflow={() => void improveCurrentArticle()}
