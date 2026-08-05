@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/common.schema.json",
+  "title": "OpenPublisherCommonV2",
+  "$defs": {
+    "SchemaVersion": { "const": "2" },
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "Timestamp": { "type": "string", "format": "date-time" },
+    "Sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "AgentId": { "enum": ["writer", "visual", "reviewer", "template", "topic"] },
+    "JsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/$defs/JsonValue" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/JsonValue" } }
+      ]
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "$ref": "#/$defs/Identifier" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "retryable": { "type": "boolean" },
+        "details": { "$ref": "#/$defs/JsonValue" }
+      }
+    }
+  }
+}

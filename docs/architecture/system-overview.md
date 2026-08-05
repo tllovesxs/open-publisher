@@ -1,55 +1,53 @@
 # System overview
 
-Open Publisher is one desktop product composed of three local trust zones and an optional browser
-companion. The process split is intentional: presentation, credentials, AI orchestration, and
-remote publishing do not share equal authority.
+Open Publisher is one local-first desktop product composed of three trust zones and an optional
+browser companion. Presentation, operating-system authority, Agent orchestration, and remote
+publishing do not share equal authority.
 
 ```mermaid
 flowchart LR
     subgraph Desktop["Tauri desktop"]
         UI["React workspace<br/>Markdown + review UI"]
-        Host["Rust host<br/>validation · reference boundary · supervision"]
+        Host["Rust host<br/>scope · secrets · supervision"]
         UI -->|"typed Tauri commands"| Host
     end
 
-    subgraph Runtime["Authenticated local Sidecar"]
-        API["FastAPI application"]
-        Harness["RunController / Harness"]
-        Graph["LangGraph workflows"]
-        Artifacts["SQLite + artifact store"]
-    Publish["PublishService<br/>outbox + idempotency"]
-        API --> Harness --> Graph
-        API --> Artifacts
-        Harness --> Artifacts
-        API --> Publish --> Artifacts
+    subgraph Runtime["Authenticated TypeScript Sidecar"]
+        API["Hono loopback API"]
+        Pi["Pi Agent adapter"]
+        Tools["Scoped product tools"]
+        Store["SQLite + Markdown + artifacts"]
+        Publish["PublishService<br/>outbox + idempotency"]
+        API --> Pi --> Tools
+        API --> Store
+        Tools --> Store
+        API --> Publish --> Store
     end
 
     Host -->|"loopback + per-launch token"| API
-    Host -.->|"future short-lived secret lease<br/>v0.1 uses env/mock refs only"| Runtime
-    Graph -->|"structured artifacts only"| Publish
-    Publish -->|"explicitly approved draft sync"| WechatSync["WechatSync local bridge"]
-    WechatSync --> Platforms["Publishing platforms"]
+    Host -.->|"short-lived secret lease"| Pi
+    Pi -->|"structured tool requests"| Tools
+    Publish -->|"explicitly approved draft sync"| Bridge["Browser publishing bridge"]
+    Bridge --> Platforms["Publishing platforms"]
 
     subgraph Browser["MV3 browser companion"]
-        Popup["P0 extension popup<br/>manual smoke payload"]
         Worker["Service worker"]
-        Adapter["Editor adapter"]
-        Popup --> Worker
+        Adapter["Platform editor adapters"]
         Worker --> Adapter
     end
 
     Worker -->|"keeps browser login state"| Platforms
     Adapter -->|"draft fill / NEEDS_USER"| Platforms
-    Wandao["Wandao"] <-->|"ContentPackage v1"| Artifacts
+    Wandao["Wandao"] <-->|"ContentPackage v1"| Store
 ```
 
 ## Canonical data flow
 
 ```mermaid
 flowchart TD
-    Sources["Topic · URLs · notes · Wandao package"] --> Research["ResearchBundle"]
-    Research --> Outline["Outline"]
-    Outline --> Revision["ArticleRevision<br/>canonical Markdown"]
+    Sources["Topic · URLs · project · notes"] --> Writer["Writer Agent + scoped tools"]
+    Writer --> Working["Recoverable .working.md"]
+    Working --> Revision["Atomic ArticleRevision<br/>canonical Markdown"]
     Revision --> Review["Review + risk reports"]
     Revision --> Visual["VisualPlan + assets"]
     Revision --> Variants["PlatformVariant per target"]
@@ -61,17 +59,19 @@ flowchart TD
     Job --> Receipt["PublishReceipt"]
 ```
 
-The arrows describe artifact dependencies, not permission inheritance. Producing a later artifact
-does not grant an agent permission to perform a remote write.
+The arrows describe artifact dependencies, not permission inheritance. An Agent can request a
+scoped local tool, but cannot acquire secrets, arbitrary filesystem access, or publication rights.
 
 ## Deployment modes
 
-- **v0.1 local desktop:** all orchestration and storage run on the user's machine. No hosted
-  account is required.
-- **optional external model gateway:** a user may configure an OpenAI-compatible endpoint. The
-  gateway is not bundled and remains behind `ModelAccessLayer`.
-- **explicit local draft sync:** an approved `wechat_sync_draft` job may call the already-running
-  WechatSync loopback bridge. It receives a platform Markdown variant and returns a draft receipt;
-  it never gives the WebView browser cookies or performs a final publish click.
-- **future cloud runner:** scheduling and team collaboration may add a server later, but it must
-  use the same versioned contracts, approval binding, and outbox semantics.
+- **Local desktop:** Rust starts a Bun-compiled TypeScript Sidecar. No hosted account is required.
+- **Development and release:** Rust starts the same TypeScript/Pi Runtime entrypoint. Legacy Python
+  source is migration history and is not an executable desktop path.
+- **Optional model endpoint:** users may configure a supported provider or OpenAI-compatible
+  endpoint. Provider capabilities are probed rather than inferred from a model name.
+- **Browser draft sync:** approved jobs use the browser companion's existing login session. The
+  Runtime never exports cookies and never bypasses platform verification.
+- **Future Web deployment:** reuses contracts and domain interfaces, but requires new identity,
+  tenant, secret, and worker implementations rather than exposing the desktop Sidecar.
+
+ADR 0003 and `pi-agent-runtime-migration.md` are normative for the Runtime migration.

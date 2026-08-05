@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
-foreach ($Program in @("node", "pnpm", "cargo", "python")) {
+foreach ($Program in @("node", "pnpm", "cargo", "bun")) {
     if (-not (Get-Command $Program -ErrorAction SilentlyContinue)) {
         throw "Missing required development program: $Program"
     }
@@ -11,13 +11,4 @@ foreach ($Program in @("node", "pnpm", "cargo", "python")) {
 
 pnpm install
 
-if (-not (Test-Path -LiteralPath ".venv")) {
-    python -m venv .venv
-}
-
-$PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-& $PythonExe -m pip install --upgrade pip
-& $PythonExe -m pip install -e ".[dev]"
-& $PythonExe -m pip install -e ".\services\agent-runtime[dev,langgraph]"
-
-Write-Output "Development environment is ready."
+Write-Output "Development environment is ready. Run 'pnpm dev' for the desktop app or 'pnpm quality' for local checks."

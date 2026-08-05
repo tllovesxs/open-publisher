@@ -1,6 +1,6 @@
 # ADR 0001: Local-first architecture baseline
 
-- Status: Accepted
+- Status: Superseded by ADR 0003
 - Date: 2026-07-30
 
 ## Context
@@ -31,3 +31,8 @@ through a durable outbox with idempotency and reconciliation.
 - Python packaging, signing, and sidecar supervision are first-class release work.
 - Browser-session publishing remains on the user's computer even if a cloud runner is added later.
 
+## Supersession
+
+ADR 0003 preserves the local-first trust boundary, canonical Markdown, deterministic publishing,
+and browser-session publishing decisions. It replaces only the Python/FastAPI/LangGraph Runtime
+with a TypeScript Runtime based on Pi Agent Core.

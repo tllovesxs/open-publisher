@@ -12,29 +12,88 @@ import { availableSkills, defaultAgents } from "./data/contentStudio";
 import {
   type DesktopBridge,
   desktopBridge,
-  type RunWorkflowSummary,
   setDesktopBridgeForTests,
   testOnlyMockDesktopBridge,
 } from "./lib/desktopBridge";
 
 const nativeTestBridge: DesktopBridge = {
   ...testOnlyMockDesktopBridge,
-  runtimeSnapshot: async () => ({
+  piRuntimeSnapshot: async () => ({
     state: "ready",
-    bridgeMode: "python_sidecar",
+    bridgeMode: "pi_sidecar",
     generation: 1,
-    detail: "Test-only local Python sidecar.",
+    detail: "Test-only local Pi runtime.",
   }),
-  ensureAgentRuntime: async () => ({
+  ensurePiRuntime: async () => ({
     state: "ready",
-    bridgeMode: "python_sidecar",
+    bridgeMode: "pi_sidecar",
     generation: 1,
-    detail: "Test-only local Python sidecar.",
+    detail: "Test-only local Pi runtime.",
   }),
+  startPiArticleRun: async ({ articleId, prompt }) => {
+    const title = prompt.match(/(?:文章主题|主题)：\s*(.+)/)?.[1]?.trim()
+      || "本地 Pi 写作测试";
+    await testOnlyMockDesktopBridge.saveDraft({
+      articleId,
+      baseRevision: null,
+      markdown: `# ${title}\n\n${prompt}`,
+    });
+    return {
+      schemaVersion: "2",
+      id: `test-pi-run-${articleId}`,
+      articleId,
+      sessionId: `test-session-${articleId}`,
+      agentId: "writer",
+      operation: "create_article",
+      status: "completed",
+      baseRevisionId: null,
+      createdAt: "2026-08-05T00:00:00.000Z",
+      startedAt: "2026-08-05T00:00:00.000Z",
+      completedAt: "2026-08-05T00:00:00.000Z",
+      error: null,
+    };
+  },
+  getPiRun: async (runId) => ({
+    schemaVersion: "2",
+    id: runId,
+    articleId: runId.replace("test-pi-run-", ""),
+    sessionId: null,
+    agentId: "writer",
+    operation: "create_article",
+    status: "completed",
+    baseRevisionId: null,
+    createdAt: "2026-08-05T00:00:00.000Z",
+    startedAt: "2026-08-05T00:00:00.000Z",
+    completedAt: "2026-08-05T00:00:00.000Z",
+    error: null,
+  }),
+  getPiArticle: async (articleId) => {
+    const article = (await testOnlyMockDesktopBridge.listArticles()).find(
+      (candidate) => candidate.articleId === articleId,
+    );
+    if (!article) throw new Error(`测试文章不存在：${articleId}`);
+    return {
+      schemaVersion: "2",
+      articleId,
+      title: article.title,
+      relativePath: "article.md",
+      currentRevisionId: article.revisionId,
+      contentHash: `test-hash-${article.revisionId}`,
+      updatedAt: article.updatedAt,
+      markdown: article.markdown,
+    };
+  },
   modelConfiguration: async () => ({
+    profileId: "test-profile",
     name: "Test model",
     baseUrl: "https://example.test/v1",
+    textProtocol: "openai-completions",
     textModel: "test-text-model",
+    textSupportsVision: false,
+    textReasoning: false,
+    textThinkingLevel: "auto",
+    textContextWindow: 128000,
+    textMaxTokens: 16384,
     imageBaseUrl: "https://images.example.test/v1",
     imageModel: "test-image-model",
     imageTrustedHosts: [],
@@ -49,6 +108,22 @@ const nativeTestBridge: DesktopBridge = {
     githubTokenMasked: null,
     persistence: "encrypted_local_database",
   }),
+  listModelProfiles: async () => ([{
+    id: "test-profile",
+    name: "Test model",
+    baseUrl: "https://example.test/v1",
+    textProtocol: "openai-completions",
+    textModel: "test-text-model",
+    textSupportsVision: false,
+    textReasoning: false,
+    textThinkingLevel: "auto",
+    textContextWindow: 128000,
+    textMaxTokens: 16384,
+    timeoutSeconds: 30,
+    secretConfigured: true,
+    textKeyMasked: "tes••••ret",
+    active: true,
+  }]),
   testModelConnection: async () => ({
     provider: "openai-compatible",
     model: "test-text-model",
@@ -56,7 +131,19 @@ const nativeTestBridge: DesktopBridge = {
   }),
 };
 
-const waitForNativeRuntime = () => screen.findByText("test-text-model");
+const waitForNativeRuntime = () =>
+  screen.findByRole("option", { name: /Test model/ });
+
+const setImagePlan = (mode: "none" | "fixed", count = 1) => {
+  fireEvent.click(screen.getByRole("button", { name: /配图/ }));
+  fireEvent.click(screen.getByLabelText(mode === "none" ? "不添加" : "指定数量"));
+  if (mode === "fixed") {
+    fireEvent.change(screen.getByLabelText("配图数量"), {
+      target: { value: String(count) },
+    });
+  }
+  fireEvent.click(screen.getByRole("button", { name: "保存配图设置" }));
+};
 
 describe("desktop product flow", () => {
   beforeEach(() => {
@@ -116,12 +203,13 @@ describe("desktop product flow", () => {
       disabledNodeIds: [],
       template,
       imageAssets: [],
-      imagePlan: { mode: "none", targetCount: 0 },
+      imagePlan: { mode: "none", targetCount: 0, materialMatchThreshold: 30 },
       webSearchMode: "off",
     });
 
     expect(seed).toContain("open-publisher-reference-template:v1:");
     expect(seed).toContain("独特的参考表达只用于分析。");
+    expect(seed).toContain("开篇切入动作、段落粒度、章节推进");
     expect(seed).not.toContain("phrase_blacklist");
   });
 
@@ -139,7 +227,7 @@ describe("desktop product flow", () => {
       disabledNodeIds: [],
       template: null,
       imageAssets: [],
-      imagePlan: { mode: "none", targetCount: 0 },
+      imagePlan: { mode: "none", targetCount: 0, materialMatchThreshold: 30 },
       webSearchMode: "off",
     });
 
@@ -172,7 +260,7 @@ describe("desktop product flow", () => {
         source: "uploaded",
         createdAt: "2026-08-04T00:00:00.000Z",
       }],
-      imagePlan: { mode: "auto", targetCount: 0 },
+      imagePlan: { mode: "auto", targetCount: 0, materialMatchThreshold: 30 },
       webSearchMode: "auto",
     });
 
@@ -200,9 +288,10 @@ describe("desktop product flow", () => {
 
     expect(screen.getByRole("heading", { name: "开始创作" })).toBeVisible();
     const navigation = screen.getByRole("navigation", { name: "主导航" });
-    expect(within(navigation).getAllByRole("button")).toHaveLength(5);
+    expect(within(navigation).getAllByRole("button")).toHaveLength(6);
     expect(within(navigation).getByRole("button", { name: "创作" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "文章" })).toBeVisible();
+    expect(within(navigation).getByRole("button", { name: "公告" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "模板" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "素材库" })).toBeVisible();
     expect(within(navigation).getByRole("button", { name: "设置" })).toBeVisible();
@@ -225,9 +314,11 @@ describe("desktop product flow", () => {
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "如何设计可靠的多平台发布流程" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "资料" }));
     fireEvent.change(screen.getByLabelText("参考资料"), {
       target: { value: "只使用用户提供的事实，发布前必须人工确认。" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
     await waitFor(
@@ -247,6 +338,105 @@ describe("desktop product flow", () => {
     expect((screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value).not.toContain(
       "{{",
     );
+  });
+
+  it("uses Pi for creation and commits its completed Markdown to the canonical article store", async () => {
+    const piMarkdown = "# Pi 写作结果\n\n这篇文章由 Pi Runtime 流式生成，完成后写回本机文章修订库。";
+    let persistedArticleId: string | null = null;
+    const startPiArticleRun = vi.fn<DesktopBridge["startPiArticleRun"]>(async ({ articleId }) => {
+      persistedArticleId = articleId;
+      return {
+      schemaVersion: "2",
+      id: "pi-run-1",
+      articleId,
+      sessionId: "session:article-test",
+      agentId: "writer",
+      operation: "create_article",
+      status: "running",
+      baseRevisionId: null,
+      createdAt: "2026-08-05T00:00:00.000Z",
+      startedAt: "2026-08-05T00:00:00.000Z",
+      completedAt: null,
+      error: null,
+      };
+    });
+    const getPiArticle = vi.fn<DesktopBridge["getPiArticle"]>(async (articleId) => ({
+      schemaVersion: "2",
+      articleId,
+      title: "Pi 写作结果",
+      relativePath: "article.md",
+      currentRevisionId: "pi-stage-revision",
+      contentHash: "pi-stage-hash",
+      updatedAt: "2026-08-05T00:00:02.000Z",
+      markdown: piMarkdown,
+    }));
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      piRuntimeSnapshot: async () => ({
+        state: "ready",
+        bridgeMode: "pi_sidecar",
+        generation: 1,
+        detail: "Test-only Pi runtime.",
+      }),
+      ensurePiRuntime: async () => ({
+        state: "ready",
+        bridgeMode: "pi_sidecar",
+        generation: 1,
+        detail: "Test-only Pi runtime.",
+      }),
+      startPiArticleRun,
+      listArticles: async () => persistedArticleId ? [{
+        articleId: persistedArticleId,
+        title: "Pi 写作结果",
+        markdown: piMarkdown,
+        revisionId: "pi-stage-revision",
+        revisionNumber: 1,
+        updatedAt: "2026-08-05T00:00:02.000Z",
+      }] : [],
+      getPiRunEvents: async () => [{
+        schemaVersion: "2",
+        id: "pi-event-1",
+        runId: "pi-run-1",
+        sequence: 1,
+        timestamp: "2026-08-05T00:00:01.000Z",
+        articleId: "article-test",
+        agentId: "writer",
+        parentAgentId: null,
+        operation: "create_article",
+        type: "article.preview_delta",
+        payload: { delta: piMarkdown, reset: true },
+      }],
+      getPiRun: async () => ({
+        schemaVersion: "2",
+        id: "pi-run-1",
+        articleId: "article-test",
+        sessionId: "session:article-test",
+        agentId: "writer",
+        operation: "create_article",
+        status: "completed",
+        baseRevisionId: null,
+        createdAt: "2026-08-05T00:00:00.000Z",
+        startedAt: "2026-08-05T00:00:00.000Z",
+        completedAt: "2026-08-05T00:00:02.000Z",
+        error: null,
+      }),
+      getPiArticle,
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+    setImagePlan("none");
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "Pi Runtime 写作迁移" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    await screen.findByText(/文章已生成 · 修订/, {}, { timeout: 3_000 });
+    expect(startPiArticleRun).toHaveBeenCalledTimes(1);
+    expect(getPiArticle).toHaveBeenCalledWith(expect.any(String));
+    await waitFor(() => expect(
+      (screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value,
+    ).toContain("Pi Runtime 流式生成"), { timeout: 5_000 });
   });
 
   it("passes an approximate custom length into the writing brief", async () => {
@@ -272,207 +462,6 @@ describe("desktop product flow", () => {
         markdown: expect.stringContaining("- 篇幅：约 6,200 字"),
       }),
     );
-  });
-
-  it("opens the article immediately and streams the writing Agent output", async () => {
-    let finishWorkflow: (() => void) | undefined;
-    let activityReadCount = 0;
-    const streamedMarkdown = `# 流式文章\n\n${"正文正在以打字机节奏到达。".repeat(10)}`;
-    const runWorkflow = vi.fn<DesktopBridge["runWorkflow"]>(
-      (request) =>
-        new Promise<RunWorkflowSummary>((resolve) => {
-          finishWorkflow = () =>
-            void nativeTestBridge.runWorkflow(request).then(resolve);
-        }),
-    );
-    setDesktopBridgeForTests({
-      ...nativeTestBridge,
-      runWorkflow,
-      getWorkflowActivity: async () => {
-        activityReadCount += 1;
-        const events = [
-          {
-            id: "stream-start",
-            eventType: "run.node_started",
-            nodeId: "draft" as const,
-            createdAt: "2026-08-01T02:20:00.000Z",
-          },
-          {
-            id: "stream-delta",
-            eventType: "run.node_output_delta",
-            nodeId: "draft" as const,
-            createdAt: "2026-08-01T02:20:01.000Z",
-            draftDelta: streamedMarkdown,
-          },
-          {
-            id: "stream-complete",
-            eventType: "run.node_completed",
-            nodeId: "draft" as const,
-            createdAt: "2026-08-01T02:20:02.000Z",
-          },
-        ];
-        return {
-          runId: "streaming-run",
-          status: "running" as const,
-          events: activityReadCount === 1 ? events.slice(0, 2) : events,
-        };
-      },
-    });
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "可观察的智能写作流程" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    const editor = await screen.findByLabelText("Markdown 正文");
-    await waitFor(() => expect(activityReadCount).toBeGreaterThan(0));
-    await waitFor(() =>
-      expect((editor as HTMLTextAreaElement).value).toMatch(/^# 流式文章/),
-    );
-    expect((editor as HTMLTextAreaElement).value.length).toBeLessThan(streamedMarkdown.length);
-    await waitFor(
-      () => expect((editor as HTMLTextAreaElement).value).toBe(streamedMarkdown),
-      { timeout: 5_000 },
-    );
-    expect(screen.queryByRole("button", { name: "关闭进度提示" })).toBeNull();
-    expect(screen.getByText(new RegExp(`已流式写入 ${streamedMarkdown.replace(/\s/g, "").length.toLocaleString("zh-CN")} 字`))).toBeVisible();
-    expect(runWorkflow).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentInstructions: expect.arrayContaining([
-          expect.objectContaining({ id: "writer", nodeId: "draft" }),
-          expect.objectContaining({ id: "risk", nodeId: "risk" }),
-        ]),
-      }),
-    );
-
-    finishWorkflow?.();
-    await screen.findByText(/文章已生成 · 修订/);
-  });
-
-  it("keeps the article workspace rendered when runtime activity contains a legacy timestamp", async () => {
-    setDesktopBridgeForTests({
-      ...nativeTestBridge,
-      getWorkflowActivity: async () => ({
-        runId: "legacy-activity-run",
-        status: "running" as const,
-        events: [{
-          id: "reference-safety-started",
-          eventType: "run.node_started",
-          nodeId: "reference-safety",
-          createdAt: "legacy-timestamp",
-        }],
-      }),
-    });
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "兼容旧运行记录的创作流程" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    expect(await screen.findByLabelText("Markdown 正文")).toBeVisible();
-    await waitFor(() => {
-      expect(screen.getAllByText("正在执行文章工作流")).not.toHaveLength(0);
-    });
-  });
-
-  it("stops a running workflow without allowing a late result to replace the draft", async () => {
-    let finishWorkflow: (() => void) | undefined;
-    const cancelWorkflow = vi.fn<DesktopBridge["cancelWorkflow"]>(async () => undefined);
-    const runWorkflow = vi.fn<DesktopBridge["runWorkflow"]>(
-      (request) =>
-        new Promise<RunWorkflowSummary>((resolve) => {
-          finishWorkflow = () => void nativeTestBridge.runWorkflow(request).then(resolve);
-        }),
-    );
-    setDesktopBridgeForTests({
-      ...nativeTestBridge,
-      cancelWorkflow,
-      runWorkflow,
-    });
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "可主动停止的写作流程" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-    await screen.findByLabelText("Markdown 正文");
-    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getAllByRole("button", { name: "停止生成" })[0]!);
-    await waitFor(() => expect(cancelWorkflow).toHaveBeenCalledWith(expect.any(String)));
-    expect(await screen.findByText("本次工作流未完成")).toBeVisible();
-    expect(screen.getByText("失败原因：已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。")).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "重试这次工作流" }).length).toBeGreaterThan(0);
-
-    finishWorkflow?.();
-    await waitFor(() => expect(screen.getByText("本次工作流未完成")).toBeVisible());
-    expect(screen.queryByText(/文章已生成 · 修订/)).toBeNull();
-  });
-
-  it("keeps the same article and offers a retry after workflow failure", async () => {
-    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
-    const saveDraft = vi.spyOn(desktopBridge, "saveDraft");
-    const runWorkflow = vi
-      .spyOn(desktopBridge, "runWorkflow")
-      .mockRejectedValueOnce(new Error("upstream timeout"))
-      .mockImplementation(originalRunWorkflow);
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "失败后可恢复的写作流程" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    expect(await screen.findByText("本次工作流未完成")).toBeVisible();
-    expect(screen.getByText("失败原因：upstream timeout")).toBeVisible();
-    fireEvent.click(screen.getAllByRole("button", { name: "重试这次工作流" })[0]!);
-
-    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(2));
-    await screen.findByText(/文章已生成 · 修订/);
-    expect(runWorkflow).toHaveBeenCalledTimes(2);
-    expect(runWorkflow.mock.calls[1]?.[0].articleId).toBe(
-      runWorkflow.mock.calls[0]?.[0].articleId,
-    );
-    // The initial brief is retained after failure. The retry persists only the
-    // final composed revision, preserving the same article identity.
-    expect(saveDraft).toHaveBeenCalledTimes(2);
-    await waitFor(() => {
-      const stored = JSON.parse(
-        window.localStorage.getItem("open-publisher-creation-activity") ?? "{}",
-      ) as { logs?: Array<{ message: string }> };
-      expect(stored.logs?.map((entry) => entry.message)).toEqual(
-        expect.arrayContaining([
-          "工作流失败：upstream timeout",
-          "开始重试本次生成",
-        ]),
-      );
-    });
-  });
-
-  it("keeps the editor usable when the optional failed-run cache exceeds browser storage quota", async () => {
-    setDesktopBridgeForTests({
-      ...nativeTestBridge,
-      runWorkflow: async () => {
-        throw new Error("model connection interrupted");
-      },
-    });
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "缓存空间已满时仍可恢复的文章" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    expect(await screen.findByText("本次工作流未完成")).toBeVisible();
-    expect(screen.getByText("失败原因：model connection interrupted")).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "工作台暂时无法加载" })).toBeNull();
   });
 
   it("stores a compact failed-run recovery record and absorbs a storage quota error", () => {
@@ -510,7 +499,7 @@ describe("desktop product flow", () => {
           source: "uploaded",
           createdAt: "2026-08-04T00:00:00.000Z",
         }],
-        imagePlan: { mode: "auto", targetCount: 0 },
+        imagePlan: { mode: "auto", targetCount: 0, materialMatchThreshold: 30 },
         webSearchMode: "auto",
         agentInstructions: [{
           id: "writer",
@@ -540,216 +529,12 @@ describe("desktop product flow", () => {
     expect(storage.setItem).toHaveBeenCalledTimes(2);
   });
 
-  it("uses the visual plan to generate a missing image and persist the composed Markdown", async () => {
-    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
-    const runWorkflow = vi
-      .spyOn(desktopBridge, "runWorkflow")
-      .mockImplementation(async (request) => {
-        const result = await originalRunWorkflow(request);
-        return {
-          ...result,
-          visualPlan: {
-            sourceRevisionHash: result.outputContentHash,
-            targetCount: 1,
-            settings: {
-              type: "framework",
-              style: "sketch-notes",
-              palette: "macaron",
-              generation_batch_size: "4",
-            },
-            needsConfirmation: false,
-            placements: [
-              {
-                id: "illustration-1",
-                blockId: null,
-                anchorExcerpt: null,
-                afterHeading: null,
-                purpose: "解释可靠写作流程。",
-                visualContent: "可靠写作流程架构图。",
-                visualType: "framework",
-                source: "generate",
-                assetId: null,
-                candidates: [],
-                selectionReason: "没有适合的素材。",
-                alt: "自动生成的架构说明图",
-                generationPrompt: "展示可靠写作流程的简洁架构图，不含文字。",
-                promptFile: "prompts/01-framework-writing-flow.md",
-              },
-            ],
-          },
-        };
-      });
-    const generateImage = vi.spyOn(desktopBridge, "generateImage");
-    const saveDraft = vi.spyOn(desktopBridge, "saveDraft");
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "自动配图与文章结构" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    const editor = await screen.findByLabelText("Markdown 正文");
-    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(generateImage).toHaveBeenCalledTimes(1));
-    expect(runWorkflow).toHaveBeenCalledWith(
-      expect.objectContaining({
-        disabledOptionalNodeIds: expect.not.arrayContaining(["visual"]),
-        visualComposition: expect.objectContaining({
-          mode: "auto",
-          targetCount: 0,
-          assets: [],
-        }),
-      }),
-    );
-    expect(generateImage).toHaveBeenCalledWith({
-      prompt: "展示可靠写作流程的简洁架构图，不含文字。",
-      size: "1536x1024",
-      model: "test-image-model",
-    });
-    await waitFor(() =>
-      expect((editor as HTMLTextAreaElement).value).toContain(
-        "![自动生成的架构说明图](asset://generated-",
-      ),
-    );
-    expect((editor as HTMLTextAreaElement).value).not.toContain("data:image/");
-    expect(saveDraft).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        baseRevision: expect.stringContaining("workflow"),
-        markdown: expect.stringContaining("![自动生成的架构说明图]"),
-      }),
-    );
-  });
-
-  it("waits for explicit visual-plan confirmation before starting image generation", async () => {
-    const originalRunWorkflow = desktopBridge.runWorkflow.bind(desktopBridge);
-    vi.spyOn(desktopBridge, "runWorkflow").mockImplementation(async (request) => {
-      const result = await originalRunWorkflow(request);
-      return {
-        ...result,
-        visualPlan: {
-          sourceRevisionHash: result.outputContentHash,
-          targetCount: 1,
-          settings: {
-            type: "framework",
-            style: "sketch-notes",
-            palette: "macaron",
-            generation_batch_size: "4",
-          },
-          needsConfirmation: true,
-          placements: [
-            {
-              id: "illustration-1",
-              blockId: "block-1-demo",
-              anchorExcerpt: "确认后才会开始执行图片生成。",
-              afterHeading: "确认流程",
-              purpose: "说明作者确认是配图执行的前置条件。",
-              visualContent: "作者确认后启动图片生成的流程图。",
-              visualType: "flowchart",
-              source: "generate" as const,
-              assetId: null,
-              candidates: [],
-              selectionReason: "已选素材均无法表达确认后的执行状态。",
-              alt: "确认后启动配图生成的流程图",
-              generationPrompt: "展示确认后再启动图片生成的简洁流程图，不含文字。",
-              promptFile: "prompts/01-confirmed-visual-flow.md",
-            },
-          ],
-        },
-      };
-    });
-    const generateImage = vi.spyOn(desktopBridge, "generateImage");
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "配图先确认再执行" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    expect(
-      await screen.findByRole("dialog", { name: "确认正文配图方案" }),
-    ).toBeVisible();
-    expect(generateImage).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "确认并继续" }));
-    await waitFor(() => expect(generateImage).toHaveBeenCalledTimes(1));
-    expect(generateImage).toHaveBeenCalledWith({
-      prompt: "展示确认后再启动图片生成的简洁流程图，不含文字。",
-      size: "1536x1024",
-      model: "test-image-model",
-    });
-  });
-
-  it("uses selected local media with its description before asking the image model", async () => {
-    const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==";
-    window.localStorage.setItem(
-      "open-publisher-studio-media",
-      JSON.stringify([
-        {
-          id: "media-architecture",
-          name: "产品架构图",
-          alt: "三层产品架构图",
-          description: "展示采集、编排、发布三层之间的单向数据流，适合放在架构小节。",
-          src: image,
-          source: "uploaded",
-          createdAt: "刚刚导入",
-        },
-      ]),
-    );
-    const runWorkflow = vi.spyOn(desktopBridge, "runWorkflow");
-    const generateImage = vi.spyOn(desktopBridge, "generateImage");
-    setDesktopBridgeForTests({
-      ...nativeTestBridge,
-      modelConfiguration: async () => ({
-        ...((await nativeTestBridge.modelConfiguration())!),
-        imageBaseUrl: null,
-        imageModel: null,
-      }),
-    });
-    render(<App />);
-    await waitForNativeRuntime();
-
-    fireEvent.click(screen.getByRole("button", { name: "素材库" }));
-    fireEvent.click(await screen.findByRole("button", { name: "选择产品架构图" }));
-    fireEvent.click(screen.getByRole("button", { name: "带入创作" }));
-    await screen.findByRole("heading", { name: "开始创作" });
-    fireEvent.change(screen.getByLabelText("配图"), { target: { value: "1" } });
-    fireEvent.change(screen.getByLabelText("文章主题"), {
-      target: { value: "已有素材的自动插入" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
-
-    const editor = await screen.findByLabelText("Markdown 正文");
-    await waitFor(() => expect(runWorkflow).toHaveBeenCalledTimes(1));
-    await screen.findByText(/文章已生成 · 修订/);
-    expect(runWorkflow).toHaveBeenCalledWith(
-      expect.objectContaining({
-        visualComposition: expect.objectContaining({
-          mode: "fixed",
-          targetCount: 1,
-          assets: [
-            {
-              id: "media-architecture",
-              alt: "三层产品架构图",
-              description: "展示采集、编排、发布三层之间的单向数据流，适合放在架构小节。",
-            },
-          ],
-        }),
-      }),
-    );
-    expect(generateImage).not.toHaveBeenCalled();
-    expect((editor as HTMLTextAreaElement).value).toContain(
-      "![三层产品架构图](asset://media-architecture)",
-    );
-  });
-
   it("moves legacy inline images into the local media library while preserving preview", async () => {
     const image =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLZ8QAAAABJRU5ErkJggg==";
     render(<App />);
     await waitForNativeRuntime();
-    fireEvent.change(screen.getByLabelText("配图"), { target: { value: "none" } });
+    setImagePlan("none");
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "内嵌图片迁移" },
     });
@@ -772,6 +557,7 @@ describe("desktop product flow", () => {
   it("edits and saves a local article revision", async () => {
     render(<App />);
     await waitForNativeRuntime();
+    setImagePlan("none");
     fireEvent.change(screen.getByLabelText("文章主题"), {
       target: { value: "本地保存测试" },
     });
@@ -798,6 +584,11 @@ describe("desktop product flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "素材库" }));
     expect(await screen.findByRole("heading", { name: "素材库" })).toBeVisible();
     expect(screen.getByRole("button", { name: "上传图片" })).toBeVisible();
+    expect(screen.getByRole("main")).toHaveClass("page-viewport--media");
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeVisible();
+    expect(screen.getByRole("main")).toHaveClass("page-viewport--settings");
   });
 
   it("extracts a reusable template from Markdown and saves it after review", async () => {
@@ -827,6 +618,9 @@ describe("desktop product flow", () => {
     render(<App />);
     await waitForNativeRuntime();
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    expect(within(screen.getByLabelText("Pi 模型档案")).getByText("Test model")).toBeVisible();
+    expect((screen.getByLabelText("Thinking level") as HTMLSelectElement).value).toBe("auto");
 
     const keyInput = screen.getByLabelText("API Key") as HTMLInputElement;
     fireEvent.change(keyInput, { target: { value: "test-session-secret-value" } });

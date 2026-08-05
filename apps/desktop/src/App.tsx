@@ -1,10 +1,12 @@
 import { Check, Image, Menu, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppNavigation } from "./components/AppNavigation";
+import { AnnouncementsPage } from "./components/AnnouncementsPage";
 import { ArticlesPage } from "./components/ArticlesPage";
 import type {
   AssistantActivity,
   MarkdownSelection,
+  RewriteArticleOutcome,
   RewriteCandidate,
 } from "./components/ArticleAssistant";
 import { PageErrorBoundary } from "./components/PageErrorBoundary";
@@ -36,9 +38,12 @@ import {
   type GitHubApplicationInfo,
   type ModelConfigurationSummary,
   type ModelConnectionTestSummary,
+  type ModelProfileSummary,
+  type PiAgentRun,
+  type PiModelDiscoverySummary,
+  type PiRunEvent,
   type PublishPlanSummary,
   type PublishReceiptSummary,
-  type RewriteArticleSummary,
   type RewriteConversationMessage,
   type RuntimeSnapshot,
   type VisualCompositionPlanSummary,
@@ -116,7 +121,37 @@ interface ArticleProgress {
 interface VisualConfirmationState {
   articleId: string;
   plan: VisualCompositionPlanSummary;
-  resolve: (approved: boolean) => void;
+  assets: MediaAsset[];
+  matchThreshold: number;
+  resolve: (plan: VisualCompositionPlanSummary | null) => void;
+}
+
+/**
+ * Keeping an indexed character buffer prevents every visual character from
+ * copying the entire upstream model delta. The UI still renders exactly one
+ * Unicode code point per animation frame.
+ */
+interface WriterTypewriterQueue {
+  characters: string[];
+  nextIndex: number;
+}
+
+/**
+ * A user-edit snapshot taken before an asynchronous Agent request starts.
+ * The revision id is retained for diagnostics/CAS calls; edit safety is
+ * intentionally based on the local body and monotonically increasing edit
+ * version, because a successful background save may legitimately advance the
+ * revision without changing the body.
+ */
+interface ArticleSourceSnapshot {
+  articleId: string;
+  markdown: string;
+  revisionId: string | null;
+  editVersion: number;
+}
+
+interface WriterSourceFence extends ArticleSourceSnapshot {
+  executionId: number;
 }
 
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
@@ -129,16 +164,16 @@ const EDITOR_MODE_STORAGE_KEY = "open-publisher-studio-editor-mode";
 const WORKFLOW_NODES_STORAGE_KEY = "open-publisher-studio-workflow-nodes";
 const WORKFLOW_WORKSPACES_STORAGE_KEY = "open-publisher-studio-workflow-workspaces";
 const MAX_LOCAL_IMAGE_BYTES = 15 * 1024 * 1024;
-// This matches the Python-side cancellation reason. It is intentionally based
-// on actual workflow progress, never on a cosmetic heartbeat.
-const WORKFLOW_ACTIVITY_TIMEOUT_MS = 90_000;
-const WORKFLOW_ACTIVITY_POLL_INTERVAL_MS = 160;
 const WORKFLOW_CANCELLED_BY_USER_MESSAGE =
   "已停止本次生成。已保留编辑器中已写入的内容，可修改后重试。";
+const ASYNC_SOURCE_CHANGED =
+  "检测到你在 AI 处理期间修改了正文，已保留你的编辑；旧任务结果没有写回。请保存当前草稿或重新运行 AI。";
 const MAX_AUTO_IN_ARTICLE_IMAGES = 4;
 const MAX_FAILED_RECOVERY_TEXT_LENGTH = 1_200;
 const INLINE_DATA_IMAGE_PATTERN =
   /!\[([^\]\r\n]*)\]\((data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=]+)\)/gi;
+const ARTICLE_IMAGE_PATTERN =
+  /!\[[^\]\r\n]*\]\((?:\\.|[^)\r\n])*\)|!\[[^\]\r\n]*\]\[[^\]\r\n]*\]|<img\b[^>]*>/gi;
 const SUPPORTED_LOCAL_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -179,12 +214,6 @@ function isOptionalWorkflowNodeId(
 
 function isWorkflowNodeId(value: string | undefined): value is WorkflowActivityNodeId {
   return value === "draft" || value === "risk" || value === "reference-safety" || isOptionalWorkflowNodeId(value);
-}
-
-function creationAgentLabels(
-  agents: WorkflowAgentInstruction[],
-) {
-  return agents.map((agent) => agent.name);
 }
 
 function loadStudioValue<T>(key: string, fallback: T): T {
@@ -268,6 +297,10 @@ export function persistedFailedCreationContext(
       imagePlan: {
         mode: request.imagePlan.mode,
         targetCount: Math.max(0, Math.min(4, request.imagePlan.targetCount)),
+        materialMatchThreshold: Math.max(
+          0,
+          Math.min(100, Math.round(request.imagePlan.materialMatchThreshold)),
+        ),
       },
       webSearchMode: request.webSearchMode,
       templateId: context.templateId,
@@ -564,6 +597,7 @@ export function visualCompositionFromCreation(
     palette: "macaron",
     preferredImageBackend: "auto",
     generationBatchSize: 4,
+    materialMatchThreshold: request.imagePlan.materialMatchThreshold,
     skipConfirmation: false,
   };
 }
@@ -596,6 +630,60 @@ function escapeImageAlt(value: string) {
 
 function normalizedMarkdownText(value: string) {
   return value.replace(/[`*_~]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function articleImages(markdown: string) {
+  return markdown.match(ARTICLE_IMAGE_PATTERN) ?? [];
+}
+
+function assertRewritePreservesImages(source: string, replacement: string) {
+  const before = articleImages(source);
+  const after = articleImages(replacement);
+  if (before.length !== after.length || before.some((image, index) => image !== after[index])) {
+    throw new Error("AI 修改触碰了正文图片，已阻止应用本次结果。请重试文字修改。");
+  }
+}
+
+function removeArticleImages(markdown: string) {
+  return markdown
+    .replace(ARTICLE_IMAGE_PATTERN, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd() + "\n";
+}
+
+function similarityCharacters(markdown: string) {
+  return removeArticleImages(markdown)
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function characterBigrams(value: string) {
+  const characters = Array.from(value);
+  const result = new Set<string>();
+  for (let index = 0; index < characters.length - 1; index += 1) {
+    result.add(`${characters[index]}${characters[index + 1]}`);
+  }
+  return result;
+}
+
+function articleChangeRequiresVisualRefresh(before: string, after: string) {
+  if (articleImages(before).length === 0) return false;
+  const beforeText = similarityCharacters(before);
+  const afterText = similarityCharacters(after);
+  if (beforeText.length < 200 || afterText.length < 200) return false;
+  const lengthRatio = afterText.length / beforeText.length;
+  if (lengthRatio < 0.65 || lengthRatio > 1.55) return true;
+  const beforeBigrams = characterBigrams(beforeText);
+  const afterBigrams = characterBigrams(afterText);
+  const union = new Set([...beforeBigrams, ...afterBigrams]);
+  if (union.size === 0) return false;
+  let intersection = 0;
+  beforeBigrams.forEach((bigram) => {
+    if (afterBigrams.has(bigram)) intersection += 1;
+  });
+  return intersection / union.size < 0.42;
 }
 
 function insertionLineForAnchor(lines: string[], anchorExcerpt: string | null, heading: string | null) {
@@ -742,66 +830,6 @@ function workflowAgentLabel(
   );
 }
 
-function describeWorkflowActivity(
-  event: WorkflowActivityEvent,
-  agents: WorkflowAgentInstruction[],
-): { message: string; phase: string; tone: CreationLogEntry["tone"] } {
-  const nodeId = event.nodeId;
-  const agent = nodeId ? workflowAgentLabel(nodeId, agents) : null;
-  const node = nodeId ? workflowNodeLabel[nodeId] : null;
-  switch (event.eventType) {
-    case "run.queued":
-      return { message: "创作任务已进入本地队列", phase: "正在准备创作", tone: "info" };
-    case "run.started":
-      return { message: "AI 已开始处理创作要求", phase: "AI 正在创作", tone: "info" };
-    case "run.budget_reserved":
-      return { message: "本次创作资源已确认", phase: "AI 正在创作", tone: "info" };
-    case "run.node_started":
-      return {
-        message: `${agent} 正在执行${node}`,
-        phase: `${agent} 正在执行${node}`,
-        tone: "info",
-      };
-    case "run.node_completed":
-      return {
-        message: `${agent} 已完成${node}`,
-        phase: `${agent} 已完成${node}`,
-        tone: "success",
-      };
-    case "run.node_output_delta":
-      return {
-        message: `${agent} 正在输出正文`,
-        phase: `${agent} 正在撰写正文`,
-        tone: "info",
-      };
-    case "run.node_failed":
-      return {
-        message: `${agent} 在${node}阶段失败`,
-        phase: `${agent} 执行失败`,
-        tone: "error",
-      };
-    case "run.node_skipped":
-      return {
-        message: `${agent} 已按当前设置跳过${node}`,
-        phase: "主写作 Agent 正在执行",
-        tone: "info",
-      };
-    case "run.interrupted":
-      return { message: "工作流正在等待人工审核", phase: "等待人工审核", tone: "info" };
-    case "run.failed":
-      return { message: "本次创作未完成", phase: "文章生成失败", tone: "error" };
-    case "run.completed":
-      return { message: "文章处理已完成", phase: "文章生成完成", tone: "success" };
-    default:
-      return { message: "AI 正在继续处理文章", phase: "AI 正在创作", tone: "info" };
-  }
-}
-
-function activityTimestamp(value: string) {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : Date.now();
-}
-
 function loadCreationActivity(): CreationActivity | null {
   try {
     const raw = window.localStorage.getItem(CREATION_ACTIVITY_STORAGE_KEY);
@@ -853,6 +881,10 @@ function loadFailedCreationContext(): FailedCreationContext | null {
   const imagePlan = {
     mode: imagePlanMode === "none" || imagePlanMode === "fixed" ? imagePlanMode : "auto",
     targetCount: Math.max(0, Math.min(4, Number(candidate.imagePlan?.targetCount) || 0)),
+    materialMatchThreshold: Math.max(
+      0,
+      Math.min(100, Math.round(Number(candidate.imagePlan?.materialMatchThreshold) || 30)),
+    ),
   } satisfies CreationRequest["imagePlan"];
   return {
     articleId: context.articleId,
@@ -951,8 +983,13 @@ function highFidelityReferenceBlock(template: MarkdownTemplate) {
     style_profile: template.styleProfile,
     structure_profile: template.structureProfile,
     layout_profile: template.layoutProfile,
+    usage_instructions: template.usageInstructions,
   }));
   return [
+    "## 高保真参考样本（只用于写法分析，不得原样输出）",
+    "",
+    "按参考原文依次复用：开篇切入动作、段落粒度、章节推进、转折位置、列表/引用/代码的使用频率，以及每张图片承担的说明任务。所有事实、产品名、数据、链接和句子必须用当前主题重新写。",
+    "",
     `<!-- open-publisher-reference-template:v1:${metadata} -->`,
     `<${tag}>`,
     template.referenceMarkdown,
@@ -988,13 +1025,6 @@ export function buildCreationSeed(request: CreationRequest) {
 - 篇幅：${request.length}
 ${referenceNotes}${template}${referenceBlock ? `\n\n${referenceBlock}` : ""}`.trim();
   return seed;
-}
-
-function workflowTopic(article: Article) {
-  const source = (article.deck || article.title).trim();
-  // The short sidecar field is metadata only. The full author brief remains
-  // in the saved Markdown revision passed to the writing Agent.
-  return Array.from(source).slice(0, 500).join("").trim() || "文章创作";
 }
 
 function renderFixedBlock(content: string, article: Article, request: CreationRequest) {
@@ -1048,14 +1078,56 @@ function visualSourceLabel(source: VisualPlacementSummary["source"]) {
 
 function VisualPlanConfirmationDialog({
   plan,
+  assets,
+  matchThreshold,
   onApprove,
   onSkip,
 }: {
   plan: VisualCompositionPlanSummary;
-  onApprove: () => void;
+  assets: MediaAsset[];
+  matchThreshold: number;
+  onApprove: (plan: VisualCompositionPlanSummary) => void;
   onSkip: () => void;
 }) {
-  const generatedCount = plan.placements.filter((placement) => placement.source === "generate").length;
+  const assetLookup = useMemo(
+    () => new Map(assets.map((asset) => [asset.id, asset])),
+    [assets],
+  );
+  const [decisions, setDecisions] = useState(() => Object.fromEntries(
+    plan.placements.map((placement) => {
+      const candidate = placement.candidates[0];
+      const useAsset = Boolean(candidate && candidate.score / 10 >= matchThreshold);
+      return [placement.id, {
+        source: useAsset ? "existing_asset" : "generate",
+        assetId: useAsset ? candidate.assetId : null,
+      }];
+    }),
+  ) as Record<string, { source: "existing_asset" | "generate"; assetId: string | null }>);
+  const generatedCount = Object.values(decisions).filter((decision) => decision.source === "generate").length;
+  const approvedPlan = (): VisualCompositionPlanSummary => ({
+    ...plan,
+    settings: {
+      ...plan.settings,
+      material_match_threshold: String(matchThreshold),
+    },
+    placements: plan.placements.map((placement) => {
+      const decision = decisions[placement.id];
+      if (decision?.source === "existing_asset" && decision.assetId) {
+        return {
+          ...placement,
+          source: "existing_asset",
+          assetId: decision.assetId,
+          selectionReason: `已按你的确认使用素材“${assetLookup.get(decision.assetId)?.name ?? decision.assetId}”。`,
+        };
+      }
+      return {
+        ...placement,
+        source: "generate",
+        assetId: null,
+        selectionReason: "已按你的确认使用 AI 生图。",
+      };
+    }),
+  });
   return (
     <div className="studio-modal" role="presentation">
       <button aria-label="暂不插入配图" className="studio-modal__scrim" onClick={onSkip} type="button" />
@@ -1064,7 +1136,7 @@ function VisualPlanConfirmationDialog({
           <div>
             <span className="page-kicker">正文配图方案</span>
             <h2>确认后再开始生成</h2>
-            <p id="visual-plan-confirmation-copy">已保存配图大纲和 {generatedCount} 份生图提示词。本次将插入 {plan.targetCount} 张图片。</p>
+            <p id="visual-plan-confirmation-copy">系统按 {matchThreshold}% 匹配阈值给出默认方案。每张图都可以改用素材或 AI 生图。</p>
           </div>
           <button aria-label="暂不插入配图" className="icon-button" onClick={onSkip} type="button"><X size={18} /></button>
         </header>
@@ -1072,25 +1144,78 @@ function VisualPlanConfirmationDialog({
           <span>{plan.settings.type ?? "infographic"}</span>
           <span>{plan.settings.style ?? "sketch-notes"}</span>
           <span>{plan.settings.palette ?? "default"}</span>
+          <span>素材阈值 {matchThreshold}%</span>
           <span>并发 {plan.settings.generation_batch_size ?? "4"}</span>
+          <span>预计生图 {generatedCount} 张</span>
         </div>
         <ol className="visual-confirmation-dialog__list">
-          {plan.placements.map((placement, index) => (
+          {plan.placements.map((placement, index) => {
+            const decision = decisions[placement.id];
+            const selectedAssetId = decision?.assetId ?? placement.candidates[0]?.assetId ?? "";
+            const selectedCandidate = placement.candidates.find((candidate) => candidate.assetId === selectedAssetId);
+            const selectedAsset = selectedAssetId ? assetLookup.get(selectedAssetId) : null;
+            return (
             <li key={placement.id}>
-              <span className={`visual-confirmation-dialog__source is-${placement.source}`}><Image aria-hidden="true" size={14} /></span>
+              <span className={`visual-confirmation-dialog__source is-${decision?.source ?? "generate"}`}><Image aria-hidden="true" size={14} /></span>
               <div>
-                <div className="visual-confirmation-dialog__title"><strong>配图 {index + 1}</strong><small>{visualSourceLabel(placement.source)}</small></div>
+                <div className="visual-confirmation-dialog__title"><strong>配图 {index + 1}</strong><small>{visualSourceLabel(decision?.source ?? "generate")}</small></div>
                 <p>{placement.purpose}</p>
                 <blockquote>{placement.anchorExcerpt ?? placement.afterHeading ?? "需要在文章页确认插入位置"}</blockquote>
-                <span className="visual-confirmation-dialog__reason">{placement.selectionReason}</span>
-                {placement.candidates.length > 0 && <details><summary>素材匹配候选</summary><ul>{placement.candidates.map((candidate) => <li key={candidate.assetId}><strong>{candidate.assetId}</strong><span>{Math.round(candidate.score / 10)}% · {candidate.description}</span></li>)}</ul></details>}
+                <div className="visual-confirmation-dialog__decision" role="radiogroup" aria-label={`配图 ${index + 1} 来源`}>
+                  <label>
+                    <input
+                      checked={decision?.source === "existing_asset"}
+                      disabled={placement.candidates.length === 0}
+                      name={`visual-source-${placement.id}`}
+                      onChange={() => setDecisions((current) => ({
+                        ...current,
+                        [placement.id]: { source: "existing_asset", assetId: selectedAssetId },
+                      }))}
+                      type="radio"
+                    />
+                    使用素材
+                  </label>
+                  <label>
+                    <input
+                      checked={decision?.source !== "existing_asset"}
+                      name={`visual-source-${placement.id}`}
+                      onChange={() => setDecisions((current) => ({
+                        ...current,
+                        [placement.id]: { source: "generate", assetId: null },
+                      }))}
+                      type="radio"
+                    />
+                    AI 生图
+                  </label>
+                </div>
+                {placement.candidates.length > 0 && decision?.source === "existing_asset" && (
+                  <label className="visual-confirmation-dialog__asset-select">
+                    <span>选用素材</span>
+                    <select
+                      aria-label={`配图 ${index + 1} 素材`}
+                      onChange={(event) => setDecisions((current) => ({
+                        ...current,
+                        [placement.id]: { source: "existing_asset", assetId: event.target.value },
+                      }))}
+                      value={selectedAssetId}
+                    >
+                      {placement.candidates.map((candidate) => (
+                        <option key={candidate.assetId} value={candidate.assetId}>
+                          {assetLookup.get(candidate.assetId)?.name ?? candidate.assetId} · {Math.round(candidate.score / 10)}%
+                        </option>
+                      ))}
+                    </select>
+                    {selectedAsset && <img alt={selectedAsset.alt || selectedAsset.name} src={selectedAsset.src} />}
+                    {selectedCandidate && <small>{Math.round(selectedCandidate.score / 10)}% 匹配 · {selectedCandidate.description}</small>}
+                  </label>
+                )}
               </div>
             </li>
-          ))}
+          )})}
         </ol>
         <footer>
           <button className="button button--quiet" onClick={onSkip} type="button">暂不配图</button>
-          <button className="button button--primary" onClick={onApprove} type="button"><Check size={16} />确认并继续</button>
+          <button className="button button--primary" onClick={() => onApprove(approvedPlan())} type="button"><Check size={16} />确认并继续</button>
         </footer>
       </section>
     </div>
@@ -1102,6 +1227,7 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(preferredTheme);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
+  const [piRuntime, setPiRuntime] = useState<RuntimeSnapshot | null>(null);
   const [loadingArticles, setLoadingArticles] = useState(true);
   const [articleItems, setArticleItems] = useState<Article[]>([]);
   const [selectedArticleId, setSelectedArticleId] = useState<string | null>(null);
@@ -1109,6 +1235,18 @@ export default function App() {
   const [revisionIds, setRevisionIds] = useState<Record<string, string>>({});
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  // State updates are asynchronous. These refs are the serialization source
+  // for local revisions, so a queued write always bases itself on the revision
+  // committed immediately before it rather than on a stale render closure.
+  const revisionIdsRef = useRef<Record<string, string>>({});
+  const dirtyIdsRef = useRef<Set<string>>(new Set());
+  const draftsRef = useRef<Record<string, string>>({});
+  // Manual changes increment this counter synchronously. Async Agent work
+  // compares its launch snapshot before it can render a result.
+  const articleEditVersionRef = useRef<Record<string, number>>({});
+  const writerSourceFenceRef = useRef<Record<string, WriterSourceFence>>({});
+  const revisionSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
+  const activeRevisionSaveCountRef = useRef(0);
   const [workflowRunning, setWorkflowRunning] = useState(false);
   const [cancellingWorkflow, setCancellingWorkflow] = useState(false);
   const [creatingArticle, setCreatingArticle] = useState(false);
@@ -1138,7 +1276,11 @@ export default function App() {
   const [publishError, setPublishError] = useState<string | null>(null);
   const [modelConfiguration, setModelConfiguration] =
     useState<ModelConfigurationSummary | null>(null);
+  const [modelProfiles, setModelProfiles] = useState<ModelProfileSummary[]>([]);
   const [modelTest, setModelTest] = useState<ModelConnectionTestSummary | null>(null);
+  const [modelDiscovery, setModelDiscovery] = useState<PiModelDiscoverySummary | null>(null);
+  const [modelDiscoveryError, setModelDiscoveryError] = useState<string | null>(null);
+  const [modelDiscovering, setModelDiscovering] = useState(false);
   const [githubApplicationInfo, setGithubApplicationInfo] =
     useState<GitHubApplicationInfo | null>(null);
   const [githubApplicationLoading, setGithubApplicationLoading] = useState(false);
@@ -1148,6 +1290,7 @@ export default function App() {
   const [wechatSyncStatus, setWechatSyncStatus] =
     useState<WechatSyncBridgeStatus | null>(null);
   const [refreshingWechatSync, setRefreshingWechatSync] = useState(false);
+  const lastKnownWechatSyncStatus = useRef<WechatSyncBridgeStatus | null>(null);
   const [creationActivity, setCreationActivity] =
     useState<CreationActivity | null>(loadCreationActivity);
   const [failedCreationContext, setFailedCreationContext] =
@@ -1164,7 +1307,7 @@ export default function App() {
   );
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(() => {
     const stored = loadStudioValue<unknown>(SELECTED_TEMPLATE_STORAGE_KEY, null);
-    return typeof stored === "string" ? stored : defaultTemplates[0]?.id ?? null;
+    return typeof stored === "string" ? stored : null;
   });
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>(loadMediaAssets);
   const [mediaDatabaseReady, setMediaDatabaseReady] = useState(false);
@@ -1173,7 +1316,7 @@ export default function App() {
     return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : [];
   });
   const writerStreamRef = useRef<Record<string, string>>({});
-  const writerTypewriterQueueRef = useRef<Record<string, string>>({});
+  const writerTypewriterQueueRef = useRef<Record<string, WriterTypewriterQueue>>({});
   const writerTypewriterTimersRef = useRef<Record<string, number | undefined>>({});
   const writerDraftCompletedRef = useRef(new Set<string>());
   const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
@@ -1186,6 +1329,100 @@ export default function App() {
   const workflowExecutionSequenceRef = useRef(0);
   const activeWorkflowExecutionRef = useRef<{ articleId: string; id: number } | null>(null);
   const activeCreationRequestRef = useRef<FailedCreationContext | null>(null);
+  const activePiRunRef = useRef<{ articleId: string; runId: string } | null>(null);
+  const activePiRewriteRequestRef = useRef<{ articleId: string; requestId: string } | null>(null);
+  const activePiRewriteRunRef = useRef<{
+    articleId: string;
+    requestId: string;
+    runId: string;
+  } | null>(null);
+  // Visual planning, image rendering, and template extraction do not create a
+  // durable Pi Run. Track their scoped runtime operation ids separately so
+  // Stop cancels the actual provider request rather than only hiding its UI.
+  const activePiOperationsRef = useRef(new Map<string, string | null>());
+  const stoppedPiOperationsRef = useRef(new Set<string>());
+
+  const beginPiOperation = (kind: string, articleId: string | null) => {
+    const suffix = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const operationId = `operation:${kind}:${suffix}`;
+    stoppedPiOperationsRef.current.delete(operationId);
+    activePiOperationsRef.current.set(operationId, articleId);
+    return operationId;
+  };
+
+  const finishPiOperation = (operationId: string) => {
+    activePiOperationsRef.current.delete(operationId);
+  };
+
+  const ensurePiOperationCurrent = (operationId: string) => {
+    if (stoppedPiOperationsRef.current.has(operationId)) {
+      throw new Error(WORKFLOW_CANCELLED_BY_USER_MESSAGE);
+    }
+  };
+
+  const cancelPiOperations = (articleId?: string) => {
+    const operationIds = [...activePiOperationsRef.current]
+      .filter(([, owner]) => articleId === undefined || owner === articleId)
+      .map(([operationId]) => operationId);
+    for (const operationId of operationIds) {
+      stoppedPiOperationsRef.current.add(operationId);
+      activePiOperationsRef.current.delete(operationId);
+    }
+    return Promise.allSettled(operationIds.map((operationId) => desktopBridge.stopPiOperation(operationId)));
+  };
+
+  useEffect(() => {
+    revisionIdsRef.current = revisionIds;
+  }, [revisionIds]);
+
+  useEffect(() => {
+    dirtyIdsRef.current = dirtyIds;
+  }, [dirtyIds]);
+
+  useEffect(() => {
+    draftsRef.current = drafts;
+  }, [drafts]);
+
+  const currentArticleMarkdown = (articleId: string, fallback = "") =>
+    draftsRef.current[articleId] ?? fallback;
+
+  const captureArticleSource = (
+    articleId: string,
+    markdown: string,
+    revisionId = revisionIdsRef.current[articleId] ?? null,
+  ): ArticleSourceSnapshot => ({
+    articleId,
+    markdown,
+    revisionId,
+    editVersion: articleEditVersionRef.current[articleId] ?? 0,
+  });
+
+  const isArticleSourceCurrent = (source: ArticleSourceSnapshot) =>
+    (articleEditVersionRef.current[source.articleId] ?? 0) === source.editVersion &&
+    currentArticleMarkdown(source.articleId, source.markdown) === source.markdown;
+
+  const ensureArticleSourceCurrent = (source: ArticleSourceSnapshot) => {
+    if (!isArticleSourceCurrent(source)) throw new Error(ASYNC_SOURCE_CHANGED);
+  };
+
+  const isWriterSourceCurrent = (source: WriterSourceFence) =>
+    (articleEditVersionRef.current[source.articleId] ?? 0) === source.editVersion;
+
+  const ensureWriterSourceCurrent = (source: WriterSourceFence) => {
+    if (!isWriterSourceCurrent(source)) throw new Error(ASYNC_SOURCE_CHANGED);
+  };
+
+  const registerPiRewriteRun = (
+    articleId: string,
+    requestId: string,
+    runId: string,
+  ) => {
+    const pending = activePiRewriteRequestRef.current;
+    if (!pending || pending.articleId !== articleId || pending.requestId !== requestId) {
+      return;
+    }
+    activePiRewriteRunRef.current = { articleId, requestId, runId };
+  };
 
   const beginWorkflowExecution = (articleId: string) => {
     const id = ++workflowExecutionSequenceRef.current;
@@ -1216,17 +1453,20 @@ export default function App() {
   const requestVisualConfirmation = (
     articleId: string,
     plan: VisualCompositionPlanSummary | null,
+    matchThreshold: number,
+    assets: MediaAsset[],
   ) => {
-    if (!plan || plan.targetCount === 0 || !plan.needsConfirmation) return Promise.resolve(true);
-    return new Promise<boolean>((resolve) => {
-      setVisualConfirmation({ articleId, plan, resolve });
+    if (!plan || plan.targetCount === 0) return Promise.resolve(plan);
+    if (!plan.needsConfirmation) return Promise.resolve(plan);
+    return new Promise<VisualCompositionPlanSummary | null>((resolve) => {
+      setVisualConfirmation({ articleId, plan, assets, matchThreshold, resolve });
     });
   };
 
-  const resolveVisualConfirmation = (approved: boolean) => {
+  const resolveVisualConfirmation = (plan: VisualCompositionPlanSummary | null) => {
     const pending = visualConfirmation;
     setVisualConfirmation(null);
-    pending?.resolve(approved);
+    pending?.resolve(plan);
   };
 
   const beginWorkflowWorkspace = (articleId: string) => {
@@ -1354,11 +1594,11 @@ export default function App() {
   );
 
   const requireTextModel = () => {
-    if (!runtime) {
+    if (!piRuntime) {
       setToast("正在检查本地运行时和模型连接，请稍候再开始创作。");
       return false;
     }
-    if (runtime?.bridgeMode !== "python_sidecar") {
+    if (piRuntime.bridgeMode !== "pi_sidecar") {
       const message = "当前是浏览器预览，无法调用本地 Agent。请在 Open Publisher 桌面应用中执行。";
       setModelError(message);
       setActiveNav("settings");
@@ -1391,15 +1631,52 @@ export default function App() {
     return true;
   };
 
-  const refreshWechatSyncStatus = async () => {
-    if (runtime?.bridgeMode !== "python_sidecar") return;
+  const refreshWechatSyncStatus = useCallback(async (forceRefresh = false) => {
+    if (runtime?.bridgeMode === "interface_only") return;
     setRefreshingWechatSync(true);
     try {
-      setWechatSyncStatus(await desktopBridge.wechatSyncStatus());
+      const next = await desktopBridge.wechatSyncStatus({ forceRefresh });
+      if (next.available && next.connected && next.platforms.length > 0) {
+        lastKnownWechatSyncStatus.current = next;
+        setWechatSyncStatus({ ...next, stale: false });
+        return;
+      }
+      const previous = lastKnownWechatSyncStatus.current;
+      if (previous && (!next.available || !next.connected || next.platforms.length === 0)) {
+        // Keep an explicitly stale read-only snapshot visible during a bridge
+        // reconnect. It never enables publishing or pretends accounts are fresh.
+        setWechatSyncStatus({
+          ...previous,
+          available: next.available,
+          connected: next.connected,
+          stale: true,
+          detail: next.detail,
+        });
+        return;
+      }
+      setWechatSyncStatus({ ...next, stale: false });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const previous = lastKnownWechatSyncStatus.current;
+      setWechatSyncStatus(previous
+        ? {
+            ...previous,
+            available: false,
+            connected: false,
+            stale: true,
+            detail: `无法读取 WechatSync 状态：${detail.slice(0, 140)}`,
+          }
+        : {
+            available: false,
+            connected: false,
+            stale: false,
+            detail: `无法读取 WechatSync 状态：${detail.slice(0, 140)}`,
+            platforms: [],
+          });
     } finally {
       setRefreshingWechatSync(false);
     }
-  };
+  }, [runtime?.bridgeMode]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1410,15 +1687,20 @@ export default function App() {
     let cancelled = false;
     const load = async () => {
       try {
-        const snapshot = await desktopBridge.runtimeSnapshot();
+        const snapshot = await desktopBridge.piRuntimeSnapshot();
         if (cancelled) return;
         setRuntime(snapshot);
-        const [storedArticles, configuration] = await Promise.all([
+        const [storedArticles, configuration, profiles, piSnapshot] = await Promise.all([
           desktopBridge.listArticles(),
           desktopBridge.modelConfiguration(),
+          desktopBridge.listModelProfiles(),
+          desktopBridge.piRuntimeSnapshot(),
         ]);
         if (cancelled) return;
         setModelConfiguration(configuration);
+        setModelProfiles(profiles);
+        setPiRuntime(piSnapshot);
+        setRuntime(piSnapshot);
         const loaded = storedArticles.map(storedArticleToArticle);
         setArticleItems((current) => [
           ...current,
@@ -1441,12 +1723,18 @@ export default function App() {
         }));
         setSelectedArticleId((current) => current ?? loaded[0]?.id ?? null);
         if (loaded[0]) setPublishTargets(new Set(loaded[0].channels));
-        const readySnapshot = await desktopBridge.runtimeSnapshot();
-        if (!cancelled) setRuntime(readySnapshot);
-        if (readySnapshot.bridgeMode === "python_sidecar") {
+        const readySnapshot = await desktopBridge.piRuntimeSnapshot();
+        if (!cancelled) {
+          setRuntime(readySnapshot);
+          setPiRuntime(readySnapshot);
+        }
+        if (readySnapshot.bridgeMode !== "interface_only") {
           const publisherStatus = await desktopBridge.wechatSyncStatus();
           if (!cancelled) {
-            setWechatSyncStatus(publisherStatus);
+            if (publisherStatus.available && publisherStatus.connected && publisherStatus.platforms.length > 0) {
+              lastKnownWechatSyncStatus.current = publisherStatus;
+            }
+            setWechatSyncStatus({ ...publisherStatus, stale: false });
           }
         }
       } catch (error) {
@@ -1499,7 +1787,7 @@ export default function App() {
       setToast("模板缓存空间不足；本次编辑仍保留，建议减少过大的参考模板。");
     }
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
-      setSelectedTemplateId(templates[0]?.id ?? null);
+      setSelectedTemplateId(null);
     }
   }, [selectedTemplateId, templates]);
 
@@ -1587,7 +1875,11 @@ export default function App() {
       ]);
     }
     const articleId = selectedArticle.id;
-    setDrafts((current) => ({ ...current, [articleId]: compacted.markdown }));
+    setDrafts((current) => {
+      const next = { ...current, [articleId]: compacted.markdown };
+      draftsRef.current = next;
+      return next;
+    });
     setArticleItems((current) =>
       current.map((article) =>
         article.id === articleId
@@ -1600,7 +1892,11 @@ export default function App() {
           : article,
       ),
     );
-    setDirtyIds((current) => new Set(current).add(articleId));
+    setDirtyIds((current) => {
+      const next = new Set(current).add(articleId);
+      dirtyIdsRef.current = next;
+      return next;
+    });
     setToast("已将文章中的内嵌图片迁入素材库，请保存文章。");
   }, [currentMarkdown, mediaAssets, selectedArticle]);
 
@@ -1625,7 +1921,14 @@ export default function App() {
     animate = true,
   ) => {
     if (animate) setArticleContentReplacing(true);
-    setDrafts((current) => ({ ...current, [articleId]: markdown }));
+    // Keep the synchronous source fence in lockstep with the rendered state;
+    // React may batch the following state update past an awaited Agent step.
+    draftsRef.current = { ...draftsRef.current, [articleId]: markdown };
+    setDrafts((current) => {
+      const next = { ...current, [articleId]: markdown };
+      draftsRef.current = next;
+      return next;
+    });
     setArticleItems((current) =>
       current.map((article) =>
         article.id === articleId
@@ -1653,36 +1956,71 @@ export default function App() {
   };
 
   const completeWriterTypewriterIfDrained = (articleId: string) => {
-    if (writerTypewriterQueueRef.current[articleId]) return;
+    const queue = writerTypewriterQueueRef.current[articleId];
+    if (queue && queue.nextIndex < queue.characters.length) return;
     if (!writerDraftCompletedRef.current.has(articleId)) return;
     writerDraftCompletedRef.current.delete(articleId);
     setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+  };
+
+  const waitForWriterTypewriterDrain = async (
+    articleId: string,
+    executionId: number,
+  ) => {
+    // The canonical revision can arrive before its visual character queue has
+    // finished. Waiting here avoids a late frame replacing the saved article
+    // with a partial prefix after a workflow has already moved to the next
+    // stage.
+    while (true) {
+      ensureWorkflowExecutionCurrent(articleId, executionId);
+      const source = writerSourceFenceRef.current[articleId];
+      if (!source || source.executionId !== executionId) {
+        throw new Error(ASYNC_SOURCE_CHANGED);
+      }
+      ensureWriterSourceCurrent(source);
+      const queue = writerTypewriterQueueRef.current[articleId];
+      if (!queue || queue.nextIndex >= queue.characters.length) {
+        completeWriterTypewriterIfDrained(articleId);
+        return;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
+    }
   };
 
   const scheduleWriterTypewriter = (articleId: string) => {
     if (writerTypewriterTimersRef.current[articleId] !== undefined) return;
     writerTypewriterTimersRef.current[articleId] = requestWriterFrame(() => {
       delete writerTypewriterTimersRef.current[articleId];
-      const queued = writerTypewriterQueueRef.current[articleId] ?? "";
-      if (!queued) {
+      const source = writerSourceFenceRef.current[articleId];
+      if (!source || !isWriterSourceCurrent(source)) {
+        clearWriterTypewriter(articleId);
+        return;
+      }
+      const queued = writerTypewriterQueueRef.current[articleId];
+      if (!queued || queued.nextIndex >= queued.characters.length) {
+        delete writerTypewriterQueueRef.current[articleId];
         completeWriterTypewriterIfDrained(articleId);
         return;
       }
 
-      const characters = Array.from(queued);
       // Never turn an upstream delta into a paragraph-sized visual jump.
-      const renderedDelta = characters[0] ?? "";
-      writerTypewriterQueueRef.current[articleId] = characters.slice(1).join("");
+      // The queue is indexed rather than sliced so a long article remains
+      // linear-time while preserving the one-character-per-frame effect.
+      const renderedDelta = queued.characters[queued.nextIndex++] ?? "";
       const markdown = `${writerStreamRef.current[articleId] ?? ""}${renderedDelta}`;
       writerStreamRef.current[articleId] = markdown;
-      setDrafts((current) => ({ ...current, [articleId]: markdown }));
+      setDrafts((current) => {
+        const next = { ...current, [articleId]: markdown };
+        draftsRef.current = next;
+        return next;
+      });
 
-      const remaining = writerTypewriterQueueRef.current[articleId];
+      const remaining = queued.nextIndex < queued.characters.length;
       if (markdown.replace(/\s/g, "").length % 36 < renderedDelta.replace(/\s/g, "").length || !remaining) {
         showArticleProgress({
           articleId,
-          title: "写作 Agent 正在输出正文",
-          detail: `已流式写入 ${markdown.replace(/\s/g, "").length} 字。`,
+          title: "正在撰写正文",
+          detail: `已完成 ${markdown.replace(/\s/g, "").length} 字。`,
           value: null,
         });
       }
@@ -1718,13 +2056,17 @@ export default function App() {
       event.draftDelta
     ) {
       lastWorkflowActivityAt.current = Date.now();
-      writerTypewriterQueueRef.current[articleId] =
-        `${writerTypewriterQueueRef.current[articleId] ?? ""}${event.draftDelta}`;
+      const queue = writerTypewriterQueueRef.current[articleId] ?? {
+        characters: [],
+        nextIndex: 0,
+      };
+      queue.characters.push(...Array.from(event.draftDelta));
+      writerTypewriterQueueRef.current[articleId] = queue;
       scheduleWriterTypewriter(articleId);
       showArticleProgress({
         articleId,
-        title: "写作 Agent 正在输出正文",
-        detail: "正在以打字机效果写入编辑器。",
+        title: "正在撰写正文",
+        detail: "文章内容正在持续生成。",
         value: null,
       });
       return;
@@ -1735,8 +2077,8 @@ export default function App() {
       setWriterStreamingArticleId(articleId);
       showArticleProgress({
         articleId,
-        title: "写作 Agent 正在生成正文",
-        detail: "正在等待模型返回第一段文本。",
+        title: "正在撰写正文",
+        detail: "正在准备正文内容。",
         value: null,
       });
       replaceArticleContent(articleId, "", false);
@@ -1757,125 +2099,6 @@ export default function App() {
     }
   };
 
-  const startWorkflowActivityPolling = (
-    articleId: string,
-    agents: WorkflowAgentInstruction[],
-  ) => {
-    let stopped = false;
-    let polling = false;
-    let failedReads = 0;
-    lastWorkflowActivityAt.current = Date.now();
-    const seenEventIds = new Set(creationActivity?.logs.map((entry) => entry.id) ?? []);
-    const collect = async () => {
-      if (stopped || polling) return;
-      polling = true;
-      try {
-        const activity = await desktopBridge.getWorkflowActivity(articleId);
-        if (!activity || stopped) return;
-        failedReads = 0;
-        const unseen = activity.events.filter((event) => !seenEventIds.has(event.id));
-        unseen.forEach((event) => seenEventIds.add(event.id));
-        if (unseen.length > 0) lastWorkflowActivityAt.current = Date.now();
-        appendWorkflowWorkspaceEvents(articleId, activity.runId, unseen);
-        unseen.forEach((event) => receiveWorkflowActivity(articleId, event, agents));
-        setCreationActivity((current) => {
-          if (!current || current.status !== "running") return current;
-          const visible = unseen.filter((event) => event.eventType !== "run.node_output_delta");
-          if (visible.length === 0) return current;
-          const latest = visible[visible.length - 1];
-          const latestDescription = describeWorkflowActivity(latest, agents);
-          return {
-            ...current,
-            phase: latestDescription.phase,
-            logs: [
-              ...current.logs,
-              ...visible.map((event) => {
-                const description = describeWorkflowActivity(event, agents);
-                return activityLog(
-                  event.id,
-                  description.message,
-                  description.tone,
-                  activityTimestamp(event.createdAt),
-                );
-              }),
-            ],
-          };
-        });
-      } catch {
-        failedReads += 1;
-        if (failedReads >= 3) {
-          showArticleProgress({
-            articleId,
-            title: "暂时无法读取本地运行时进度",
-            detail: "仍在尝试恢复连接；若长时间无更新会自动提示重试。",
-            value: null,
-          });
-        }
-      } finally {
-        polling = false;
-      }
-    };
-    void collect();
-    const interval = window.setInterval(
-      () => void collect(),
-      WORKFLOW_ACTIVITY_POLL_INTERVAL_MS,
-    );
-    return () => {
-      stopped = true;
-      window.clearInterval(interval);
-    };
-  };
-
-  const awaitWorkflowWithActivityTimeout = <Result,>(
-    workflowPromise: Promise<Result>,
-    articleId: string,
-  ) =>
-    new Promise<Result>((resolve, reject) => {
-      let settled = false;
-      let cancellationRequested = false;
-      const finish = (callback: (value: Result) => void, value: Result) => {
-        if (settled) return;
-        settled = true;
-        window.clearInterval(timeout);
-        callback(value);
-      };
-      const fail = (error: Error) => {
-        if (settled) return;
-        settled = true;
-        window.clearInterval(timeout);
-        reject(error);
-      };
-      const timeout = window.setInterval(() => {
-        if (Date.now() - lastWorkflowActivityAt.current < WORKFLOW_ACTIVITY_TIMEOUT_MS) return;
-        if (cancellationRequested) return;
-        cancellationRequested = true;
-        showArticleProgress({
-          articleId,
-          title: "本地 Agent 已停止返回进度",
-          detail: "正在停止当前运行并保留创作要求。",
-          value: null,
-        });
-        const stalled = new Error(
-          "本地 Agent 连续 90 秒没有返回新的进度，已停止等待。创作要求已保留，可重试本次生成。",
-        );
-        // Wait briefly for the sidecar to persist its cancellation. A failed
-        // local connection must never leave the editor locked, so the fallback
-        // releases the UI even if that request cannot be delivered.
-        const releaseTimer = window.setTimeout(() => fail(stalled), 2_000);
-        void desktopBridge
-          .cancelWorkflow(articleId)
-          .catch(() => undefined)
-          .finally(() => {
-            window.clearTimeout(releaseTimer);
-            fail(stalled);
-          });
-      }, 5_000);
-      workflowPromise.then(
-        (result) => finish(resolve, result),
-        (error: unknown) => fail(error instanceof Error ? error : new Error(String(error))),
-      );
-    });
-
   useEffect(() => {
     if (!selectedArticle) return;
     setPublishTargets(new Set(selectedArticle.channels));
@@ -1894,6 +2117,29 @@ export default function App() {
 
   const updateArticleMarkdown = (markdown: string) => {
     if (!selectedArticle) return;
+    articleEditVersionRef.current[selectedArticle.id] =
+      (articleEditVersionRef.current[selectedArticle.id] ?? 0) + 1;
+    // The editor remains usable while an Agent runs. Stop the visual
+    // typewriter immediately; its execution fence will turn the late result
+    // into a recoverable failure instead of replacing this manual edit.
+    const hasWriterFence = Boolean(writerSourceFenceRef.current[selectedArticle.id]);
+    const hasArticleOperation = [...activePiOperationsRef.current.values()]
+      .some((owner) => owner === selectedArticle.id);
+    if (hasWriterFence) {
+      clearWriterTypewriter(selectedArticle.id);
+      const activeRun = activePiRunRef.current;
+      if (activeRun?.articleId === selectedArticle.id) {
+        // Do not wait for the model loop to notice the stale local snapshot.
+        // A manual keystroke means its pending commit must be aborted now;
+        // the source fence below remains the final protection if the provider
+        // has already produced a late response.
+        activePiRunRef.current = null;
+        void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+      }
+    }
+    if (hasWriterFence || hasArticleOperation) {
+      void cancelPiOperations(selectedArticle.id);
+    }
     const compacted = compactInlineDataImages(markdown, mediaAssets);
     const nextMarkdown = compacted.markdown;
     if (compacted.createdAssets.length > 0) {
@@ -1905,7 +2151,11 @@ export default function App() {
       ]);
     }
     const nextTitle = titleFromMarkdown(nextMarkdown, selectedArticle.title);
-    setDrafts((current) => ({ ...current, [selectedArticle.id]: nextMarkdown }));
+    setDrafts((current) => {
+      const next = { ...current, [selectedArticle.id]: nextMarkdown };
+      draftsRef.current = next;
+      return next;
+    });
     setArticleItems((current) =>
       current.map((article) =>
         article.id === selectedArticle.id
@@ -1918,7 +2168,11 @@ export default function App() {
           : article,
       ),
     );
-    setDirtyIds((current) => new Set(current).add(selectedArticle.id));
+    setDirtyIds((current) => {
+      const next = new Set(current).add(selectedArticle.id);
+      dirtyIdsRef.current = next;
+      return next;
+    });
   };
 
   const insertSelectedMediaInArticle = () => {
@@ -1976,53 +2230,104 @@ export default function App() {
     articleId: string,
     markdown: string,
     announce: boolean,
+    baseRevisionOverride?: string | null,
   ) => {
+    // Editor autosave, an explicit save, image insertion, and AI edits can
+    // finish in a different order from the order in which the user started
+    // them. Serialize writes per article and resolve the default base revision
+    // inside the queue so each CAS write uses the latest committed revision.
+    const previous = revisionSaveQueuesRef.current[articleId] ?? Promise.resolve();
+    activeRevisionSaveCountRef.current += 1;
     setSaving(true);
-    try {
-      const receipt = await desktopBridge.saveDraft({
-        articleId,
-        baseRevision: revisionIds[articleId] ?? null,
-        markdown,
-      });
-      setRevisionIds((current) => ({ ...current, [articleId]: receipt.revisionId }));
-      setDrafts((current) => ({ ...current, [articleId]: markdown }));
-      setArticleItems((current) =>
-        current.map((article) =>
-          article.id === articleId
-            ? {
-                ...article,
-                title: titleFromMarkdown(markdown, article.title),
-                deck: deckFromMarkdown(markdown),
-                markdown,
-                updatedAt: "刚刚",
-                wordCount: markdown.replace(/\s/g, "").length,
-                revisionId: receipt.revisionId,
-                revisionNumber: (article.revisionNumber ?? 0) + 1,
-              }
-            : article,
-        ),
-      );
-      setDirtyIds((current) => {
-        const next = new Set(current);
-        next.delete(articleId);
-        return next;
-      });
-      if (announce) {
-        setToast(
-          receipt.persistence === "memory"
-            ? "文章已保存到浏览器演示会话"
-            : "文章已保存到本地数据库",
+    const operation = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const receipt = await desktopBridge.saveDraft({
+          articleId,
+          baseRevision: baseRevisionOverride === undefined
+            ? revisionIdsRef.current[articleId] ?? null
+            : baseRevisionOverride,
+          markdown,
+        });
+        // A save may finish after the user has typed more text. Persisting an
+        // older revision is still useful (and advances the CAS base), but it
+        // must never replace the newer local draft in the editor.
+        const shouldApplyToEditor =
+          currentArticleMarkdown(articleId, markdown) === markdown;
+        setRevisionIds((current) => {
+          const next = { ...current, [articleId]: receipt.revisionId };
+          revisionIdsRef.current = next;
+          return next;
+        });
+        if (shouldApplyToEditor) {
+          setDrafts((current) => {
+            const next = { ...current, [articleId]: markdown };
+            draftsRef.current = next;
+            return next;
+          });
+        }
+        setArticleItems((current) =>
+          current.map((article) =>
+            article.id === articleId
+              ? shouldApplyToEditor
+                ? {
+                    ...article,
+                    title: titleFromMarkdown(markdown, article.title),
+                    deck: deckFromMarkdown(markdown),
+                    markdown,
+                    updatedAt: "刚刚",
+                    wordCount: markdown.replace(/\s/g, "").length,
+                    revisionId: receipt.revisionId,
+                    revisionNumber: (article.revisionNumber ?? 0) + 1,
+                  }
+                : {
+                    ...article,
+                    revisionId: receipt.revisionId,
+                    revisionNumber: (article.revisionNumber ?? 0) + 1,
+                  }
+              : article,
+          ),
         );
-      }
-      return receipt.revisionId;
+        setDirtyIds((current) => {
+          const next = new Set(current);
+          // Do not mark a newer keystroke as saved just because an earlier
+          // autosave completed after it.
+          if (draftsRef.current[articleId] === markdown) next.delete(articleId);
+          else next.add(articleId);
+          dirtyIdsRef.current = next;
+          return next;
+        });
+        if (announce) {
+          setToast(
+            receipt.persistence === "memory"
+              ? "文章已保存到浏览器演示会话"
+              : "文章已保存到本地数据库",
+          );
+        }
+        return receipt.revisionId;
+      });
+    const settled = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    revisionSaveQueuesRef.current[articleId] = settled;
+    try {
+      return await operation;
     } finally {
-      setSaving(false);
+      if (revisionSaveQueuesRef.current[articleId] === settled) {
+        delete revisionSaveQueuesRef.current[articleId];
+      }
+      activeRevisionSaveCountRef.current = Math.max(
+        0,
+        activeRevisionSaveCountRef.current - 1,
+      );
+      setSaving(activeRevisionSaveCountRef.current > 0);
     }
   };
 
   const ensureRevision = async (articleId: string, markdown: string) => {
-    const revisionId = revisionIds[articleId];
-    if (revisionId && !dirtyIds.has(articleId)) return revisionId;
+    const revisionId = revisionIdsRef.current[articleId];
+    if (revisionId && !dirtyIdsRef.current.has(articleId)) return revisionId;
     return persistRevision(articleId, markdown, false);
   };
 
@@ -2046,14 +2351,16 @@ export default function App() {
   ) => {
     const outputMarkdown = summary.outputMarkdown;
     const nextTitle = titleFromMarkdown(outputMarkdown);
-    setRevisionIds((current) => ({
-      ...current,
-      [articleId]: summary.outputRevisionId,
-    }));
-    setDrafts((current) => ({
-      ...current,
-      [articleId]: outputMarkdown,
-    }));
+    setRevisionIds((current) => {
+      const next = { ...current, [articleId]: summary.outputRevisionId };
+      revisionIdsRef.current = next;
+      return next;
+    });
+    setDrafts((current) => {
+      const next = { ...current, [articleId]: outputMarkdown };
+      draftsRef.current = next;
+      return next;
+    });
     setArticleItems((current) =>
       current.map((article) =>
         article.id === articleId
@@ -2075,6 +2382,7 @@ export default function App() {
     setDirtyIds((current) => {
       const next = new Set(current);
       next.delete(articleId);
+      dirtyIdsRef.current = next;
       return next;
     });
   };
@@ -2099,9 +2407,12 @@ export default function App() {
   const composeVisualPlan = async (
     article: Article,
     summary: RunWorkflowSummary,
+    plan: VisualCompositionPlanSummary,
     request: CreationRequest,
     startedAt: number,
+    ensureCurrent: () => void,
   ) => {
+    ensureCurrent();
     if (request.imagePlan.mode === "none") {
       return {
         revisionId: summary.outputRevisionId,
@@ -2111,10 +2422,6 @@ export default function App() {
       };
     }
 
-    const plan = summary.visualPlan;
-    if (!plan) {
-      throw new Error("视觉 Agent 没有返回配图计划，文章未插入图片。请重试本次生成。");
-    }
     if (plan.placements.length !== plan.targetCount) {
       throw new Error("视觉 Agent 返回的配图数量无效，文章未插入图片。请重试本次生成。");
     }
@@ -2135,13 +2442,18 @@ export default function App() {
       request.imageAssets.map((asset) => [asset.id, asset]),
     );
     const generatedAssets: MediaAsset[] = [];
-    const generatedCount = plan.placements.filter((placement) => !placement.assetId).length;
+    // The confirmation dialog can override the Agent's default material choice.
+    // Progress must follow the approved source, rather than the pre-confirmation
+    // asset id that happened to be present in the original plan.
+    const generatedCount = plan.placements.filter(
+      (placement) => placement.source !== "existing_asset",
+    ).length;
     let completedCount = 0;
     const updateVisualProgress = (detail: string) => {
       completedCount += 1;
       showArticleProgress({
         articleId: article.id,
-        title: generatedCount > 0 ? "正在并发生成正文配图" : "正在插入素材库图片",
+        title: generatedCount > 0 ? "正在生成正文配图" : "正在插入素材库图片",
         detail,
         value: plan.targetCount ? Math.round((completedCount / plan.targetCount) * 86) : 86,
       });
@@ -2149,7 +2461,7 @@ export default function App() {
     if (plan.targetCount > 0) {
       showArticleProgress({
         articleId: article.id,
-        title: generatedCount > 0 ? "正在并发生成正文配图" : "正在插入素材库图片",
+        title: generatedCount > 0 ? "正在生成正文配图" : "正在插入素材库图片",
         detail: generatedCount > 0
           ? `已同时启动 ${generatedCount} 个生图任务。`
           : `正在按文章结构安排 ${plan.targetCount} 张已选素材。`,
@@ -2173,11 +2485,20 @@ export default function App() {
           `visual-generation-started-${startedAt}-${index}`,
           `正在从已保存的 ${placement.promptFile ?? "Prompt 文件"} 生成第 ${index + 1} 张配图`,
         );
-        const result = await desktopBridge.generateImage({
-          prompt: placement.generationPrompt,
-          size: "1536x1024",
-          model: modelConfiguration?.imageModel ?? null,
-        });
+        const operationId = beginPiOperation("creation-image", article.id);
+        let result;
+        try {
+          result = await desktopBridge.generateImage({
+            operationId,
+            prompt: placement.generationPrompt,
+            size: "1536x1024",
+            model: modelConfiguration?.imageModel ?? null,
+          });
+        } finally {
+          finishPiOperation(operationId);
+        }
+        ensurePiOperationCurrent(operationId);
+        ensureCurrent();
         const image = result.images[0];
         if (!image) {
           throw new Error(`第 ${index + 1} 张配图未返回可保存的图片数据。`);
@@ -2212,6 +2533,7 @@ export default function App() {
       const batch = plan.placements.slice(offset, offset + batchSize);
       const results = await Promise.all(batch.map((placement, index) => executePlacement(placement, offset + index)));
       placements.push(...results);
+      ensureCurrent();
     }
 
     const outputMarkdown = summary.outputMarkdown;
@@ -2230,13 +2552,17 @@ export default function App() {
         : "文章无需插入正文配图",
     );
 
-    // The workflow output is durable before image composition. Use that exact
-    // revision as the parent instead of waiting for React state to flush.
-    const receipt = await desktopBridge.saveDraft({
-      articleId: article.id,
-      baseRevision: summary.outputRevisionId,
+    // The workflow output is durable before image composition. Preserve that
+    // exact parent revision, while still sharing the editor's serialized save
+    // queue with manual saves and automatic checkpoints.
+    ensureCurrent();
+    const revisionId = await persistRevision(
+      article.id,
       markdown,
-    });
+      false,
+      summary.outputRevisionId,
+    );
+    ensureCurrent();
 
     if (generatedAssets.length > 0) {
       setMediaAssets((current) => [
@@ -2245,39 +2571,17 @@ export default function App() {
           (asset) => !generatedAssets.some((created) => created.id === asset.id),
         ),
       ]);
-      setSelectedMediaIds((current) => [
-        ...new Set([...current, ...generatedAssets.map((asset) => asset.id)]),
-      ]);
       setGeneratedImages((current) => ({
         ...current,
         [article.id]: (current[article.id] ?? 0) + generatedAssets.length,
       }));
     }
+    setArticleItems((current) => current.map((currentArticle) => (
+      currentArticle.id === article.id
+        ? { ...currentArticle, status: "review" }
+        : currentArticle
+    )));
     setArticleContentReplacing(true);
-    setRevisionIds((current) => ({ ...current, [article.id]: receipt.revisionId }));
-    setDrafts((current) => ({ ...current, [article.id]: markdown }));
-    setArticleItems((current) =>
-      current.map((currentArticle) =>
-        currentArticle.id === article.id
-          ? {
-              ...currentArticle,
-              title: titleFromMarkdown(markdown, currentArticle.title),
-              deck: deckFromMarkdown(markdown),
-              markdown,
-              status: "review",
-              updatedAt: "刚刚",
-              wordCount: markdown.replace(/\s/g, "").length,
-              revisionId: receipt.revisionId,
-              revisionNumber: summary.outputRevisionNumber + 1,
-            }
-          : currentArticle,
-      ),
-    );
-    setDirtyIds((current) => {
-      const next = new Set(current);
-      next.delete(article.id);
-      return next;
-    });
     appendCreationActivity(
       "配图已插入正文",
       `visual-insertion-completed-${startedAt}`,
@@ -2289,162 +2593,326 @@ export default function App() {
     window.setTimeout(() => setArticleContentReplacing(false), 260);
     setArticleProgress(null);
     return {
-      revisionId: receipt.revisionId,
+      revisionId,
       revisionNumber: summary.outputRevisionNumber + 1,
       markdown,
       generatedCount: generatedAssets.length,
     };
   };
 
-  const runWorkflowForArticle = async (
-    article: Article,
-    markdown: string,
-    disabledNodeIds: DisabledOptionalNodeId[],
-    executionId: number,
-    channels?: PlatformId[],
-    agentInstructions = buildWorkflowAgentInstructions(studioAgents, studioSkills),
+  const receivePiWriterEvent = (
+    articleId: string,
+    event: PiRunEvent,
+    agents: WorkflowAgentInstruction[],
   ) => {
-    const revisionId = await ensureRevision(article.id, markdown);
-    ensureWorkflowExecutionCurrent(article.id, executionId);
-    lastWorkflowActivityAt.current = Date.now();
-    beginWorkflowWorkspace(article.id);
-    const workflowPromise = desktopBridge.runWorkflow({
-      articleId: article.id,
-      revisionId,
-      topic: workflowTopic(article),
-      disabledOptionalNodeIds: disabledNodeIds,
-      agentInstructions,
-      webSearchMode: "auto",
-      maxWebSearchCalls: 2,
-    });
-    const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
-    let summary: RunWorkflowSummary;
-    try {
-      summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
-      ensureWorkflowExecutionCurrent(article.id, executionId);
-    } catch (error) {
-      if (!isWorkflowExecutionCurrent(article.id, executionId)) throw error;
-      clearWriterTypewriter(article.id);
-      failWorkflowWorkspace(
-        article.id,
-        error instanceof Error ? error.message : String(error),
-      );
-      throw error;
-    } finally {
-      stopActivityPolling();
+    const source = writerSourceFenceRef.current[articleId];
+    if (!source || !isWriterSourceCurrent(source)) {
+      clearWriterTypewriter(articleId);
+      return;
     }
-    ensureWorkflowExecutionCurrent(article.id, executionId);
-    clearWriterTypewriter(article.id);
-    completeWorkflowWorkspace(article.id, summary);
-    setArticleContentReplacing(true);
-    applyWorkflowResult(article.id, summary, channels);
-    window.setTimeout(() => setArticleContentReplacing(false), 260);
-    setArticleProgress(null);
-    const snapshot = await desktopBridge.runtimeSnapshot();
-    ensureWorkflowExecutionCurrent(article.id, executionId);
-    setRuntime(snapshot);
-    return summary;
+    const payload = event.payload && typeof event.payload === "object"
+      ? event.payload as Record<string, unknown>
+      : {};
+    const mapped: WorkflowActivityEvent = {
+      id: event.id,
+      eventType: event.type,
+      nodeId: event.agentId === "writer" ? "draft" : null,
+      createdAt: event.timestamp,
+    };
+
+    if (event.type === "agent.started") {
+      mapped.eventType = "run.node_started";
+    } else if (event.type === "article.preview_delta") {
+      mapped.eventType = "run.node_output_delta";
+      mapped.draftDelta = typeof payload.delta === "string" ? payload.delta : "";
+      if (payload.reset === true) {
+        clearWriterTypewriter(articleId, true);
+        setWriterStreamingArticleId(articleId);
+        replaceArticleContent(articleId, "", false);
+      }
+    } else if (event.type === "revision.committed") {
+      mapped.eventType = "run.node_completed";
+    }
+
+    appendWorkflowWorkspaceEvents(articleId, event.runId, [mapped]);
+    receiveWorkflowActivity(articleId, mapped, agents);
+    lastWorkflowActivityAt.current = Date.now();
+
+    if (event.type === "article.checkpointed") {
+      appendCreationActivity(
+        "正在保存文章",
+        event.id,
+        "Pi Runtime 已保存可恢复的工作稿检查点",
+      );
+    } else if (event.type === "tool.started") {
+      appendCreationActivity(
+        "正在整理完整文章",
+        event.id,
+        "写作 Agent 正在提交完整 Markdown",
+      );
+    } else if (event.type === "revision.committed") {
+      appendCreationActivity(
+        "写作草稿已完成",
+        event.id,
+        "正在提交到本机文章库",
+        "success",
+      );
+    }
   };
 
-  const executeCreation = async (
+  const waitForPiWriterRun = async (
+    articleId: string,
+    run: PiAgentRun,
+    agents: WorkflowAgentInstruction[],
+    executionId: number,
+  ) => {
+    let afterSequence = 0;
+    let readFailures = 0;
+    let lastProgressAt = Date.now();
+    const startedAt = Date.now();
+    while (true) {
+      ensureWorkflowExecutionCurrent(articleId, executionId);
+      const source = writerSourceFenceRef.current[articleId];
+      if (!source || source.executionId !== executionId) {
+        throw new Error(ASYNC_SOURCE_CHANGED);
+      }
+      ensureWriterSourceCurrent(source);
+      try {
+        const events = await desktopBridge.getPiRunEvents(run.id, afterSequence);
+        ensureWorkflowExecutionCurrent(articleId, executionId);
+        ensureWriterSourceCurrent(source);
+        for (const event of events) {
+          // A reconnecting Sidecar may replay the boundary event for the
+          // requested cursor. Replaying preview resets would restart the
+          // typewriter forever, so only consume strictly newer events.
+          if (event.sequence <= afterSequence) continue;
+          afterSequence = Math.max(afterSequence, event.sequence);
+          receivePiWriterEvent(articleId, event, agents);
+          lastProgressAt = Date.now();
+        }
+        const current = await desktopBridge.getPiRun(run.id);
+        ensureWorkflowExecutionCurrent(articleId, executionId);
+        ensureWriterSourceCurrent(source);
+        readFailures = 0;
+        if (["completed", "failed", "stopped", "interrupted"].includes(current.status)) {
+          return current;
+        }
+      } catch (error) {
+        readFailures += 1;
+        if (readFailures >= 5) throw error;
+      }
+
+      if (Date.now() - lastProgressAt > 10 * 60_000) {
+        throw new Error("写作服务连续 10 分钟没有更新，已停止等待。");
+      }
+      if (Date.now() - startedAt > 30 * 60_000) {
+        throw new Error("本次写作已超过 30 分钟，已停止等待。");
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 90));
+    }
+  };
+
+  const executePiCreation = async (
     article: Article,
-    markdown: string,
     request: CreationRequest,
     retrying = false,
   ) => {
     const startedAt = Date.now();
     const previousLogs = retrying ? (creationActivity?.logs ?? []) : [];
-    const agentInstructions =
-      request.agentInstructions ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
+    const agents = request.agentInstructions
+      ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
     const executionId = beginWorkflowExecution(article.id);
     activeCreationRequestRef.current = createFailedCreationContext(article.id, request);
     setCreatingArticle(true);
     setWorkflowRunning(true);
-    lastWorkflowActivityAt.current = Date.now();
-    showArticleProgress({
-      articleId: article.id,
-      title: "正在准备创作",
-      detail: "创作要求已保存后，会自动开始撰写正文。",
-      value: null,
-    });
     setFailedCreationContext(null);
     setCreationActivity({
       status: "running",
-      phase: "正在保存创作要求",
+      phase: "正在准备创作",
       startedAt,
       elapsedSeconds: 0,
-      agentLabels: creationAgentLabels(agentInstructions),
+      agentLabels: ["写作 Agent"],
       logs: [
         ...previousLogs,
         activityLog(
-          `${retrying ? "retry-started" : "request-accepted"}-${startedAt}`,
-          retrying ? "开始重试本次生成" : "已接收创作请求",
+          `pi-request-${startedAt}`,
+          retrying ? "正在重试本次创作" : "已提交创作要求",
         ),
       ],
       error: null,
       retryable: false,
     });
-    let revisionSaved = false;
+    beginWorkflowWorkspace(article.id);
+    showArticleProgress({
+      articleId: article.id,
+      title: "正在准备创作",
+      detail: "正在连接写作服务。",
+      value: null,
+    });
+
     try {
-      const revisionId = await ensureRevision(article.id, markdown);
+      // The existing desktop article/revision store remains the only
+      // canonical content store during the Pi migration. Persist the brief
+      // before starting Pi so failures and stops always leave a recoverable
+      // local revision behind.
+      const inputMarkdown = currentArticleMarkdown(article.id, article.markdown);
+      const inputSource = captureArticleSource(article.id, inputMarkdown);
+      const inputRevisionId = await ensureRevision(article.id, inputMarkdown);
       ensureWorkflowExecutionCurrent(article.id, executionId);
-      revisionSaved = true;
-      setCreationActivity((current) =>
-        current
-          ? {
-              ...current,
-              phase: "AI 正在创作",
-              logs: [
-                ...current.logs,
-                activityLog(
-                  `brief-saved-${startedAt}`,
-                  "创作要求已保存",
-                  "success",
-                ),
-                activityLog(
-                  `workflow-started-${startedAt}`,
-                  "已将创作要求交给写作 Agent",
-                ),
-              ],
-            }
-          : current,
-      );
-      beginWorkflowWorkspace(article.id);
-      const workflowPromise = desktopBridge.runWorkflow({
+      const writerSource: WriterSourceFence = {
+        ...inputSource,
+        revisionId: inputRevisionId,
+        executionId,
+      };
+      writerSourceFenceRef.current[article.id] = writerSource;
+      ensureWriterSourceCurrent(writerSource);
+
+      const runtimeSnapshot = await desktopBridge.ensurePiRuntime();
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      setPiRuntime(runtimeSnapshot);
+      const prompt = [
+        "请根据下面的创作简报写一篇可直接发布的完整中文 Markdown 文章。",
+        "不要把“创作要求”“写作模板规范”等内部说明原样写进正文。",
+        "资料不足以支撑具名项目功能、数据或案例时，明确保持克制，不得自行发明。",
+        "",
+        buildCreationSeed(request),
+      ].join("\n");
+      const run = await desktopBridge.startPiArticleRun({
         articleId: article.id,
-        revisionId,
-        topic: workflowTopic(article),
-        disabledOptionalNodeIds: visualNodeDisabledIds(
-          request.disabledNodeIds,
-          request.imagePlan,
-        ),
-        agentInstructions,
-        webSearchMode: request.webSearchMode,
-        maxWebSearchCalls: request.webSearchMode === "off" ? 0 : 2,
-        visualComposition: visualCompositionFromCreation(request),
+        prompt,
       });
-      const stopActivityPolling = startWorkflowActivityPolling(article.id, agentInstructions);
-      let summary: RunWorkflowSummary;
-      try {
-        summary = await awaitWorkflowWithActivityTimeout(workflowPromise, article.id);
-        ensureWorkflowExecutionCurrent(article.id, executionId);
-      } catch (error) {
-        if (!isWorkflowExecutionCurrent(article.id, executionId)) throw error;
-        clearWriterTypewriter(article.id);
-        throw error;
-      } finally {
-        stopActivityPolling();
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      activePiRunRef.current = { articleId: article.id, runId: run.id };
+      setCreationActivity((current) => current ? {
+        ...current,
+        phase: "正在撰写文章",
+        logs: [
+          ...current.logs,
+          activityLog(`pi-run-${run.id}`, "写作任务已开始"),
+        ],
+      } : current);
+
+      const completed = await waitForPiWriterRun(article.id, run, agents, executionId);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      if (completed.status !== "completed") {
+        throw new Error(completed.error?.message ?? `写作任务已以 ${completed.status} 状态结束。`);
+      }
+      const stored = await desktopBridge.getPiArticle(article.id);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      writerDraftCompletedRef.current.add(article.id);
+      await waitForWriterTypewriterDrain(article.id, executionId);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+
+      // Pi ArticleStore is canonical. Do not write the generated Markdown
+      // through the old desktop revision path again: that would use the
+      // pre-write base revision and create a stale CAS conflict.
+      const persistedWriterArticle = (await desktopBridge.listArticles()).find(
+        (candidate) => candidate.articleId === article.id,
+      );
+      if (!persistedWriterArticle || persistedWriterArticle.revisionId !== stored.currentRevisionId) {
+        throw new Error("写作 Agent 已结束，但无法读取其保存的文章修订。");
       }
       ensureWorkflowExecutionCurrent(article.id, executionId);
-      clearWriterTypewriter(article.id);
+      ensureWriterSourceCurrent(writerSource);
+      const outputRevisionNumber = persistedWriterArticle.revisionNumber;
+
+      // The durable Pi revision is now the stable source for optional visual
+      // work. Rendering it here is safe because the writer fence proves the
+      // user has not edited since this run began.
+      replaceArticleContent(article.id, stored.markdown, false);
+      setRevisionIds((current) => {
+        const next = { ...current, [article.id]: stored.currentRevisionId };
+        revisionIdsRef.current = next;
+        return next;
+      });
+      setDirtyIds((current) => {
+        const next = new Set(current);
+        next.delete(article.id);
+        dirtyIdsRef.current = next;
+        return next;
+      });
+      const outputSource = captureArticleSource(
+        article.id,
+        stored.markdown,
+        stored.currentRevisionId,
+      );
+
+      let visualPlan: VisualCompositionPlanSummary | null = null;
+      if (request.imagePlan.mode !== "none") {
+        appendCreationActivity(
+          "正在规划正文配图",
+          `pi-visual-plan-${run.id}`,
+          "正在根据已生成的文章结构匹配素材并生成配图方案。",
+        );
+        showArticleProgress({
+          articleId: article.id,
+          title: "正在规划正文配图",
+          detail: "写作内容已保存，视觉 Agent 正在确定图片位置。",
+          value: 72,
+        });
+        const operationId = beginPiOperation("creation-visual", article.id);
+        let planned;
+        try {
+          ensureArticleSourceCurrent(outputSource);
+          planned = await desktopBridge.composeVisual({
+            operationId,
+            articleId: article.id,
+            markdown: stored.markdown,
+            instruction: "根据当前文章结构规划正文配图；优先使用用户选中的素材，不足时提供生图提示词。",
+            visualComposition: visualCompositionFromCreation(request),
+          });
+        } finally {
+          finishPiOperation(operationId);
+        }
+        ensurePiOperationCurrent(operationId);
+        ensureWorkflowExecutionCurrent(article.id, executionId);
+        ensureArticleSourceCurrent(outputSource);
+        visualPlan = planned.plan;
+      }
+
+      let summary: RunWorkflowSummary = {
+        runId: run.id,
+        status: "completed",
+        workflowName: "pi-writer",
+        workflowVersion: "2",
+        inputRevisionId,
+        outputRevisionId: stored.currentRevisionId,
+        outputRevisionNumber,
+        outputMarkdown: stored.markdown,
+        // The visual planner must bind its placement plan to this exact
+        // canonical Pi content hash before any image side effect can start.
+        outputContentHash: stored.contentHash,
+        artifacts: [],
+        visualPlan,
+        persistence: "local_database",
+      };
       completeWorkflowWorkspace(article.id, summary);
-      setArticleContentReplacing(true);
-      applyWorkflowResult(article.id, summary, request.platforms);
-      window.setTimeout(() => setArticleContentReplacing(false), 260);
-      const approvedVisualPlan = await requestVisualConfirmation(article.id, summary.visualPlan);
+
+      const approvedVisualPlan = await requestVisualConfirmation(
+        article.id,
+        visualPlan,
+        request.imagePlan.materialMatchThreshold,
+        request.imageAssets,
+      );
       ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureArticleSourceCurrent(outputSource);
       let composed = approvedVisualPlan
-        ? await composeVisualPlan(article, summary, request, startedAt)
+        ? await composeVisualPlan(
+            article,
+            summary,
+            approvedVisualPlan,
+            request,
+            startedAt,
+            () => {
+              ensureWorkflowExecutionCurrent(article.id, executionId);
+              ensureArticleSourceCurrent(outputSource);
+            },
+          )
         : {
             revisionId: summary.outputRevisionId,
             revisionNumber: summary.outputRevisionNumber,
@@ -2452,105 +2920,93 @@ export default function App() {
             generatedCount: 0,
           };
       ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureArticleSourceCurrent(outputSource);
       if (!approvedVisualPlan && request.imagePlan.mode !== "none") {
         appendCreationActivity(
           "已跳过正文配图",
-          `visual-plan-skipped-${startedAt}`,
-          "文章已保留；未启动任何图片生成或素材插入。",
+          `pi-visual-plan-skipped-${run.id}`,
+          "文章已保存，未启动任何图片生成或素材插入。",
         );
       }
+
       const finalMarkdown = request.template
         ? applyTemplateFixedBlocks(composed.markdown, request.template, article, request)
         : composed.markdown;
       if (finalMarkdown !== composed.markdown) {
-        const receipt = await desktopBridge.saveDraft({
-          articleId: article.id,
-          baseRevision: composed.revisionId,
-          markdown: finalMarkdown,
-        });
+        ensureArticleSourceCurrent(outputSource);
+        const revisionId = await persistRevision(
+          article.id,
+          finalMarkdown,
+          false,
+          composed.revisionId,
+        );
         ensureWorkflowExecutionCurrent(article.id, executionId);
+        ensureArticleSourceCurrent(outputSource);
         composed = {
           ...composed,
-          revisionId: receipt.revisionId,
+          revisionId,
           revisionNumber: composed.revisionNumber + 1,
           markdown: finalMarkdown,
         };
-        applyWorkflowResult(
-          article.id,
-          {
-            ...summary,
-            outputRevisionId: composed.revisionId,
-            outputRevisionNumber: composed.revisionNumber,
-            outputMarkdown: composed.markdown,
-          },
-          request.platforms,
-        );
       }
-      const runtimeSnapshot = await desktopBridge.runtimeSnapshot();
-      ensureWorkflowExecutionCurrent(article.id, executionId);
-      setRuntime(runtimeSnapshot);
-      setCreationActivity((current) =>
-        current
-          ? {
-              ...current,
-              status: "succeeded",
-              phase: composed.generatedCount > 0 ? "文章与配图生成完成" : "文章生成完成",
-              elapsedSeconds: Math.max(
-                current.elapsedSeconds,
-                Math.round((Date.now() - startedAt) / 1000),
-              ),
-              logs: [
-                ...current.logs,
-                activityLog(
-                  `workflow-completed-${startedAt}`,
-                  `文章已处理完成，已保存修订 ${composed.revisionNumber}`,
-                  "success",
-                ),
-              ],
-            }
-          : current,
-      );
-      setActiveNav("articles");
-      setToast(
-        `文章已生成 · 修订 ${composed.revisionNumber}`,
-      );
-    } catch (error) {
-      if (!isWorkflowExecutionCurrent(article.id, executionId)) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      const safeDetail = sanitizeActivityMessage(detail || "未知错误");
-      clearWriterTypewriter(article.id);
-      failWorkflowWorkspace(article.id, safeDetail);
-      if (!revisionSaved) {
-        setDirtyIds((current) => new Set(current).add(article.id));
-      }
-      setFailedCreationContext(createFailedCreationContext(article.id, request));
-      setCreationActivity((current) =>
-        current
-          ? {
-              ...current,
-              status: "failed",
-              phase: "文章生成失败",
-              elapsedSeconds: Math.max(
-                current.elapsedSeconds,
-                Math.round((Date.now() - startedAt) / 1000),
-              ),
-              error: `失败原因：${safeDetail}`,
-              retryable: true,
-              logs: [
-                ...current.logs,
-                activityLog(
-                  `workflow-failed-${startedAt}`,
-                  `工作流失败：${safeDetail}`,
-                  "error",
-                ),
-              ],
-            }
-          : current,
-      );
-      setWriterStreamingArticleId((current) => (current === article.id ? null : current));
+      summary = {
+        ...summary,
+        outputRevisionId: composed.revisionId,
+        outputRevisionNumber: composed.revisionNumber,
+        outputMarkdown: composed.markdown,
+      };
+      ensureArticleSourceCurrent(outputSource);
+      setArticleContentReplacing(true);
+      applyWorkflowResult(article.id, summary, request.platforms);
+      window.setTimeout(() => setArticleContentReplacing(false), 260);
+      setCreationActivity((current) => current ? {
+        ...current,
+        status: "succeeded",
+        phase: composed.generatedCount > 0 ? "文章与配图生成完成" : "文章生成完成",
+        elapsedSeconds: Math.max(current.elapsedSeconds, Math.round((Date.now() - startedAt) / 1000)),
+        logs: [
+          ...current.logs,
+          activityLog(
+            `pi-completed-${run.id}`,
+            `文章已保存为修订 ${composed.revisionNumber}`,
+            "success",
+          ),
+        ],
+      } : current);
       setArticleProgress(null);
-      setToast("生成失败，创作要求已保留，可返回创作页修改后重试");
+      setActiveNav("articles");
+      setToast(`文章已生成 · 修订 ${composed.revisionNumber}`);
+    } catch (error) {
+      const activeRun = activePiRunRef.current;
+      if (activeRun?.articleId === article.id) {
+        // A client-side timeout must not leave the model running in the
+        // background and later overwrite a retried draft.
+        void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+      }
+      if (!isWorkflowExecutionCurrent(article.id, executionId)) return;
+      const detail = sanitizeActivityMessage(error instanceof Error ? error.message : String(error));
+      clearWriterTypewriter(article.id);
+      failWorkflowWorkspace(article.id, detail);
+      setFailedCreationContext(createFailedCreationContext(article.id, request));
+      setCreationActivity((current) => current ? {
+        ...current,
+        status: "failed",
+        phase: "文章生成失败",
+        elapsedSeconds: Math.max(current.elapsedSeconds, Math.round((Date.now() - startedAt) / 1000)),
+        error: `失败原因：${detail}`,
+        retryable: true,
+        logs: [
+          ...current.logs,
+          activityLog(`pi-failed-${Date.now()}`, `写作任务失败：${detail}`, "error"),
+        ],
+      } : current);
+      setArticleProgress(null);
+      setToast("文章生成失败，当前工作稿已保留");
     } finally {
+      if (activePiRunRef.current?.articleId === article.id) activePiRunRef.current = null;
+      if (writerSourceFenceRef.current[article.id]?.executionId === executionId) {
+        delete writerSourceFenceRef.current[article.id];
+      }
       if (finishWorkflowExecution(article.id, executionId)) {
         activeCreationRequestRef.current = null;
         setCreatingArticle(false);
@@ -2589,7 +3045,7 @@ export default function App() {
     setDrafts((current) => ({ ...current, [id]: markdown }));
     setSelectedArticleId(id);
     setActiveNav("articles");
-    void executeCreation(article, markdown, normalizedRequest);
+    void executePiCreation(article, normalizedRequest);
   };
 
   const retryCreation = () => {
@@ -2619,25 +3075,77 @@ export default function App() {
       setToast("未找到上次创作要求，请重新提交");
       return;
     }
-    const markdown = drafts[article.id] ?? article.markdown;
-    void executeCreation(article, markdown, retryRequest, true);
+    void executePiCreation(article, retryRequest, true);
   };
+
+  useEffect(() => () => {
+    // An unmounted workspace must never continue through a later bridge
+    // instance (for example after a Tauri reload). Every await in a writer
+    // execution rechecks this token before it can start or commit more work.
+    activeWorkflowExecutionRef.current = null;
+    activeCreationRequestRef.current = null;
+    const activeRun = activePiRunRef.current;
+    activePiRunRef.current = null;
+    if (activeRun) {
+      void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+    }
+    const activeRewriteRun = activePiRewriteRunRef.current;
+    activePiRewriteRunRef.current = null;
+    activePiRewriteRequestRef.current = null;
+    if (activeRewriteRun) {
+      void desktopBridge.stopPiRun(activeRewriteRun.runId).catch(() => undefined);
+    }
+  }, []);
 
   const cancelCurrentWorkflow = () => {
     const activeExecution = activeWorkflowExecutionRef.current;
-    if (!activeExecution || !workflowRunning || cancellingWorkflow) return;
+    if (cancellingWorkflow) return;
+    if (!activeExecution || !workflowRunning) {
+      const articleId = selectedArticleId;
+      const rewriteRun = activePiRewriteRunRef.current;
+      if (articleId && rewriteRun?.articleId === articleId) {
+        setCancellingWorkflow(true);
+        void desktopBridge.stopPiRun(rewriteRun.runId)
+          .catch(() => {
+            setToast("停止请求未被本地服务确认；旧改写结果仍不会写回文章。");
+          })
+          .finally(() => setCancellingWorkflow(false));
+        setToast("正在停止当前 AI 改写请求。");
+        return;
+      }
+      const pendingRewrite = activePiRewriteRequestRef.current;
+      if (articleId && pendingRewrite?.articleId === articleId) {
+        // ArticleAssistant remembers this request and will issue cancellation
+        // again as soon as the native start event supplies its run id.
+        setToast("正在等待改写任务启动后停止。");
+        return;
+      }
+      if (!articleId || ![...activePiOperationsRef.current.values()].some((owner) => owner === articleId)) return;
+      setCancellingWorkflow(true);
+      void cancelPiOperations(articleId).finally(() => setCancellingWorkflow(false));
+      setToast("已停止当前 AI 操作，未完成结果不会写入文章。");
+      return;
+    }
 
     const { articleId } = activeExecution;
+    const piRun = activePiRunRef.current?.articleId === articleId
+      ? activePiRunRef.current
+      : null;
+    activePiRunRef.current = null;
     const creationContext = activeCreationRequestRef.current;
     // Invalidate first. Any response that arrives after this point belongs to
     // the stopped run and must never replace the user's current draft.
     activeWorkflowExecutionRef.current = null;
     activeCreationRequestRef.current = null;
     if (visualConfirmation?.articleId === articleId) {
-      resolveVisualConfirmation(false);
+      resolveVisualConfirmation(null);
     }
     clearWriterTypewriter(articleId);
-    setDirtyIds((current) => new Set(current).add(articleId));
+    setDirtyIds((current) => {
+      const next = new Set(current).add(articleId);
+      dirtyIdsRef.current = next;
+      return next;
+    });
     failWorkflowWorkspace(articleId, WORKFLOW_CANCELLED_BY_USER_MESSAGE);
     if (creationContext?.articleId === articleId) {
       setFailedCreationContext(creationContext);
@@ -2675,8 +3183,13 @@ export default function App() {
       () => setCancellingWorkflow(false),
       2_000,
     );
-    void desktopBridge
-      .cancelWorkflow(articleId)
+    // Stop both durable writer runs and scoped non-run operations. The latter
+    // includes visual planning and every concurrent image request.
+    void cancelPiOperations(articleId);
+    const cancellation = piRun
+      ? desktopBridge.stopPiRun(piRun.runId).then(() => undefined)
+      : Promise.resolve();
+    void cancellation
       .catch(() => {
         setToast("已停止本地等待；本地服务未确认取消，旧结果不会写回文章。");
       })
@@ -2701,8 +3214,16 @@ export default function App() {
       collection: "未分类",
     };
     setArticleItems((current) => [article, ...current]);
-    setDrafts((current) => ({ ...current, [id]: markdown }));
-    setDirtyIds((current) => new Set(current).add(id));
+    setDrafts((current) => {
+      const next = { ...current, [id]: markdown };
+      draftsRef.current = next;
+      return next;
+    });
+    setDirtyIds((current) => {
+      const next = new Set(current).add(id);
+      dirtyIdsRef.current = next;
+      return next;
+    });
     setSelectedArticleId(id);
     setActiveNav("articles");
   };
@@ -2720,28 +3241,105 @@ export default function App() {
   const improveCurrentArticle = async () => {
     if (!selectedArticle || workflowRunning) return;
     if (!requireTextModel()) return;
-    const executionId = beginWorkflowExecution(selectedArticle.id);
+    const article = selectedArticle;
+    const markdown = currentMarkdown;
+    const inputSource = captureArticleSource(article.id, markdown);
+    const agents = buildWorkflowAgentInstructions(studioAgents, studioSkills);
+    const executionId = beginWorkflowExecution(article.id);
     setWorkflowRunning(true);
+    beginWorkflowWorkspace(article.id);
+    showArticleProgress({
+      articleId: article.id,
+      title: "正在准备全文优化",
+      detail: "正在将当前修订交给写作 Agent。",
+      value: null,
+    });
     try {
-      const summary = await runWorkflowForArticle(
-        selectedArticle,
-        currentMarkdown,
-        [
-          ...new Set([
-            ...disabledNodes,
-            ...disabledOptionalNodesFor(studioAgents),
-          ]),
-        ],
+      const inputRevisionId = await ensureRevision(article.id, markdown);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      const writerSource: WriterSourceFence = {
+        ...inputSource,
+        revisionId: inputRevisionId,
         executionId,
+      };
+      writerSourceFenceRef.current[article.id] = writerSource;
+      ensureWriterSourceCurrent(writerSource);
+      const snapshot = await desktopBridge.ensurePiRuntime();
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      setPiRuntime(snapshot);
+      const run = await desktopBridge.startPiArticleRun({
+        articleId: article.id,
+        prompt: [
+          "请完整优化下方的中文 Markdown 文章。",
+          "保留已经存在的事实、链接、图片 Markdown、代码块和有效的排版层级；不要虚构数据、功能、案例或用户反馈。",
+          "让文字具体、自然、有明确观点，删掉空泛套话。不要解释修改过程，只提交完整的优化后 Markdown。",
+          "",
+          "## 当前文章",
+          markdown,
+        ].join("\n"),
+      });
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      activePiRunRef.current = { articleId: article.id, runId: run.id };
+      const completed = await waitForPiWriterRun(article.id, run, agents, executionId);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      if (completed.status !== "completed") {
+        throw new Error(completed.error?.message ?? `全文优化以 ${completed.status} 状态结束。`);
+      }
+      const stored = await desktopBridge.getPiArticle(article.id);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      writerDraftCompletedRef.current.add(article.id);
+      await waitForWriterTypewriterDrain(article.id, executionId);
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      const persisted = (await desktopBridge.listArticles()).find(
+        (candidate) => candidate.articleId === article.id,
       );
-      ensureWorkflowExecutionCurrent(selectedArticle.id, executionId);
+      if (!persisted || persisted.revisionId !== stored.currentRevisionId) {
+        throw new Error("全文优化已结束，但无法读取保存后的文章修订。" );
+      }
+      ensureWorkflowExecutionCurrent(article.id, executionId);
+      ensureWriterSourceCurrent(writerSource);
+      const summary: RunWorkflowSummary = {
+        runId: run.id,
+        status: "completed",
+        workflowName: "pi-writer-full-rewrite",
+        workflowVersion: "2",
+        inputRevisionId,
+        outputRevisionId: stored.currentRevisionId,
+        outputRevisionNumber: persisted.revisionNumber,
+        outputMarkdown: stored.markdown,
+        outputContentHash: stored.contentHash,
+        artifacts: [],
+        visualPlan: null,
+        persistence: "local_database",
+      };
+      completeWorkflowWorkspace(article.id, summary);
+      setArticleContentReplacing(true);
+      applyWorkflowResult(article.id, summary);
+      window.setTimeout(() => setArticleContentReplacing(false), 260);
+      setArticleProgress(null);
       setToast(`AI 处理完成 · 已生成修订 ${summary.outputRevisionNumber}`);
     } catch (error) {
-      if (!isWorkflowExecutionCurrent(selectedArticle.id, executionId)) return;
+      const activeRun = activePiRunRef.current;
+      if (activeRun?.articleId === article.id) {
+        void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+      }
+      if (!isWorkflowExecutionCurrent(article.id, executionId)) return;
       const detail = error instanceof Error ? error.message : String(error);
+      clearWriterTypewriter(article.id);
+      failWorkflowWorkspace(article.id, sanitizeActivityMessage(detail));
+      setArticleProgress(null);
       setToast(`AI 处理失败：${detail.slice(0, 120)}`);
     } finally {
-      if (finishWorkflowExecution(selectedArticle.id, executionId)) {
+      if (activePiRunRef.current?.articleId === article.id) activePiRunRef.current = null;
+      if (writerSourceFenceRef.current[article.id]?.executionId === executionId) {
+        delete writerSourceFenceRef.current[article.id];
+      }
+      if (finishWorkflowExecution(article.id, executionId)) {
         setWorkflowRunning(false);
       }
     }
@@ -2751,6 +3349,10 @@ export default function App() {
     instruction: string,
     _conversation: RewriteConversationMessage[],
     onActivity: (activity: AssistantActivity) => void,
+    sourceMarkdownOverride?: string,
+    baseRevisionId?: string,
+    replaceExistingImages = false,
+    targetSelections: MarkdownSelection[] = [],
   ): Promise<{ summary: string }> => {
     if (!selectedArticle || workflowRunning || saving) {
       throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
@@ -2758,13 +3360,28 @@ export default function App() {
     if (!requireTextModel()) {
       throw new Error("请先完成文本模型配置。");
     }
-    if (!currentMarkdown.trim()) {
+    const requestedSourceMarkdown = sourceMarkdownOverride?.trim()
+      ? sourceMarkdownOverride
+      : currentMarkdown;
+    if (!requestedSourceMarkdown.trim()) {
       throw new Error("当前文章没有可供视觉 Agent 分析的正文。");
     }
 
     const article = selectedArticle;
-    const sourceMarkdown = currentMarkdown;
-    const requestedCount = requestedVisualCount(instruction);
+    const source = captureArticleSource(
+      article.id,
+      requestedSourceMarkdown,
+      baseRevisionId ?? revisionIdsRef.current[article.id] ?? null,
+    );
+    ensureArticleSourceCurrent(source);
+    const sourceMarkdown = replaceExistingImages
+      ? removeArticleImages(requestedSourceMarkdown)
+      : requestedSourceMarkdown;
+    const stableTargetSelections = targetSelections.filter((selection) => (
+      selection.text.trim().length > 0 && sourceMarkdown.includes(selection.text)
+    ));
+    const requestedCount = requestedVisualCount(instruction)
+      ?? (stableTargetSelections.length > 0 ? stableTargetSelections.length : null);
     const visualAssets = (selectedMedia.length > 0 ? selectedMedia : mediaAssets).slice(0, 6);
     const assetScope = selectedMedia.length > 0
       ? "selected_only"
@@ -2795,6 +3412,7 @@ export default function App() {
       palette: null,
       preferredImageBackend: "auto",
       generationBatchSize: 4,
+      materialMatchThreshold: 30,
       skipConfirmation: true,
     };
 
@@ -2803,13 +3421,40 @@ export default function App() {
       detail: "正在理解文章结构，并确定每张图片适合插入的位置。",
       value: 10,
     });
-    const result: { plan: VisualCompositionPlanSummary } = await desktopBridge.composeVisual({
-      articleId: article.id,
-      markdown: sourceMarkdown,
-      instruction,
-      visualComposition,
-    });
-    const plan = result.plan;
+    const planningOperationId = beginPiOperation("editor-visual", article.id);
+    let result: { plan: VisualCompositionPlanSummary };
+    try {
+      ensureArticleSourceCurrent(source);
+      result = await desktopBridge.composeVisual({
+        operationId: planningOperationId,
+        articleId: article.id,
+        markdown: sourceMarkdown,
+        instruction,
+        visualComposition,
+      });
+    } finally {
+      finishPiOperation(planningOperationId);
+    }
+    ensurePiOperationCurrent(planningOperationId);
+    ensureArticleSourceCurrent(source);
+    // The visual model proposes the illustration content, but a user-selected
+    // paragraph is a stronger placement constraint than a semantic guess. Keep
+    // that anchor local and deterministic so the image cannot land elsewhere.
+    const plan: VisualCompositionPlanSummary = stableTargetSelections.length > 0
+      ? {
+          ...result.plan,
+          placements: result.plan.placements.map((placement, index) => {
+            const target = stableTargetSelections[index];
+            if (!target) return placement;
+            return {
+              ...placement,
+              anchorExcerpt: target.text,
+              afterHeading: null,
+              selectionReason: "由用户选中的正文片段定位。",
+            };
+          }),
+        }
+      : result.plan;
     if (plan.placements.length !== plan.targetCount) {
       throw new Error("视觉 Agent 返回的配图数量无效，文章未插入图片。请重试本次操作。");
     }
@@ -2858,15 +3503,25 @@ export default function App() {
         throw new Error("视觉 Agent 未为待生成图片提供可执行的提示词。");
       }
       onActivity({
-        title: "正在并发生成正文配图",
+        title: "正在生成正文配图",
         detail: `正在生成第 ${index + 1}/${plan.targetCount} 张配图。`,
         value: 28 + Math.round((completedCount / plan.targetCount) * 56),
       });
-      const imageResult = await desktopBridge.generateImage({
-        prompt: placement.generationPrompt,
-        size: "1536x1024",
-        model: imageModel,
-      });
+      const operationId = beginPiOperation("editor-image", article.id);
+      let imageResult;
+      try {
+        ensureArticleSourceCurrent(source);
+        imageResult = await desktopBridge.generateImage({
+          operationId,
+          prompt: placement.generationPrompt,
+          size: "1536x1024",
+          model: imageModel,
+        });
+      } finally {
+        finishPiOperation(operationId);
+      }
+      ensurePiOperationCurrent(operationId);
+      ensureArticleSourceCurrent(source);
       const image = imageResult.images[0];
       if (!image) {
         throw new Error(`第 ${index + 1} 张配图未返回可保存的图片数据。`);
@@ -2888,7 +3543,7 @@ export default function App() {
       generatedAssets.push(asset);
       completedCount += 1;
       onActivity({
-        title: "正在并发生成正文配图",
+        title: "正在生成正文配图",
         detail: `已完成第 ${completedCount}/${plan.targetCount} 张配图。`,
         value: 25 + Math.round((completedCount / plan.targetCount) * 62),
       });
@@ -2903,19 +3558,27 @@ export default function App() {
         batch.map((placement, index) => executePlacement(placement, offset + index)),
       );
       placements.push(...batchResults);
+      ensureArticleSourceCurrent(source);
     }
 
+    ensureArticleSourceCurrent(source);
     const nextMarkdown = insertVisualMarkdown(sourceMarkdown, placements);
     onActivity({
-      title: "正在写入 Markdown",
+      title: "正在更新文章",
       detail: "配图已按文章结构定位，正在保存新的文章修订。",
       value: 92,
     });
     setArticleContentReplacing(true);
     try {
-      await persistRevision(article.id, nextMarkdown, false);
+      ensureArticleSourceCurrent(source);
+      const revisionId = await persistRevision(article.id, nextMarkdown, false, baseRevisionId);
+      ensureArticleSourceCurrent(source);
+      replaceArticleContent(article.id, nextMarkdown, false);
+      const previousUndo = rewriteUndoRef.current[article.id];
       rewriteUndoRef.current[article.id] = {
-        before: sourceMarkdown,
+        before: previousUndo?.after === requestedSourceMarkdown
+          ? previousUndo.before
+          : requestedSourceMarkdown,
         after: nextMarkdown,
       };
       setRewriteUndoArticleId(article.id);
@@ -2926,14 +3589,16 @@ export default function App() {
             (asset) => !generatedAssets.some((created) => created.id === asset.id),
           ),
         ]);
-        setSelectedMediaIds((current) => [
-          ...new Set([...current, ...generatedAssets.map((asset) => asset.id)]),
-        ]);
         setGeneratedImages((current) => ({
           ...current,
           [article.id]: (current[article.id] ?? 0) + generatedAssets.length,
         }));
       }
+      setArticleItems((current) => current.map((currentArticle) => (
+        currentArticle.id === article.id
+          ? { ...currentArticle, status: "review", revisionId }
+          : currentArticle
+      )));
     } finally {
       window.setTimeout(() => setArticleContentReplacing(false), 260);
     }
@@ -2952,62 +3617,94 @@ export default function App() {
     selections: MarkdownSelection[],
     conversation: RewriteConversationMessage[],
     requestId: string,
-  ): Promise<RewriteArticleSummary> => {
+  ): Promise<RewriteArticleOutcome> => {
     if (!selectedArticle || workflowRunning || saving) {
       throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
     }
     if (!requireTextModel()) {
       throw new Error("请先完成文本模型配置。");
     }
-    return desktopBridge.rewriteArticle({
-      articleId: selectedArticle.id,
-      requestId,
-      markdown: currentMarkdown,
-      instruction,
-      selectedTexts: selections.map((selection) => selection.text),
-      conversation,
-    });
+    const article = selectedArticle;
+    const source = captureArticleSource(article.id, currentMarkdown);
+    activePiRewriteRequestRef.current = { articleId: article.id, requestId };
+    try {
+      const result = await desktopBridge.rewriteArticle({
+        articleId: article.id,
+        requestId,
+        markdown: source.markdown,
+        instruction,
+        selectedTexts: selections.map((selection) => selection.text),
+        conversation,
+      });
+      ensureArticleSourceCurrent(source);
+      return {
+        ...result,
+        source,
+        visualRefreshRecommended:
+          selections.length === 0 &&
+          Boolean(result.replacements[0]) &&
+          articleChangeRequiresVisualRefresh(source.markdown, result.replacements[0]!),
+      };
+    } finally {
+      if (activePiRewriteRequestRef.current?.requestId === requestId) {
+        activePiRewriteRequestRef.current = null;
+      }
+      if (activePiRewriteRunRef.current?.requestId === requestId) {
+        activePiRewriteRunRef.current = null;
+      }
+    }
   };
 
   const applyArticleRewrite = async (candidate: RewriteCandidate) => {
-    if (!selectedArticle || workflowRunning || saving) {
+    if (workflowRunning || saving) {
       throw new Error("当前文章正在保存或执行工作流，请稍后再试。");
     }
+    const source = candidate.source;
+    if (!source) {
+      throw new Error("改写请求缺少文章版本信息，请重新生成修改建议。");
+    }
+    ensureArticleSourceCurrent(source);
     if (candidate.replacements.length !== (candidate.selections.length || 1)) {
       throw new Error("AI 返回的修改片段数量不匹配，请重新生成修改建议。");
     }
-    let nextMarkdown = currentMarkdown;
+    let nextMarkdown = source.markdown;
     if (candidate.selections.length) {
       const replacements = candidate.selections
         .map((selection, index) => ({ selection, replacement: candidate.replacements[index]! }))
         .sort((left, right) => right.selection.start - left.selection.start);
       for (const { selection, replacement } of replacements) {
-        if (currentMarkdown.slice(selection.start, selection.end) !== selection.text) {
+        if (source.markdown.slice(selection.start, selection.end) !== selection.text) {
           throw new Error("选中的原文已经变化，请重新选择后再生成修改建议。");
         }
+        assertRewritePreservesImages(selection.text, replacement);
         nextMarkdown = `${nextMarkdown.slice(0, selection.start)}${replacement}${nextMarkdown.slice(selection.end)}`;
       }
     } else {
       nextMarkdown = candidate.replacements[0] ?? "";
+      assertRewritePreservesImages(source.markdown, nextMarkdown);
     }
     if (!nextMarkdown.trim()) throw new Error("AI 返回了空内容，未修改文章。");
 
     setArticleContentReplacing(true);
     try {
-      const revisionId = await persistRevision(selectedArticle.id, nextMarkdown, false);
-      rewriteUndoRef.current[selectedArticle.id] = {
-        before: currentMarkdown,
+      ensureArticleSourceCurrent(source);
+      const revisionId = await persistRevision(source.articleId, nextMarkdown, false);
+      ensureArticleSourceCurrent(source);
+      replaceArticleContent(source.articleId, nextMarkdown, false);
+      rewriteUndoRef.current[source.articleId] = {
+        before: source.markdown,
         after: nextMarkdown,
       };
-      setRewriteUndoArticleId(selectedArticle.id);
+      setRewriteUndoArticleId(source.articleId);
       setArticleItems((current) =>
         current.map((article) =>
-          article.id === selectedArticle.id
+          article.id === source.articleId
             ? { ...article, status: "review", revisionId }
             : article,
         ),
       );
       setToast(`AI 修改已保存 · ${candidate.model}`);
+      return { revisionId, markdown: nextMarkdown };
     } finally {
       window.setTimeout(() => setArticleContentReplacing(false), 260);
     }
@@ -3038,14 +3735,17 @@ export default function App() {
     if (!selectedArticle || publishAction) {
       throw new Error("当前没有可同步的文章，或已有发布任务正在执行。");
     }
-    if (runtime?.bridgeMode !== "python_sidecar") {
+    if (piRuntime?.bridgeMode !== "pi_sidecar") {
       throw new Error("浏览器预览不能同步平台草稿，请在桌面应用中执行。");
     }
     setPublishAction("process");
     setPublishError(null);
     try {
-      const status = await desktopBridge.wechatSyncStatus();
-      setWechatSyncStatus(status);
+      const status = await desktopBridge.wechatSyncStatus({ forceRefresh: true });
+      if (status.available && status.connected && status.platforms.length > 0) {
+        lastKnownWechatSyncStatus.current = status;
+      }
+      setWechatSyncStatus({ ...status, stale: false });
       if (!status.available || !status.connected) {
         throw new Error(status.detail || "WechatSync 本地桥未连接。");
       }
@@ -3098,11 +3798,19 @@ export default function App() {
     if (!requireImageModel()) return;
     setGeneratingImage(true);
     try {
-      const result = await desktopBridge.generateImage({
-        prompt: `为《${selectedArticle.title}》生成清晰克制的文章封面，不使用品牌标识。主题：${selectedArticle.deck}`,
-        size: "1536x1024",
-        model: modelConfiguration?.imageModel ?? null,
-      });
+      const operationId = beginPiOperation("cover-image", selectedArticle.id);
+      let result;
+      try {
+        result = await desktopBridge.generateImage({
+          operationId,
+          prompt: `为《${selectedArticle.title}》生成清晰克制的文章封面，不使用品牌标识。主题：${selectedArticle.deck}`,
+          size: "1536x1024",
+          model: modelConfiguration?.imageModel ?? null,
+        });
+      } finally {
+        finishPiOperation(operationId);
+      }
+      ensurePiOperationCurrent(operationId);
       if (result.images.length === 0) {
         throw new Error("生图服务没有返回可保存的图片数据");
       }
@@ -3125,9 +3833,6 @@ export default function App() {
         ...current.filter(
           (asset) => !createdAssets.some((created) => created.id === asset.id),
         ),
-      ]);
-      setSelectedMediaIds((current) => [
-        ...new Set([...current, ...createdAssets.map((asset) => asset.id)]),
       ]);
       setGeneratedImages((current) => ({
         ...current,
@@ -3152,9 +3857,18 @@ export default function App() {
       throw new Error("请先在设置中保存并测试文本模型连接。");
     }
     try {
-      const result = await desktopBridge.extractTemplate({ sourceMarkdown });
+      const operationId = beginPiOperation("template-extraction", null);
+      let result;
+      try {
+        result = await desktopBridge.extractTemplate({ operationId, sourceMarkdown });
+      } finally {
+        finishPiOperation(operationId);
+      }
+      ensurePiOperationCurrent(operationId);
       setToast(
-        result.mocked
+        result.provider === "local-fallback"
+          ? "模型分析未完成，已按原文 Markdown 结构创建本地蓝图；请检查后保存"
+          : result.mocked
           ? "已分析本地演示参考模板，请检查后保存"
           : `已分析高保真参考模板 · ${result.model} · 请检查后保存`,
       );
@@ -3320,6 +4034,77 @@ export default function App() {
     }
   };
 
+  const reconcileUnknownPublishJobs = async () => {
+    if (!currentPublishSession || publishAction || publishSessionStale) return;
+    const jobs = currentPublishSession.plan.jobs.filter(
+      (job) => job.state === "unknown" && job.reconcileRequired,
+    );
+    if (jobs.length === 0) return;
+    setPublishAction("reconcile");
+    setPublishError(null);
+    try {
+      const receiptMap = new Map(
+        currentPublishSession.receipts.map((receipt) => [receipt.jobId, receipt]),
+      );
+      for (const job of jobs) {
+        const result = await desktopBridge.reconcilePublishJob({ jobId: job.id });
+        if (result.receipt) receiptMap.set(result.receipt.jobId, result.receipt);
+      }
+      const plan = await desktopBridge.getPublishPlan({
+        planId: currentPublishSession.plan.planId,
+      });
+      setPublishSession({
+        ...currentPublishSession,
+        plan,
+        receipts: [...receiptMap.values()],
+      });
+      if (plan.jobs.some((job) => job.state === "unknown")) {
+        setPublishError("部分平台无法自动核验。请检查对应平台的草稿箱；系统没有重试这些任务，避免重复创建草稿。");
+      } else {
+        setToast("已完成发布结果核验");
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`核验失败：${detail.slice(0, 220)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
+  const resolveUnknownPublishJob = async (
+    jobId: string,
+    resolution: "draft_exists" | "draft_missing",
+  ) => {
+    if (!currentPublishSession || publishAction || publishSessionStale) return;
+    setPublishAction("resolve");
+    setPublishError(null);
+    try {
+      const result = await desktopBridge.resolveUnknownPublishJob({ jobId, resolution });
+      const plan = await desktopBridge.getPublishPlan({
+        planId: currentPublishSession.plan.planId,
+      });
+      const receipts = new Map(
+        currentPublishSession.receipts.map((receipt) => [receipt.jobId, receipt]),
+      );
+      if (result.receipt) receipts.set(result.receipt.jobId, result.receipt);
+      setPublishSession({
+        ...currentPublishSession,
+        plan,
+        receipts: [...receipts.values()],
+      });
+      setToast(
+        resolution === "draft_exists"
+          ? "已按你的确认记录平台草稿，不会再次发送"
+          : "已恢复为待执行状态；请在确认后手动再次执行发布",
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPublishError(`人工确认失败：${detail.slice(0, 220)}`);
+    } finally {
+      setPublishAction(null);
+    }
+  };
+
   const refreshPublishPlan = async () => {
     if (!currentPublishSession || publishAction) return;
     setPublishAction("refresh");
@@ -3351,9 +4136,10 @@ export default function App() {
     try {
       const configuration = await desktopBridge.configureModel(request);
       setModelConfiguration(configuration);
+      setModelProfiles(await desktopBridge.listModelProfiles());
       const result = await desktopBridge.testModelConnection();
       setModelTest(result);
-      setRuntime(await desktopBridge.runtimeSnapshot());
+      setRuntime(await desktopBridge.piRuntimeSnapshot());
       setToast(
         result.mocked
           ? "当前连接使用 Mock 模型"
@@ -3364,6 +4150,47 @@ export default function App() {
       setModelError(`连接测试失败：${detail.slice(0, 160)}`);
     } finally {
       setConfiguringModel(false);
+    }
+  };
+
+  const activateModelProfile = async (profileId: string) => {
+    if (configuringModel) return;
+    const previousProfiles = modelProfiles;
+    setConfiguringModel(true);
+    setModelError(null);
+    setModelTest(null);
+    setModelProfiles((current) => current.map((profile) => ({
+      ...profile,
+      active: profile.id === profileId,
+    })));
+    try {
+      const configuration = await desktopBridge.activateModelProfile(profileId);
+      setModelConfiguration(configuration);
+      setModelProfiles(await desktopBridge.listModelProfiles());
+      setRuntime(await desktopBridge.piRuntimeSnapshot());
+      setToast(`已切换模型 · ${configuration.textModel}`);
+    } catch (error) {
+      setModelProfiles(previousProfiles);
+      const detail = error instanceof Error ? error.message : String(error);
+      setModelError(`切换模型失败：${detail.slice(0, 160)}`);
+    } finally {
+      setConfiguringModel(false);
+    }
+  };
+
+  const discoverPiModels = async () => {
+    if (modelDiscovering || !modelConfiguration) return;
+    setModelDiscovering(true);
+    setModelDiscoveryError(null);
+    try {
+      const discovery = await desktopBridge.discoverPiModels();
+      setModelDiscovery(discovery);
+      setToast(`已从模型服务读取 ${discovery.models.length} 个模型`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setModelDiscoveryError(detail.slice(0, 240));
+    } finally {
+      setModelDiscovering(false);
     }
   };
 
@@ -3387,14 +4214,17 @@ export default function App() {
         return (
           <CreatePage
             generating={creatingArticle}
-            modelLabel={modelConfiguration?.textModel ?? "配置模型"}
+            activeModelProfileId={modelConfiguration?.profileId ?? null}
+            modelProfiles={modelProfiles}
             onCreate={(request) => void createFromBrief(request)}
+            onActivateModelProfile={(profileId) => void activateModelProfile(profileId)}
             onOpenSettings={() => navigate("settings")}
             mediaAssets={mediaAssets}
             onMediaChange={setSelectedMediaIds}
             onTemplateChange={setSelectedTemplateId}
             selectedMedia={selectedMedia}
             selectedTemplate={selectedTemplate}
+            switchingModel={configuringModel}
             templates={templates}
           />
         );
@@ -3425,9 +4255,10 @@ export default function App() {
             onMarkdownChange={updateArticleMarkdown}
             onPlatformChange={setSelectedPlatform}
             onPublishToPlatforms={publishCurrentArticleToWechatSync}
-            onRefreshWechatSync={() => void refreshWechatSyncStatus()}
+            onRefreshWechatSync={refreshWechatSyncStatus}
             onComposeVisual={composeVisualForCurrentArticle}
             onRewriteArticle={rewriteCurrentArticle}
+            onRewriteRunStarted={registerPiRewriteRun}
             onUndoRewrite={undoLastArticleRewrite}
             onRunWorkflow={() => void improveCurrentArticle()}
             onSave={() => void saveCurrentArticle()}
@@ -3458,6 +4289,8 @@ export default function App() {
             onRetryWorkflow={retryCreation}
           />
         );
+      case "announcements":
+        return <AnnouncementsPage />;
       case "publish":
         return (
           <PublishingPage
@@ -3469,6 +4302,10 @@ export default function App() {
             onOpenSettings={() => navigate("settings")}
             onPrepare={() => void preparePublishPlan()}
             onProcess={() => void processPublishJobs()}
+            onReconcile={() => void reconcileUnknownPublishJobs()}
+            onResolveUnknown={(jobId, resolution) =>
+              void resolveUnknownPublishJob(jobId, resolution)
+            }
             onRefresh={() => void refreshPublishPlan()}
             onReset={resetPublishPlan}
             onSelectArticle={selectArticle}
@@ -3485,6 +4322,7 @@ export default function App() {
         return (
           <TemplatesPage
             onChange={setTemplates}
+            onCancelExtraction={() => { void cancelPiOperations(); }}
             onExtractTemplate={extractTemplateFromArticle}
             onSelect={setSelectedTemplateId}
             onStartCreating={() => navigate("create")}
@@ -3512,15 +4350,21 @@ export default function App() {
             configuring={configuringModel}
             disabledNodes={disabledNodes}
             modelConfiguration={modelConfiguration}
+            modelProfiles={modelProfiles}
             modelError={modelError}
+            modelDiscovery={modelDiscovery}
+            modelDiscoveryError={modelDiscoveryError}
+            modelDiscovering={modelDiscovering}
             modelTest={modelTest}
             githubApplicationInfo={githubApplicationInfo}
             githubApplicationLoading={githubApplicationLoading}
             githubApplicationError={githubApplicationError}
             onConfigureModel={(request) => void configureModel(request)}
+            onDiscoverModels={() => void discoverPiModels()}
+            onActivateModelProfile={(profileId) => void activateModelProfile(profileId)}
             onCheckGitHubApplicationInfo={() => void checkGitHubApplicationInfo()}
             onRevealSecret={(kind) => desktopBridge.revealModelSecret(kind)}
-            onRefreshWechatSync={() => void refreshWechatSyncStatus()}
+            onRefreshWechatSync={refreshWechatSyncStatus}
             onToggleNode={toggleWorkflowNode}
             platforms={configuredPlatforms}
             runtime={runtime}
@@ -3589,7 +4433,7 @@ export default function App() {
           )}
         </header>
 
-        <main className="page-viewport" id="main-content">
+        <main className={`page-viewport page-viewport--${activeNav}`} id="main-content">
           <PageErrorBoundary onReturnToCreate={() => navigate("create")} resetKey={activeNav}>
             {loadingArticles && activeNav === "articles" ? (
               <div className="page-loading" role="status">
@@ -3613,8 +4457,10 @@ export default function App() {
       )}
       {visualConfirmation && (
         <VisualPlanConfirmationDialog
-          onApprove={() => resolveVisualConfirmation(true)}
-          onSkip={() => resolveVisualConfirmation(false)}
+          assets={visualConfirmation.assets}
+          matchThreshold={visualConfirmation.matchThreshold}
+          onApprove={resolveVisualConfirmation}
+          onSkip={() => resolveVisualConfirmation(null)}
           plan={visualConfirmation.plan}
         />
       )}

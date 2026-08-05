@@ -23,7 +23,9 @@ import {
 import type { CreationLogEntry } from "./CreatePage";
 import {
   ArticleAssistant,
+  type AppliedRewrite,
   type MarkdownSelection,
+  type RewriteArticleOutcome,
   type RewriteCandidate,
 } from "./ArticleAssistant";
 import type { Article, MediaAsset, PlatformDefinition, PlatformId } from "../types";
@@ -31,11 +33,7 @@ import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
 import { PublishDialog } from "./PublishDialog";
 import type { WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
-import type {
-  RewriteArticleSummary,
-  RewriteConversationMessage,
-  WechatSyncBridgeStatus,
-} from "../lib/desktopBridge";
+import type { RewriteConversationMessage, WechatSyncBridgeStatus } from "../lib/desktopBridge";
 import type { AssistantActivity } from "./ArticleAssistant";
 
 interface WorkflowProgress {
@@ -84,20 +82,25 @@ interface ArticlesPageProps {
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
   publishing: boolean;
-  onRefreshWechatSync: () => void;
+  onRefreshWechatSync: (forceRefresh?: boolean) => Promise<void>;
   onPublishToPlatforms: (platforms: PlatformId[]) => Promise<void>;
   onRewriteArticle: (
     instruction: string,
     selections: MarkdownSelection[],
     conversation: Array<{ role: "user" | "assistant"; text: string }>,
     requestId: string,
-  ) => Promise<RewriteArticleSummary>;
+  ) => Promise<RewriteArticleOutcome>;
+  onRewriteRunStarted: (articleId: string, requestId: string, runId: string) => void;
   onComposeVisual: (
     instruction: string,
     conversation: RewriteConversationMessage[],
     onActivity: (activity: AssistantActivity) => void,
+    sourceMarkdown?: string,
+    baseRevisionId?: string,
+    replaceExistingImages?: boolean,
+    targetSelections?: MarkdownSelection[],
   ) => Promise<{ summary: string }>;
-  onApplyRewriteCandidate: (candidate: RewriteCandidate) => Promise<void>;
+  onApplyRewriteCandidate: (candidate: RewriteCandidate) => Promise<AppliedRewrite>;
   canUndoRewrite: boolean;
   onUndoRewrite: () => Promise<void>;
 }
@@ -175,6 +178,7 @@ export function ArticlesPage({
   onRefreshWechatSync,
   onPublishToPlatforms,
   onRewriteArticle,
+  onRewriteRunStarted,
   onComposeVisual,
   onApplyRewriteCandidate,
   canUndoRewrite,
@@ -360,7 +364,7 @@ export function ArticlesPage({
               )}
             </div>
             <h1>{selectedArticle.title}</h1>
-            {writerStreaming && <span className="article-editor__streaming" role="status"><LoaderCircle className="spin" size={13} />写作 Agent 正在输出正文</span>}
+            {writerStreaming && <span className="article-editor__streaming" role="status"><LoaderCircle className="spin" size={13} />正在撰写正文</span>}
           </div>
           <div className="article-editor__actions">
             <button
@@ -381,7 +385,6 @@ export function ArticlesPage({
               disabled={publishing}
               onClick={() => {
                 setPublishDialogOpen(true);
-                onRefreshWechatSync();
               }}
               type="button"
             >
@@ -462,9 +465,11 @@ export function ArticlesPage({
               ));
             }}
             onRewrite={onRewriteArticle}
+            onRewriteRunStarted={onRewriteRunStarted}
             onComposeVisual={onComposeVisual}
             onUndoLastRewrite={onUndoRewrite}
             selections={selections}
+            workflowRunning={workflowRunning}
             workflowFailure={workflowFailure}
             workflowProgress={
               workflowProgress?.articleId === selectedArticle.id ? workflowProgress : null

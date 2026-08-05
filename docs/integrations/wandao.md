@@ -1,7 +1,7 @@
 # Wandao interoperability
 
 Open Publisher and Wandao remain separate applications. They do not share a database, credential
-store, Python environment, or plugin process.
+store, runtime environment, or plugin process.
 
 ## v0.1 exchange path
 
@@ -26,22 +26,15 @@ Wandao already accepts a local Markdown directory for its import providers. Poin
 exported `articles` directory for the compatibility path. A future Wandao provider can read the
 manifest for richer metadata without changing either application's private storage.
 
-For a development transfer JSON file:
-
-```powershell
-.\.venv\Scripts\open-publisher-content-package.exe materialize .\package.json .\content-package
-.\.venv\Scripts\open-publisher-content-package.exe verify .\content-package
-```
-
-The materializer never overwrites an existing directory. The verifier checks the canonical
-manifest hash plus every entry's byte length and SHA-256 digest.
+The trusted Rust desktop boundary materializes a transfer document. It never overwrites an existing
+directory and verifies the canonical manifest hash plus every entry's byte length and SHA-256 digest.
 
 ## Manifest hash
 
 `packageHash` is the SHA-256 of the canonical manifest with `packageHash` omitted, entries sorted
 by normalized POSIX path, and platform variant IDs sorted lexicographically. Entry hashes bind the
 actual Markdown and asset bytes. The v0.1 manifest domain uses only strings and integers, allowing
-the Python materializer to produce the same RFC 8785-compatible canonical bytes as other clients.
+all clients to produce the same RFC 8785-compatible canonical bytes.
 
 ## Import rules
 
@@ -54,7 +47,7 @@ the Python materializer to produce the same RFC 8785-compatible canonical bytes 
 
 ## Deliberate non-goals
 
-- Open Publisher does not invoke Wandao's internal Python modules.
+- Open Publisher does not invoke Wandao's internal runtime modules.
 - Wandao does not receive model or publishing credentials.
 - Neither application silently edits the other's files.
 - ContentPackage is not a remote synchronization protocol in v0.1.

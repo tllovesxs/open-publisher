@@ -1,6 +1,7 @@
 export type NavKey =
   | "create"
   | "articles"
+  | "announcements"
   // Legacy route retained for local draft data; it is intentionally not exposed in v0.1 navigation.
   | "publish"
   | "templates"

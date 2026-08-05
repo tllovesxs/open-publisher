@@ -1,20 +1,20 @@
 # Contributing
 
-Open Publisher is contract-first. Changes that cross the desktop, Python runtime, browser
+Open Publisher is contract-first. Changes that cross the desktop, Pi runtime, browser
 extension, or plugin boundary start with a versioned schema in `packages/contracts`.
 
 ## Local checks
 
 ```powershell
-python scripts/quality_check.py
+pnpm quality
 ```
 
 The initial quality floor is intentionally small:
 
 - TypeScript type checking and focused tests.
-- Python Ruff and focused Pytest tests.
+- Pi Runtime type checks and focused Vitest tests.
 - Rust formatting and `cargo check`.
-- Schema validation and extension manifest checks.
+- Pi sidecar compilation and desktop bundle preflight.
 
 Real model and publishing calls are not part of the default suite.
 
@@ -35,4 +35,3 @@ Add or update an ADR when a change affects:
 Keep changes scoped, preserve unrelated work, and include a short verification note. Adapter
 changes should identify the platform capability being added and the fallback behavior when it is
 not available.
-

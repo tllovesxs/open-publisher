@@ -8,6 +8,7 @@ import {
   EyeOff,
   KeyRound,
   LoaderCircle,
+  Plus,
   RefreshCw,
   Server,
   SlidersHorizontal,
@@ -20,6 +21,8 @@ import type {
   ModelSecretKind,
   ModelConfigurationSummary,
   ModelConnectionTestSummary,
+  ModelProfileSummary,
+  PiModelDiscoverySummary,
   RuntimeSnapshot,
   WechatSyncBridgeStatus,
 } from "../lib/desktopBridge";
@@ -30,8 +33,12 @@ type SettingsTab = "models" | "accounts" | "writing" | "data";
 interface SettingsPageProps {
   configuring: boolean;
   modelConfiguration: ModelConfigurationSummary | null;
+  modelProfiles: ModelProfileSummary[];
   modelTest: ModelConnectionTestSummary | null;
   modelError: string | null;
+  modelDiscovery: PiModelDiscoverySummary | null;
+  modelDiscoveryError: string | null;
+  modelDiscovering: boolean;
   githubApplicationInfo: GitHubApplicationInfo | null;
   githubApplicationLoading: boolean;
   githubApplicationError: string | null;
@@ -41,6 +48,8 @@ interface SettingsPageProps {
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
   onConfigureModel: (request: ConfigureModelRequest) => void;
+  onDiscoverModels: () => void;
+  onActivateModelProfile: (profileId: string) => void;
   onCheckGitHubApplicationInfo: () => void;
   onRevealSecret: (kind: ModelSecretKind) => Promise<string | null>;
   onRefreshWechatSync: () => void;
@@ -57,9 +66,17 @@ const tabs: Array<{ id: SettingsTab; label: string }> = [
 const MODEL_DRAFT_STORAGE_KEY = "open-publisher-model-draft-v1";
 
 interface ModelDraft {
+  profileId: string;
   name: string;
   baseUrl: string;
+  textProtocol: ConfigureModelRequest["textProtocol"];
   textModel: string;
+  textSupportsVision: boolean;
+  textReasoning: boolean;
+  textThinkingLevel: ConfigureModelRequest["textThinkingLevel"];
+  textContextWindow: number;
+  textMaxTokens: number;
+  nativeWebSearch: "auto" | "enabled" | "disabled";
   imageBaseUrl: string;
   imageModel: string;
   trustedHosts: string;
@@ -67,9 +84,17 @@ interface ModelDraft {
 }
 
 const defaultModelDraft: ModelDraft = {
+  profileId: "siliconflow",
   name: "硅基流动",
   baseUrl: "https://api.siliconflow.cn/v1",
+  textProtocol: "openai-completions",
   textModel: "deepseek-ai/DeepSeek-V3.2",
+  textSupportsVision: false,
+  textReasoning: false,
+  textThinkingLevel: "auto",
+  textContextWindow: 128000,
+  textMaxTokens: 16384,
+  nativeWebSearch: "auto",
   imageBaseUrl: "https://api.siliconflow.cn/v1",
   imageModel: "Qwen/Qwen-Image",
   trustedHosts: "",
@@ -115,8 +140,12 @@ function splitHosts(value: string) {
 export function SettingsPage({
   configuring,
   modelConfiguration,
+  modelProfiles,
   modelTest,
   modelError,
+  modelDiscovery,
+  modelDiscoveryError,
+  modelDiscovering,
   githubApplicationInfo,
   githubApplicationLoading,
   githubApplicationError,
@@ -126,6 +155,8 @@ export function SettingsPage({
   wechatSyncStatus,
   wechatSyncRefreshing,
   onConfigureModel,
+  onDiscoverModels,
+  onActivateModelProfile,
   onCheckGitHubApplicationInfo,
   onRevealSecret,
   onRefreshWechatSync,
@@ -134,12 +165,20 @@ export function SettingsPage({
   const [activeTab, setActiveTab] = useState<SettingsTab>("models");
   const [initialModelDraft] = useState(loadModelDraft);
   const [name, setName] = useState(initialModelDraft.name);
+  const [profileId, setProfileId] = useState(initialModelDraft.profileId);
   const [baseUrl, setBaseUrl] = useState(initialModelDraft.baseUrl);
+  const [textProtocol, setTextProtocol] = useState(initialModelDraft.textProtocol);
   const [textApiKey, setTextApiKey] = useState("");
   const [imageApiKey, setImageApiKey] = useState("");
   const [tavilyApiKey, setTavilyApiKey] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [textModel, setTextModel] = useState(initialModelDraft.textModel);
+  const [textSupportsVision, setTextSupportsVision] = useState(initialModelDraft.textSupportsVision);
+  const [textReasoning, setTextReasoning] = useState(initialModelDraft.textReasoning);
+  const [textThinkingLevel, setTextThinkingLevel] = useState(initialModelDraft.textThinkingLevel);
+  const [textContextWindow, setTextContextWindow] = useState(initialModelDraft.textContextWindow);
+  const [textMaxTokens, setTextMaxTokens] = useState(initialModelDraft.textMaxTokens);
+  const [nativeWebSearch, setNativeWebSearch] = useState(initialModelDraft.nativeWebSearch);
   const [imageBaseUrl, setImageBaseUrl] = useState(initialModelDraft.imageBaseUrl);
   const [imageModel, setImageModel] = useState(initialModelDraft.imageModel);
   const [trustedHosts, setTrustedHosts] = useState(initialModelDraft.trustedHosts);
@@ -150,6 +189,17 @@ export function SettingsPage({
   const [showGithubToken, setShowGithubToken] = useState(false);
   const [validation, setValidation] = useState<string | null>(null);
   const connectedPlatforms = platforms.filter((platform) => platform.status === "connected");
+
+  const clearSecretInputs = () => {
+    setTextApiKey("");
+    setImageApiKey("");
+    setTavilyApiKey("");
+    setGithubToken("");
+    setShowTextKey(false);
+    setShowImageKey(false);
+    setShowTavilyKey(false);
+    setShowGithubToken(false);
+  };
 
   const revealSecret = async (kind: ModelSecretKind) => {
     try {
@@ -179,9 +229,21 @@ export function SettingsPage({
 
   useEffect(() => {
     if (!modelConfiguration) return;
+    // Secrets are intentionally not in the configuration summary. Clear any
+    // draft or revealed value when the active saved profile changes so it
+    // cannot be submitted into a different profile by a later save.
+    clearSecretInputs();
     setName(modelConfiguration.name);
+    setProfileId(modelConfiguration.profileId);
     setBaseUrl(modelConfiguration.baseUrl);
+    setTextProtocol(modelConfiguration.textProtocol);
     setTextModel(modelConfiguration.textModel);
+    setTextSupportsVision(modelConfiguration.textSupportsVision);
+    setTextReasoning(modelConfiguration.textReasoning);
+    setTextThinkingLevel(modelConfiguration.textThinkingLevel);
+    setTextContextWindow(modelConfiguration.textContextWindow);
+    setTextMaxTokens(modelConfiguration.textMaxTokens);
+    setNativeWebSearch(modelConfiguration.nativeWebSearch ?? "auto");
     setImageBaseUrl(modelConfiguration.imageBaseUrl ?? "");
     setImageModel(modelConfiguration.imageModel ?? "");
     setTrustedHosts(modelConfiguration.imageTrustedHosts.join(", "));
@@ -190,23 +252,34 @@ export function SettingsPage({
 
   useEffect(() => {
     const draft: ModelDraft = {
+      profileId,
       name,
       baseUrl,
+      textProtocol,
       textModel,
+      textSupportsVision,
+      textReasoning,
+      textThinkingLevel,
+      textContextWindow,
+      textMaxTokens,
+      nativeWebSearch,
       imageBaseUrl,
       imageModel,
       trustedHosts,
       timeoutSeconds,
     };
     window.localStorage.setItem(MODEL_DRAFT_STORAGE_KEY, JSON.stringify(draft));
-  }, [baseUrl, imageBaseUrl, imageModel, name, textModel, timeoutSeconds, trustedHosts]);
+  }, [baseUrl, imageBaseUrl, imageModel, name, nativeWebSearch, profileId, textContextWindow, textMaxTokens, textModel, textProtocol, textReasoning, textThinkingLevel, textSupportsVision, timeoutSeconds, trustedHosts]);
 
   const submitModel = () => {
     if (!name.trim() || !baseUrl.trim() || !textModel.trim()) {
       setValidation("请填写配置名称、API 地址和文本模型。");
       return;
     }
-    if (!textApiKey.trim() && !modelConfiguration?.secretConfigured) {
+    if (
+      !textApiKey.trim()
+      && (!modelConfiguration?.secretConfigured || profileId.trim() !== modelConfiguration.profileId)
+    ) {
       setValidation("请输入文本 API Key。");
       return;
     }
@@ -221,10 +294,18 @@ export function SettingsPage({
     }
     setValidation(null);
     onConfigureModel({
+      profileId: profileId.trim() || null,
       name: name.trim(),
       baseUrl: baseUrl.trim(),
+      textProtocol,
       textApiKey: textApiKey.trim(),
       textModel: textModel.trim(),
+      textSupportsVision,
+      textReasoning,
+      textThinkingLevel,
+      textContextWindow,
+      textMaxTokens,
+      nativeWebSearch,
       imageBaseUrl: imageBaseUrl.trim() || null,
       imageModel: imageModel.trim() || null,
       imageApiKey: imageApiKey.trim(),
@@ -267,7 +348,7 @@ export function SettingsPage({
                   <KeyRound aria-hidden="true" size={19} />
                   <div>
                     <h2 id="model-settings-title">模型连接</h2>
-                    <p>使用 OpenAI Compatible 接口。</p>
+                    <p>使用 Pi Provider 模型协议，可分别配置文本与生图服务。</p>
                   </div>
                 </div>
                 {modelTest && (
@@ -278,12 +359,77 @@ export function SettingsPage({
                   >
                     <CheckCircle2 size={15} />
                     {modelTest.mocked ? "Mock 模型" : "连接成功"}
+                    {typeof modelTest.latencyMs === "number" && ` · ${modelTest.latencyMs} ms`}
                   </span>
                 )}
               </div>
 
+              <div className="model-profile-switcher" aria-label="Pi 模型档案">
+                <div className="model-profile-switcher__heading">
+                  <div>
+                    <strong>模型档案</strong>
+                    <small>按 Provider 保存多组连接；当前档案用于写文和侧边栏 AI。</small>
+                  </div>
+                  <div className="model-profile-switcher__actions">
+                    <span>{modelProfiles.length} 个已保存</span>
+                    <button
+                      onClick={() => {
+                        setProfileId("");
+                        setName("");
+                        setBaseUrl("");
+                        clearSecretInputs();
+                        setTextModel("");
+                        setTextProtocol("openai-completions");
+                        setTextSupportsVision(false);
+                        setTextReasoning(false);
+                        setTextThinkingLevel("auto");
+                        setTextContextWindow(128000);
+                        setTextMaxTokens(16384);
+                        setValidation(null);
+                      }}
+                      type="button"
+                    >
+                      <Plus aria-hidden="true" size={14} />
+                      新建档案
+                    </button>
+                  </div>
+                </div>
+                <div className="model-profile-switcher__list">
+                  {modelProfiles.length === 0 && (
+                    <span className="model-profile-switcher__empty">保存第一组配置后会出现在这里</span>
+                  )}
+                  {modelProfiles.map((profile) => (
+                    <button
+                      className={profile.active ? "is-active" : ""}
+                      key={profile.id}
+                      onClick={() => {
+                        if (!profile.active) onActivateModelProfile(profile.id);
+                      }}
+                      type="button"
+                    >
+                      <span className="model-profile-switcher__mark">{profile.name.slice(0, 1)}</span>
+                      <span className="model-profile-switcher__copy">
+                        <strong>{profile.name}</strong>
+                        <small>{profile.textModel} · {profile.textProtocol.replace("-", " ")}</small>
+                      </span>
+                      {profile.active && <CheckCircle2 aria-label="当前活动模型" size={15} />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="settings-form">
                 <div className="form-grid form-grid--two">
+                  <label className="field">
+                    <span>档案 ID</span>
+                    <input
+                      aria-label="模型档案 ID"
+                      onChange={(event) => setProfileId(event.target.value)}
+                      placeholder="例如 siliconflow"
+                      value={profileId}
+                    />
+                    <small>用于区分同一 Provider 的不同模型配置，只能使用小写字母、数字、-、_。</small>
+                  </label>
                   <label className="field">
                     <span>配置名称</span>
                     <input
@@ -337,12 +483,122 @@ export function SettingsPage({
 
                 <div className="form-grid form-grid--two">
                   <label className="field">
+                    <span>模型协议</span>
+                    <select
+                      aria-label="模型协议"
+                      onChange={(event) => setTextProtocol(event.target.value as ConfigureModelRequest["textProtocol"])}
+                      value={textProtocol}
+                    >
+                      <option value="openai-completions">OpenAI Chat Completions</option>
+                      <option value="openai-responses">OpenAI Responses</option>
+                      <option value="anthropic-messages">Anthropic Messages</option>
+                      <option value="google-generative-ai">Google Generative AI</option>
+                    </select>
+                  </label>
+                  <label className="field">
                     <span>文本模型</span>
                     <input
+                      list="pi-discovered-models"
                       onChange={(event) => setTextModel(event.target.value)}
                       value={textModel}
                     />
+                    <datalist id="pi-discovered-models">
+                      {modelDiscovery?.models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.name ?? model.id}
+                        </option>
+                      ))}
+                    </datalist>
                   </label>
+                  <label className="field">
+                    <span>Responses 原生联网</span>
+                    <select
+                      aria-label="Responses 原生联网"
+                      disabled={textProtocol !== "openai-responses"}
+                      onChange={(event) => setNativeWebSearch(event.target.value as ModelDraft["nativeWebSearch"])}
+                      value={nativeWebSearch}
+                    >
+                      <option value="auto">自动（默认关闭）</option>
+                      <option value="enabled">启用 web_search</option>
+                      <option value="disabled">禁用</option>
+                    </select>
+                    <small>只对明确支持 Responses 原生搜索的模型启用；网关不兼容时会继续按已有资料写作。</small>
+                  </label>
+                  <label className="field">
+                    <span>Thinking level</span>
+                    <select
+                      aria-label="Thinking level"
+                      onChange={(event) => setTextThinkingLevel(event.target.value as ConfigureModelRequest["textThinkingLevel"])}
+                      value={textThinkingLevel}
+                    >
+                      <option value="auto">Auto（跟随推理开关）</option>
+                      <option value="off">Off</option>
+                      <option value="minimal">Minimal</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="xhigh">XHigh</option>
+                      <option value="max">Max</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="settings-actions settings-actions--compact">
+                  <button
+                    className="button button--quiet"
+                    disabled={!modelConfiguration || modelDiscovering}
+                    onClick={onDiscoverModels}
+                    type="button"
+                  >
+                    {modelDiscovering ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
+                    {modelDiscovering ? "正在读取" : "读取可用模型"}
+                  </button>
+                  <span className="session-note">
+                    {modelDiscovery
+                      ? `已发现 ${modelDiscovery.models.length} 个模型`
+                      : modelConfiguration
+                        ? "从当前 Provider 的模型接口读取"
+                        : "先保存当前 Provider 配置"}
+                  </span>
+                </div>
+                {modelDiscoveryError && <p className="form-error" role="alert">模型列表读取失败：{modelDiscoveryError}</p>}
+
+                <details className="settings-advanced" open>
+                  <summary>
+                    模型能力
+                    <SlidersHorizontal size={15} />
+                  </summary>
+                  <div className="form-grid form-grid--two">
+                    <label className="field">
+                      <span>上下文窗口</span>
+                      <input
+                        min={8192}
+                        onChange={(event) => setTextContextWindow(Number(event.target.value) || 8192)}
+                        type="number"
+                        value={textContextWindow}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>最大输出 Tokens</span>
+                      <input
+                        min={1024}
+                        onChange={(event) => setTextMaxTokens(Number(event.target.value) || 1024)}
+                        type="number"
+                        value={textMaxTokens}
+                      />
+                    </label>
+                    <label className="preference-inline">
+                      <span><strong>推理模型</strong><small>允许 Pi 使用 thinking level</small></span>
+                      <input checked={textReasoning} onChange={(event) => setTextReasoning(event.target.checked)} role="switch" type="checkbox" />
+                    </label>
+                    <label className="preference-inline">
+                      <span><strong>支持图片输入</strong><small>该模型可以读取图片内容</small></span>
+                      <input checked={textSupportsVision} onChange={(event) => setTextSupportsVision(event.target.checked)} role="switch" type="checkbox" />
+                    </label>
+                  </div>
+                </details>
+
+                <div className="form-grid form-grid--two">
                   <label className="field">
                     <span>请求超时</span>
                     <span className="number-input">
@@ -519,6 +775,11 @@ export function SettingsPage({
                     </span>
                   )}
                 </div>
+                {modelTest?.responseText && (
+                  <p className="session-note" role="status">
+                    Pi 探针响应：{modelTest.responseText}
+                  </p>
+                )}
               </div>
             </section>
           )}
@@ -621,8 +882,8 @@ export function SettingsPage({
                 <div>
                   <dt>桌面桥接</dt>
                   <dd>
-                    {runtime?.bridgeMode === "python_sidecar"
-                      ? "Python Sidecar"
+                    {runtime?.bridgeMode === "pi_sidecar"
+                      ? "Pi Agent Runtime"
                       : "浏览器演示"}
                   </dd>
                 </div>

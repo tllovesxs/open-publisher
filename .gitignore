@@ -1,8 +1,10 @@
 # JavaScript
 node_modules/
+/node_modules_stale_*/
 .pnpm-store/
 dist/
 coverage/
+.bun-compile-tmp/
 *.tsbuildinfo
 
 # Rust
@@ -30,6 +32,7 @@ htmlcov/
 *.db
 *.db-shm
 *.db-wal
+**/.smoke-data*/
 
 # Secrets and local configuration
 .env
@@ -47,6 +50,7 @@ htmlcov/
 Thumbs.db
 
 # Tauri bundles
+apps/desktop/src-tauri/binaries/
 *.app
 *.dmg
 *.msi

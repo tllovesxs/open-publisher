@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/article-write.schema.json",
+  "title": "ArticleWriteV2",
+  "$defs": {
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "articleId", "baseRevisionId", "baseContentHash", "title", "markdown", "reason"],
+      "properties": {
+        "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+        "articleId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+        "baseRevisionId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" }, { "type": "null" }] },
+        "baseContentHash": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Sha256" }, { "type": "null" }] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "markdown": { "type": "string", "minLength": 1, "maxLength": 2000000 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "Response": { "$ref": "https://schemas.openpublisher.dev/v2/article-file.schema.json" }
+  }
+}

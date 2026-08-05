@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/runtime-protocol.schema.json",
+  "title": "RuntimeProtocolV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runtimeVersion", "piAgentVersion", "engine", "build"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "runtimeVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "piAgentVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "engine": { "const": "pi" },
+    "build": { "type": "string", "minLength": 1, "maxLength": 200 }
+  }
+}

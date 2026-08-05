@@ -24,7 +24,7 @@ and safety boundary defined in `packages/platform-sdk`.
   illustration workflow and reads its original Markdown resources at runtime
 - Copied source: a fixed `skills/baoyu-article-illustrator/` documentation snapshot, including
   its references and `prompts/system.md`, is bundled at
-  `services/agent-runtime/src/open_publisher_runtime/resources/baoyu-article-illustrator/`.
+  `services/agent-runtime/resources/baoyu-article-illustrator/`.
   It contains no upstream executable entrypoint, provider implementation, or platform adapter.
 - Integrity: `SKILL.md` SHA-256 at the pinned revision is
   `5f99fc77bdf524fe0cfff36f17844ce6425ae2c45cb139836fe77727dcb65370`.
@@ -57,8 +57,37 @@ The generated design analysis is a research reference. Open Publisher uses its o
 structure, components, color tokens and typography, and does not bundle Airbnb Cereal or other
 Airbnb brand assets.
 
+## Pi Agent Core and Pi AI
+
+- Project: <https://github.com/earendil-works/pi>
+- Packages: `@earendil-works/pi-agent-core@0.83.0`, `@earendil-works/pi-ai@0.83.0`
+- License: MIT
+- Copyright: Copyright (c) 2025 Mario Zechner
+- Use in Open Publisher: model/provider streaming, Agent tool loop, cancellation, steering,
+  sessions, and context compaction behind the local `PiAgentAdapter`
+- Copied source: none; the packages are installed as pinned runtime dependencies
+
+The Pi packages are used without their TUI, unrestricted Bash/filesystem tools, or coding-agent
+system prompt. Their MIT license text is distributed with the packaged dependency notices.
+
+## WechatSync Local Bridge
+
+- Project: <https://github.com/wechatsync/Wechatsync>
+- Reviewed upstream revision: `a98e42865387285afcc027c61836488748f3b30f` (`v2`)
+- Use in Open Publisher: an optional, user-managed local bridge for reading adapter login status
+  and saving approved article drafts through its documented `127.0.0.1` request protocol
+- Copied source, extension assets, cookies, tokens or adapter logic: none
+- Distribution: Open Publisher does not bundle the WechatSync extension, CLI, MCP server, or
+  browser adapters. Users install and configure those components independently.
+
+The upstream repository root declares GPL-3.0 while individual CLI/MCP package manifests declare
+MIT. This integration intentionally stays at a process and loopback-HTTP boundary; it is not a
+fork or bundled derivative. Before distributing any WechatSync source or binary with Open
+Publisher, obtain a written clarification from its maintainers and comply with the applicable
+license and notice requirements.
+
 ## Dependency notices
 
-JavaScript, Rust, and Python package dependencies retain their own licenses. Before a public
+JavaScript and Rust package dependencies retain their own licenses. Before a public
 binary release, generate a machine-readable dependency inventory and review every runtime
 dependency. Development-only dependencies are not automatically part of the distributed product.

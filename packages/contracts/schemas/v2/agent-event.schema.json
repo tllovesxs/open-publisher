@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/agent-event.schema.json",
+  "title": "AgentEventV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "runId", "sequence", "timestamp", "articleId", "agentId", "parentAgentId", "operation", "type", "payload"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "id": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "runId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "timestamp": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" },
+    "articleId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" }, { "type": "null" }] },
+    "agentId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/AgentId" },
+    "parentAgentId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/AgentId" }, { "type": "null" }] },
+    "operation": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "type": { "enum": ["run.started", "agent.started", "agent.message_delta", "agent.message_completed", "tool.started", "tool.progress", "tool.completed", "tool.failed", "article.preview_delta", "article.checkpointed", "revision.committed", "run.waiting_user", "run.stopping", "run.stopped", "run.failed", "run.completed"] },
+    "payload": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/JsonValue" }
+  }
+}

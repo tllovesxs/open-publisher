@@ -9,7 +9,7 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { WechatSyncBridgeStatus } from "../lib/desktopBridge";
 import type { Article, PlatformDefinition, PlatformId } from "../types";
 
@@ -21,7 +21,7 @@ interface PublishDialogProps {
   publishing: boolean;
   refreshing: boolean;
   onClose: () => void;
-  onRefresh: () => void;
+  onRefresh: (forceRefresh?: boolean) => Promise<void>;
   onSubmit: (platforms: PlatformId[]) => Promise<void>;
 }
 
@@ -38,6 +38,7 @@ export function PublishDialog({
 }: PublishDialogProps) {
   const [selected, setSelected] = useState<Set<PlatformId>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const refreshInFlight = useRef(false);
   const platformStatus = useMemo(
     () => new Map(bridge?.platforms.map((item) => [item.id, item.authenticated]) ?? []),
     [bridge],
@@ -62,12 +63,34 @@ export function PublishDialog({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, open, publishing]);
 
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    const refresh = async (forceRefresh = false) => {
+      if (disposed || refreshInFlight.current) return;
+      refreshInFlight.current = true;
+      try {
+        await onRefresh(forceRefresh);
+      } finally {
+        refreshInFlight.current = false;
+      }
+    };
+    void refresh(false);
+    // The extension has its own reconnect backoff. This watcher keeps the
+    // dialog in sync without asking the user to toggle the extension.
+    const interval = window.setInterval(() => void refresh(false), 12_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [onRefresh, open]);
+
   if (!open) return null;
-  const connected = bridge?.available && bridge.connected;
+  const connected = bridge?.available && bridge.connected && !bridge.stale;
   const selectedTargets = [...selected];
 
   const togglePlatform = (platform: PlatformId) => {
-    if (publishing || !platformStatus.get(platform)) return;
+    if (publishing || !connected || !platformStatus.get(platform)) return;
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(platform)) next.delete(platform);
@@ -111,14 +134,14 @@ export function PublishDialog({
             <strong>{connected ? "WechatSync 已连接" : "WechatSync 未连接"}</strong>
             <span>{bridge?.detail ?? "正在读取本机浏览器桥接状态。"}</span>
           </div>
-          <button className="text-button" disabled={refreshing || publishing} onClick={onRefresh} type="button">
+          <button className="text-button" disabled={refreshing || publishing} onClick={() => void onRefresh(true)} type="button">
             <RefreshCw className={refreshing ? "spin" : undefined} size={14} /> 刷新
           </button>
         </div>
 
         <div className="publish-dialog__body">
           <div className="publish-dialog__body-head">
-            <div><strong>选择同步平台</strong><span>仅显示当前版本已支持的平台账号状态</span></div>
+            <div><strong>选择同步平台</strong><span>{bridge?.stale ? "连接正在恢复；保留了上次读取的账号快照，暂不可发布" : "来自 WechatSync 当前读取的已登录平台"}</span></div>
             <small>{selectedTargets.length} 个已选</small>
           </div>
           <div className="publish-dialog__platforms">
@@ -130,15 +153,20 @@ export function PublishDialog({
             )}
             {platforms.map((platform) => {
               const authenticated = platformStatus.get(platform.id) === true;
+              const selectable = authenticated && connected;
               const checked = selected.has(platform.id);
               return (
-                <label className={`${checked ? "is-selected " : ""}${authenticated ? "" : "is-unavailable"}`} key={platform.id}>
-                  <input checked={checked} disabled={!authenticated || publishing} onChange={() => togglePlatform(platform.id)} type="checkbox" />
+                <label className={`${checked ? "is-selected " : ""}${selectable ? "" : "is-unavailable"}`} key={platform.id}>
+                  <input checked={checked} disabled={!selectable || publishing} onChange={() => togglePlatform(platform.id)} type="checkbox" />
                   <span className={`platform-logo platform-logo--${platform.id}`}>
                     {platform.iconUrl ? <img alt="" src={platform.iconUrl} /> : platform.shortName.slice(0, 1)}
                   </span>
-                  <span><strong>{platform.name}</strong><small>{authenticated ? `${platform.accountLabel ? `${platform.accountLabel} · ` : ""}已登录，可保存草稿` : "未登录或未检测到账号"}</small></span>
-                  {authenticated ? <CheckCircle2 className="publish-dialog__state" size={17} /> : <CircleAlert className="publish-dialog__state" size={17} />}
+                  <span><strong>{platform.name}</strong><small>{selectable
+                    ? `${platform.accountLabel ? `${platform.accountLabel} · ` : ""}已登录，可保存草稿`
+                    : bridge?.stale && authenticated
+                      ? "上次读取为已登录，等待连接恢复后复核"
+                      : "未登录或未检测到账号"}</small></span>
+                  {selectable ? <CheckCircle2 className="publish-dialog__state" size={17} /> : <CircleAlert className="publish-dialog__state" size={17} />}
                 </label>
               );
             })}

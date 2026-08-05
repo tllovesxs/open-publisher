@@ -20,6 +20,8 @@ export type PublishAction =
   | "approve"
   | "enqueue"
   | "process"
+  | "reconcile"
+  | "resolve"
   | "refresh"
   | null;
 
@@ -39,6 +41,8 @@ interface PublishingPageProps {
   onApprove: () => void;
   onEnqueue: () => void;
   onProcess: () => void;
+  onReconcile: () => void;
+  onResolveUnknown: (jobId: string, resolution: "draft_exists" | "draft_missing") => void;
   onRefresh: () => void;
   onReset: () => void;
   onOpenSettings: () => void;
@@ -71,6 +75,8 @@ export function PublishingPage({
   onApprove,
   onEnqueue,
   onProcess,
+  onReconcile,
+  onResolveUnknown,
   onRefresh,
   onReset,
   onOpenSettings,
@@ -96,6 +102,7 @@ export function PublishingPage({
     ),
   );
   const completed = plan?.status === "completed";
+  const hasUnknownJobs = Boolean(plan?.jobs.some((job) => job.state === "unknown"));
   const primaryBusy = action !== null;
 
   return (
@@ -295,6 +302,21 @@ export function PublishingPage({
                     {action === "process" ? "正在执行" : "执行发布演练"}
                   </button>
                 )}
+                {hasUnknownJobs && (
+                  <button
+                    className="button button--quiet"
+                    disabled={stale || primaryBusy}
+                    onClick={onReconcile}
+                    type="button"
+                  >
+                    {action === "reconcile" ? (
+                      <LoaderCircle className="spin" size={16} />
+                    ) : (
+                      <RefreshCw size={16} />
+                    )}
+                    {action === "reconcile" ? "正在核验" : "核验不确定结果"}
+                  </button>
+                )}
                 {completed && (
                   <span className="completion-label">
                     <CheckCircle2 size={17} />
@@ -342,6 +364,29 @@ export function PublishingPage({
                     <div>
                       <strong>{platform?.name}</strong>
                       <small>{jobStateLabel[job.state]}</small>
+                      {job.state === "unknown" && job.lastError && (
+                        <small>{job.lastError}</small>
+                      )}
+                      {job.state === "unknown" && (
+                        <div className="publish-job-manual-actions">
+                          <button
+                            className="text-button"
+                            disabled={primaryBusy}
+                            onClick={() => onResolveUnknown(job.id, "draft_exists")}
+                            type="button"
+                          >
+                            已找到草稿
+                          </button>
+                          <button
+                            className="text-button"
+                            disabled={primaryBusy}
+                            onClick={() => onResolveUnknown(job.id, "draft_missing")}
+                            type="button"
+                          >
+                            确认未创建
+                          </button>
+                        </div>
+                      )}
                     </div>
                     {receipt && <CheckCircle2 aria-label="已有回执" size={16} />}
                   </article>

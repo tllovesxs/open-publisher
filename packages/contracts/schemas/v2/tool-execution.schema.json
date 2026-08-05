@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/tool-execution.schema.json",
+  "title": "ToolExecutionV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "runId", "toolName", "status", "startedAt", "completedAt", "inputHash", "outputArtifactIds", "error"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "id": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "runId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "toolName": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "status": { "enum": ["running", "completed", "failed", "stopped"] },
+    "startedAt": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" },
+    "completedAt": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" }, { "type": "null" }] },
+    "inputHash": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Sha256" },
+    "outputArtifactIds": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" } },
+    "error": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Error" }, { "type": "null" }] }
+  }
+}

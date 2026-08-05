@@ -74,6 +74,7 @@
         "palette": "macaron",
         "preferred_image_backend": "auto",
         "generation_batch_size": 4,
+        "material_match_threshold": 30,
         "skip_confirmation": false
       },
       "agent_instructions": [

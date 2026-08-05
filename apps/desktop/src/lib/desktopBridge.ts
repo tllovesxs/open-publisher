@@ -4,9 +4,109 @@ export type RuntimeState = "standby" | "starting" | "ready" | "stopped" | "fault
 
 export interface RuntimeSnapshot {
   state: RuntimeState;
-  bridgeMode: "interface_only" | "python_sidecar";
+  bridgeMode: "interface_only" | "pi_sidecar";
   generation: number;
   detail: string;
+}
+
+export interface PiRuntimeVersion {
+  schemaVersion: "2";
+  runtimeVersion: string;
+  piAgentVersion: string;
+  engine: "pi";
+  build: string;
+}
+
+export type PiRunStatus =
+  | "pending"
+  | "running"
+  | "waiting_user"
+  | "stopping"
+  | "stopped"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export interface PiRunError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface PiAgentRun {
+  schemaVersion: "2";
+  id: string;
+  articleId: string | null;
+  sessionId: string | null;
+  agentId: "writer" | "visual" | "reviewer" | "template" | "topic";
+  operation: string;
+  status: PiRunStatus;
+  baseRevisionId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: PiRunError | null;
+}
+
+export interface PiRunEvent {
+  schemaVersion: "2";
+  id: string;
+  runId: string;
+  sequence: number;
+  timestamp: string;
+  articleId: string | null;
+  agentId: PiAgentRun["agentId"];
+  parentAgentId: PiAgentRun["agentId"] | null;
+  operation: string;
+  type:
+    | "run.started"
+    | "agent.started"
+    | "agent.message_delta"
+    | "agent.message_completed"
+    | "tool.started"
+    | "tool.progress"
+    | "tool.completed"
+    | "tool.failed"
+    | "article.preview_delta"
+    | "article.checkpointed"
+    | "revision.committed"
+    | "run.waiting_user"
+    | "run.stopping"
+    | "run.stopped"
+    | "run.failed"
+    | "run.completed";
+  payload: unknown;
+}
+
+export interface PiArticle {
+  schemaVersion: "2";
+  articleId: string;
+  title: string;
+  relativePath: "article.md";
+  currentRevisionId: string;
+  contentHash: string;
+  updatedAt: string;
+  markdown: string;
+}
+
+export interface PiDiscoveredModel {
+  id: string;
+  name: string | null;
+}
+
+export interface PiModelDiscoverySummary {
+  models: PiDiscoveredModel[];
+  endpoint: string;
+}
+
+export interface StartPiArticleRunRequest {
+  articleId: string;
+  prompt: string;
+  protocol?: "openai-responses" | "openai-completions";
+  supportsVision?: boolean;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export interface SaveDraftRequest {
@@ -30,101 +130,7 @@ export interface StoredArticleSummary {
   updatedAt: string;
 }
 
-export interface RunWorkflowRequest {
-  articleId: string;
-  revisionId: string;
-  topic: string;
-  disabledOptionalNodeIds: DisabledOptionalNodeId[];
-  agentInstructions: WorkflowAgentInstruction[];
-  webSearchMode?: WebSearchMode;
-  maxWebSearchCalls?: number;
-  visualComposition?: VisualCompositionRequest;
-}
-
 export type WebSearchMode = "off" | "auto" | "required";
-
-export interface BatchTopicCandidate {
-  title: string;
-  topic: string;
-  angle: string;
-  keyPoints: string[];
-}
-
-export interface BatchTopicPlanRequest {
-  prompt: string;
-  count: number;
-  references: string;
-  manualTopics: string[];
-}
-
-export interface BatchTopicPlanSummary {
-  candidates: BatchTopicCandidate[];
-  plannedBy: "model" | "manual";
-}
-
-export interface CreateGenerationBatchRequest {
-  prompt: string;
-  candidates: BatchTopicCandidate[];
-  sourceMarkdown: string;
-  disabledOptionalNodeIds: DisabledOptionalNodeId[];
-  agentInstructions: WorkflowAgentInstruction[];
-  webSearchMode: WebSearchMode;
-  maxWebSearchCalls: number;
-  writerConcurrency: number;
-}
-
-export interface GenerationBatchRequest {
-  batchId: string;
-}
-
-export interface GenerationItemRequest {
-  itemId: string;
-}
-
-export type GenerationBatchStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "needs_attention"
-  | "cancelled";
-
-export type GenerationItemStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "interrupted";
-
-export interface GenerationBatchSummary {
-  id: string;
-  prompt: string;
-  status: GenerationBatchStatus;
-  writerConcurrency: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface GenerationItemSummary {
-  id: string;
-  batchId: string;
-  position: number;
-  title: string;
-  topic: string;
-  status: GenerationItemStatus;
-  articleId: string | null;
-  runId: string | null;
-  error: string | null;
-  retryCount: number;
-  createdAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-}
-
-export interface GenerationBatchDetail {
-  batch: GenerationBatchSummary;
-  items: GenerationItemSummary[];
-}
 
 export type DisabledOptionalNodeId =
   | "research"
@@ -159,26 +165,6 @@ export interface WorkflowAgentInstruction {
   skills: WorkflowSkillInstruction[];
 }
 
-export interface WorkflowArtifactSummary {
-  id: string;
-  kind: string;
-}
-
-export interface RunWorkflowSummary {
-  runId: string;
-  status: string;
-  workflowName: string;
-  workflowVersion: string;
-  inputRevisionId: string;
-  outputRevisionId: string;
-  outputRevisionNumber: number;
-  outputMarkdown: string;
-  outputContentHash: string;
-  artifacts: WorkflowArtifactSummary[];
-  visualPlan: VisualCompositionPlanSummary | null;
-  persistence: "memory" | "local_database";
-}
-
 export type VisualImageMode = "none" | "auto" | "fixed";
 export type VisualAssetScope = "selected_only" | "library" | "none";
 export type VisualDensity = "minimal" | "balanced" | "per-section" | "rich";
@@ -201,6 +187,8 @@ export interface VisualCompositionRequest {
   palette: string | null;
   preferredImageBackend: string;
   generationBatchSize: number;
+  /** Candidate score (0-100) required before local material is preferred by default. */
+  materialMatchThreshold: number;
   skipConfirmation: boolean;
 }
 
@@ -236,8 +224,30 @@ export interface VisualCompositionPlanSummary {
   placements: VisualPlacementSummary[];
 }
 
+/**
+ * Desktop-only aggregation of a completed Pi writer run and its optional
+ * visual plan. It is intentionally not a Sidecar endpoint or a legacy
+ * workflow contract; App.tsx builds it from canonical Pi revisions.
+ */
+export interface RunWorkflowSummary {
+  runId: string;
+  status: "completed";
+  workflowName: string;
+  workflowVersion: string;
+  inputRevisionId: string;
+  outputRevisionId: string;
+  outputRevisionNumber: number;
+  outputMarkdown: string;
+  outputContentHash: string;
+  artifacts: Array<{ id: string; kind: string }>;
+  visualPlan: VisualCompositionPlanSummary | null;
+  persistence: "local_database";
+}
+
 /** A side-effect-free visual Agent request for an already-open article. */
 export interface ComposeVisualRequest {
+  /** Scoped cancellation id for this non-run Pi operation. */
+  operationId?: string;
   articleId: string;
   markdown: string;
   instruction: string;
@@ -296,6 +306,10 @@ export interface PublishPlanRequest {
 
 export interface ProcessPublishJobRequest {
   jobId: string;
+}
+
+export interface ResolveUnknownPublishJobRequest extends ProcessPublishJobRequest {
+  resolution: "draft_exists" | "draft_missing";
 }
 
 export interface PublishVariantSummary {
@@ -384,12 +398,16 @@ export interface RewriteArticleSummary {
 export interface RewriteStreamEvent {
   articleId: string;
   requestId: string;
-  eventType: "status" | "delta";
+  /** Present from the native start event onward and safe to pass to stopPiRun. */
+  runId: string | null;
+  eventType: "started" | "status" | "delta";
   detail: string | null;
   delta: string | null;
 }
 
 export interface GenerateImageRequest {
+  /** Scoped cancellation id for this image request. */
+  operationId?: string;
   prompt: string;
   size: "512x512" | "768x768" | "1024x1024" | "1024x1536" | "1536x1024";
   model: string | null;
@@ -413,6 +431,8 @@ export interface GeneratedImageSummary {
 }
 
 export interface ExtractTemplateRequest {
+  /** Scoped cancellation id for this template extraction. */
+  operationId?: string;
   sourceMarkdown: string;
 }
 
@@ -466,38 +486,21 @@ export interface TemplateExtractionSummary {
   mocked: boolean;
 }
 
-export type ConnectionProvider = "openai-compatible" | "mock";
-
-export interface CreateConnectionProfileRequest {
-  name: string;
-  provider: ConnectionProvider;
-  baseUrl: string | null;
-  secretEnvVar: string | null;
-  defaultTextModel: string | null;
-  defaultImageModel: string | null;
-  timeoutSeconds: number;
-}
-
-export interface ConnectionProfilePublic {
-  id: string;
-  name: string;
-  provider: string;
-  baseUrl: string | null;
-  secretScheme: "env" | "mock" | "keyring" | "stronghold";
-  secretConfigured: boolean;
-  defaultTextModel: string | null;
-  defaultImageModel: string | null;
-  timeoutSeconds: number;
-  createdAt: string;
-}
-
 export interface ConfigureModelRequest {
+  profileId?: string | null;
   name: string;
   baseUrl: string;
+  textProtocol: "openai-completions" | "openai-responses" | "anthropic-messages" | "google-generative-ai";
   /** Legacy shared key retained for migration. New settings use independent keys. */
   apiKey?: string;
   textApiKey: string;
   textModel: string;
+  textSupportsVision: boolean;
+  textReasoning: boolean;
+  textThinkingLevel: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  textContextWindow: number;
+  textMaxTokens: number;
+  nativeWebSearch?: "auto" | "enabled" | "disabled";
   imageBaseUrl: string | null;
   imageModel: string | null;
   imageApiKey: string;
@@ -508,9 +511,17 @@ export interface ConfigureModelRequest {
 }
 
 export interface ModelConfigurationSummary {
+  profileId: string;
   name: string;
   baseUrl: string;
+  textProtocol: ConfigureModelRequest["textProtocol"];
   textModel: string;
+  textSupportsVision: boolean;
+  textReasoning: boolean;
+  textThinkingLevel: ConfigureModelRequest["textThinkingLevel"];
+  textContextWindow: number;
+  textMaxTokens: number;
+  nativeWebSearch?: "auto" | "enabled" | "disabled";
   imageBaseUrl: string | null;
   imageModel: string | null;
   imageTrustedHosts: string[];
@@ -526,12 +537,32 @@ export interface ModelConfigurationSummary {
   persistence: "encrypted_local_database";
 }
 
+export interface ModelProfileSummary {
+  id: string;
+  name: string;
+  baseUrl: string;
+  textProtocol: ConfigureModelRequest["textProtocol"];
+  textModel: string;
+  textSupportsVision: boolean;
+  textReasoning: boolean;
+  textThinkingLevel: ConfigureModelRequest["textThinkingLevel"];
+  textContextWindow: number;
+  textMaxTokens: number;
+  nativeWebSearch?: "auto" | "enabled" | "disabled";
+  timeoutSeconds: number;
+  secretConfigured: boolean;
+  textKeyMasked: string | null;
+  active: boolean;
+}
+
 export type ModelSecretKind = "text" | "image" | "web_search" | "github";
 
 export interface ModelConnectionTestSummary {
   provider: string;
   model: string;
   mocked: boolean;
+  latencyMs?: number | null;
+  responseText?: string | null;
 }
 
 export interface GitHubApplicationInfo {
@@ -551,6 +582,8 @@ export interface GitHubApplicationInfo {
 export interface WechatSyncBridgeStatus {
   available: boolean;
   connected: boolean;
+  /** A last-known snapshot retained only while a fresh bridge probe recovers. */
+  stale?: boolean;
   detail: string;
   platforms: Array<{
     id: string;
@@ -560,39 +593,38 @@ export interface WechatSyncBridgeStatus {
 }
 
 export interface DesktopBridge {
-  runtimeSnapshot(): Promise<RuntimeSnapshot>;
-  ensureAgentRuntime(): Promise<RuntimeSnapshot>;
-  stopAgentRuntime(): Promise<RuntimeSnapshot>;
+  piRuntimeSnapshot(): Promise<RuntimeSnapshot>;
+  ensurePiRuntime(): Promise<RuntimeSnapshot>;
+  stopPiRuntime(): Promise<RuntimeSnapshot>;
+  piRuntimeVersion(): Promise<PiRuntimeVersion>;
+  discoverPiModels(): Promise<PiModelDiscoverySummary>;
+  startPiArticleRun(request: StartPiArticleRunRequest): Promise<PiAgentRun>;
+  getPiRun(runId: string): Promise<PiAgentRun>;
+  getPiRunEvents(runId: string, afterSequence?: number): Promise<PiRunEvent[]>;
+  stopPiRun(runId: string): Promise<PiAgentRun>;
+  stopPiOperation(operationId: string): Promise<void>;
+  getPiArticle(articleId: string): Promise<PiArticle>;
   listArticles(): Promise<StoredArticleSummary[]>;
   saveDraft(request: SaveDraftRequest): Promise<SaveDraftReceipt>;
-  runWorkflow(request: RunWorkflowRequest): Promise<RunWorkflowSummary>;
-  planGenerationBatch(request: BatchTopicPlanRequest): Promise<BatchTopicPlanSummary>;
-  createGenerationBatch(request: CreateGenerationBatchRequest): Promise<GenerationBatchDetail>;
-  listGenerationBatches(): Promise<GenerationBatchDetail[]>;
-  getGenerationBatch(request: GenerationBatchRequest): Promise<GenerationBatchDetail>;
-  cancelGenerationBatch(request: GenerationBatchRequest): Promise<GenerationBatchDetail>;
-  retryGenerationItem(request: GenerationItemRequest): Promise<GenerationBatchDetail>;
-  getWorkflowActivity(articleId: string): Promise<WorkflowActivitySummary | null>;
-  cancelWorkflow(articleId: string): Promise<void>;
   createPublishPlan(request: CreatePublishPlanRequest): Promise<PublishPlanSummary>;
   getPublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   approvePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   enqueuePublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
   processPublishJob(request: ProcessPublishJobRequest): Promise<ProcessPublishJobSummary>;
+  reconcilePublishJob(request: ProcessPublishJobRequest): Promise<ProcessPublishJobSummary>;
+  resolveUnknownPublishJob(request: ResolveUnknownPublishJobRequest): Promise<ProcessPublishJobSummary>;
   rewriteArticle(request: RewriteArticleRequest): Promise<RewriteArticleSummary>;
   composeVisual(request: ComposeVisualRequest): Promise<ComposeVisualSummary>;
   generateImage(request: GenerateImageRequest): Promise<GenerateImageSummary>;
   extractTemplate(request: ExtractTemplateRequest): Promise<TemplateExtractionSummary>;
-  listConnectionProfiles(): Promise<ConnectionProfilePublic[]>;
-  createConnectionProfile(
-    request: CreateConnectionProfileRequest,
-  ): Promise<ConnectionProfilePublic>;
   configureModel(request: ConfigureModelRequest): Promise<ModelConfigurationSummary>;
   modelConfiguration(): Promise<ModelConfigurationSummary | null>;
+  listModelProfiles(): Promise<ModelProfileSummary[]>;
+  activateModelProfile(profileId: string): Promise<ModelConfigurationSummary>;
   revealModelSecret(kind: ModelSecretKind): Promise<string | null>;
   testModelConnection(): Promise<ModelConnectionTestSummary>;
   githubApplicationInfo(): Promise<GitHubApplicationInfo>;
-  wechatSyncStatus(): Promise<WechatSyncBridgeStatus>;
+  wechatSyncStatus(request?: { forceRefresh?: boolean }): Promise<WechatSyncBridgeStatus>;
 }
 
 const isTauriHost = () => typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
@@ -600,9 +632,6 @@ const isTauriHost = () => typeof window !== "undefined" && Boolean(window.__TAUR
 const pause = (milliseconds: number) =>
   new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
-let mockGeneration = 0;
-let mockRuntimeState: RuntimeState = "standby";
-const mockConnectionProfiles: ConnectionProfilePublic[] = [];
 let mockSequence = 0;
 
 interface MockArticleState {
@@ -615,8 +644,8 @@ interface MockArticleState {
 const mockArticles = new Map<string, MockArticleState>();
 const mockPublishPlans = new Map<string, PublishPlanSummary>();
 const mockPublishReceipts = new Map<string, PublishReceiptSummary>();
-const mockGenerationBatches = new Map<string, GenerationBatchDetail>();
 let mockModelConfiguration: ModelConfigurationSummary | null = null;
+const mockModelProfiles = new Map<string, ModelProfileSummary>();
 
 const nextMockId = (prefix: string) => `${prefix}-${++mockSequence}`;
 
@@ -675,11 +704,10 @@ const mockTemplateMarkdown = (sourceMarkdown: string) => {
 };
 
 const mockVisualPlanFor = (
-  request: Pick<RunWorkflowRequest, "visualComposition">,
+  composition: VisualCompositionRequest,
   outputMarkdown: string,
 ): VisualCompositionPlanSummary | null => {
-  const composition = request.visualComposition;
-  if (!composition || composition.mode === "none") return null;
+  if (composition.mode === "none") return null;
   const targetCount = composition.mode === "fixed" ? composition.targetCount : 1;
   return {
     sourceRevisionHash: mockHash(outputMarkdown),
@@ -739,34 +767,53 @@ const mockVisualPlanFor = (
  * must use `browserPreviewBridge` below so they cannot appear to run agents.
  */
 export const testOnlyMockDesktopBridge: DesktopBridge = {
-  async runtimeSnapshot() {
+  async piRuntimeSnapshot() {
     return {
-      state: mockRuntimeState,
+      state: "standby",
       bridgeMode: "interface_only",
-      generation: mockGeneration,
-      detail: "浏览器预览使用内存桥接，不会访问模型或发布平台。",
+      generation: 0,
+      detail: "单元测试默认不启用 Pi Runtime。",
     };
   },
-  async ensureAgentRuntime() {
-    mockRuntimeState = "starting";
-    await pause(120);
-    mockRuntimeState = "ready";
-    mockGeneration += 1;
+  async ensurePiRuntime() {
+    throw new Error("单元测试未配置 Pi Runtime。");
+  },
+  async stopPiRuntime() {
     return {
-      state: mockRuntimeState,
+      state: "stopped",
       bridgeMode: "interface_only",
-      generation: mockGeneration,
-      detail: "本地接口已就绪；当前为演示运行时。",
+      generation: 0,
+      detail: "单元测试 Pi Runtime 已停止。",
     };
   },
-  async stopAgentRuntime() {
-    mockRuntimeState = "stopped";
+  async piRuntimeVersion() {
+    throw new Error("单元测试未配置 Pi Runtime。");
+  },
+  async discoverPiModels() {
     return {
-      state: mockRuntimeState,
-      bridgeMode: "interface_only",
-      generation: mockGeneration,
-      detail: "演示运行时已停止。",
+      models: mockModelConfiguration
+        ? [{ id: mockModelConfiguration.textModel, name: mockModelConfiguration.textModel }]
+        : [],
+      endpoint: mockModelConfiguration?.baseUrl ?? "",
     };
+  },
+  async startPiArticleRun() {
+    throw new Error("单元测试未配置 Pi Writer。");
+  },
+  async getPiRun() {
+    throw new Error("单元测试未配置 Pi Writer。");
+  },
+  async getPiRunEvents() {
+    return [];
+  },
+  async stopPiRun() {
+    throw new Error("单元测试未配置 Pi Writer。");
+  },
+  async stopPiOperation() {
+    return undefined;
+  },
+  async getPiArticle() {
+    throw new Error("单元测试未配置 Pi ArticleStore。");
   },
   async listArticles() {
     await pause(40);
@@ -807,135 +854,6 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       savedAtEpochMs: Date.now(),
       persistence: "memory",
     };
-  },
-  async runWorkflow(request) {
-    mockRuntimeState = "ready";
-    mockGeneration += 1;
-    await pause(180);
-    const article = mockArticles.get(request.articleId);
-    if (!article || article.revisionId !== request.revisionId) {
-      throw new Error("请先保存当前稿件，再运行工作流");
-    }
-    const definitions: Array<[string, string, DisabledOptionalNodeId | null]> = [
-      ["research", "workflow.research", "research"],
-      ["outline", "workflow.outline", "outline"],
-      ["raw-draft", "workflow.raw-draft", null],
-      ["natural-patch", "workflow.natural-style-patch", "natural-style"],
-      ["canonical-draft", "workflow.canonical-draft", "natural-style"],
-      ["review", "workflow.review", "review"],
-      ["risk", "workflow.risk", null],
-      ["visual", "workflow.visual-plan", "visual"],
-    ];
-    const disabled = new Set(request.disabledOptionalNodeIds);
-    const outputRevisionId = nextMockId(`${request.articleId}-workflow`);
-    const outputMarkdown = `${article.markdown.trim()}\n\n<!-- mock workflow ${outputRevisionId} -->`;
-    const revisionNumber = article.revisionNumber + 1;
-    mockArticles.set(request.articleId, {
-      revisionId: outputRevisionId,
-      markdown: outputMarkdown,
-      revisionNumber,
-      updatedAt: new Date().toISOString(),
-    });
-    return {
-      runId: nextMockId("run"),
-      status: "completed",
-      workflowName: "mock-article",
-      workflowVersion: "1.1.0",
-      inputRevisionId: request.revisionId,
-      outputRevisionId,
-      outputRevisionNumber: revisionNumber,
-      outputMarkdown,
-      outputContentHash: mockHash(outputMarkdown),
-      artifacts: definitions
-        .filter(([, , optionalNode]) => !optionalNode || !disabled.has(optionalNode))
-        .map(([suffix, kind]) => ({
-          id: `${outputRevisionId}-${suffix}`,
-          kind,
-        })),
-      visualPlan: mockVisualPlanFor(request, outputMarkdown),
-      persistence: "memory",
-    };
-  },
-  async planGenerationBatch(request) {
-    await pause(80);
-    const topics = request.manualTopics.length > 0
-      ? request.manualTopics
-      : Array.from({ length: request.count }, (_, index) =>
-          `${request.prompt.trim()}（切入点 ${index + 1}）`);
-    return {
-      plannedBy: request.manualTopics.length > 0 ? "manual" : "model",
-      candidates: topics.map((topic, index) => ({
-        title: topic.slice(0, 180),
-        topic,
-        angle: `围绕第 ${index + 1} 个独立功能切入。`,
-        keyPoints: ["问题与受众", "具体做法", "边界与下一步"],
-      })),
-    };
-  },
-  async createGenerationBatch(request) {
-    await pause(80);
-    const id = nextMockId("generation-batch");
-    const now = new Date().toISOString();
-    const detail: GenerationBatchDetail = {
-      batch: {
-        id,
-        prompt: request.prompt,
-        status: "completed",
-        writerConcurrency: request.writerConcurrency,
-        createdAt: now,
-        updatedAt: now,
-      },
-      items: request.candidates.map((candidate, index) => ({
-        id: `${id}-item-${index + 1}`,
-        batchId: id,
-        position: index + 1,
-        title: candidate.title,
-        topic: candidate.topic,
-        status: "completed",
-        articleId: null,
-        runId: null,
-        error: null,
-        retryCount: 0,
-        createdAt: now,
-        startedAt: now,
-        completedAt: now,
-      })),
-    };
-    mockGenerationBatches.set(id, detail);
-    return structuredClone(detail);
-  },
-  async listGenerationBatches() {
-    return [...mockGenerationBatches.values()].map((detail) => structuredClone(detail));
-  },
-  async getGenerationBatch(request) {
-    const detail = mockGenerationBatches.get(request.batchId);
-    if (!detail) throw new Error(`generation batch ${request.batchId} not found`);
-    return structuredClone(detail);
-  },
-  async cancelGenerationBatch(request) {
-    const detail = mockGenerationBatches.get(request.batchId);
-    if (!detail) throw new Error(`generation batch ${request.batchId} not found`);
-    detail.batch.status = "cancelled";
-    detail.batch.updatedAt = new Date().toISOString();
-    detail.items = detail.items.map((item) =>
-      item.status === "queued"
-        ? { ...item, status: "cancelled", completedAt: detail.batch.updatedAt }
-        : item,
-    );
-    return structuredClone(detail);
-  },
-  async retryGenerationItem(request) {
-    const detail = [...mockGenerationBatches.values()].find((candidate) =>
-      candidate.items.some((item) => item.id === request.itemId),
-    );
-    if (!detail) throw new Error(`generation item ${request.itemId} not found`);
-    return structuredClone(detail);
-  },
-  async getWorkflowActivity() {
-    return null;
-  },
-  async cancelWorkflow() {
-    return undefined;
   },
   async createPublishPlan(request) {
     await pause(100);
@@ -1038,6 +956,57 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       receipt: { ...receipt },
     };
   },
+  async reconcilePublishJob(request) {
+    await pause(80);
+    const plan = [...mockPublishPlans.values()].find((candidate) =>
+      candidate.jobs.some((job) => job.id === request.jobId),
+    );
+    const job = plan?.jobs.find((candidate) => candidate.id === request.jobId);
+    if (!plan || !job) throw new Error(`publish job ${request.jobId} not found`);
+    if (job.state !== "unknown") throw new Error("only UNKNOWN publish jobs can be reconciled");
+    job.lastError = "当前通道不支持草稿查询。请在平台草稿箱确认；系统不会自动重试。";
+    job.reconcileRequired = true;
+    job.updatedAt = new Date().toISOString();
+    plan.status = "needs_attention";
+    plan.updatedAt = job.updatedAt;
+    return { job: { ...job }, receipt: null };
+  },
+  async resolveUnknownPublishJob(request) {
+    await pause(80);
+    const plan = [...mockPublishPlans.values()].find((candidate) =>
+      candidate.jobs.some((job) => job.id === request.jobId),
+    );
+    const job = plan?.jobs.find((candidate) => candidate.id === request.jobId);
+    if (!plan || !job) throw new Error(`publish job ${request.jobId} not found`);
+    if (job.state !== "unknown") throw new Error("only UNKNOWN publish jobs can be resolved");
+    job.updatedAt = new Date().toISOString();
+    job.reconcileRequired = false;
+    if (request.resolution === "draft_exists") {
+      job.state = "succeeded";
+      job.remoteId = `manual-confirmed-${job.id.slice(-8)}`;
+      job.lastError = null;
+      const receipt = {
+        id: `${job.id}-manual-receipt`,
+        jobId: job.id,
+        status: "draft_saved",
+        remoteId: job.remoteId,
+        contentHash: job.payloadHash,
+        createdAt: job.updatedAt,
+      };
+      mockPublishReceipts.set(job.id, receipt);
+      plan.status = plan.jobs.every((candidate) => candidate.state === "succeeded")
+        ? "completed"
+        : "queued";
+      plan.updatedAt = job.updatedAt;
+      return { job: { ...job }, receipt: { ...receipt } };
+    }
+    job.state = "pending";
+    job.remoteId = null;
+    job.lastError = "用户已确认平台草稿未创建；可手动再次执行发布。";
+    plan.status = "queued";
+    plan.updatedAt = job.updatedAt;
+    return { job: { ...job }, receipt: null };
+  },
   async rewriteArticle(request) {
     const sources = request.selectedTexts.length ? request.selectedTexts : [request.markdown];
     return {
@@ -1050,10 +1019,7 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
   },
   async composeVisual(request) {
     await pause(120);
-    const plan = mockVisualPlanFor(
-      { visualComposition: request.visualComposition },
-      request.markdown,
-    );
+    const plan = mockVisualPlanFor(request.visualComposition, request.markdown);
     if (!plan) {
       throw new Error("请先选择自动配图或指定配图数量。");
     }
@@ -1124,33 +1090,19 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       mocked: true,
     };
   },
-  async listConnectionProfiles() {
-    await pause(60);
-    return [...mockConnectionProfiles];
-  },
-  async createConnectionProfile(request) {
-    await pause(100);
-    const profile: ConnectionProfilePublic = {
-      id: `mock-connection-${mockConnectionProfiles.length + 1}`,
-      name: request.name.trim(),
-      provider: request.provider,
-      baseUrl: request.provider === "mock" ? null : request.baseUrl,
-      secretScheme: request.provider === "mock" ? "mock" : "env",
-      secretConfigured: true,
-      defaultTextModel: request.defaultTextModel,
-      defaultImageModel: request.defaultImageModel,
-      timeoutSeconds: request.timeoutSeconds,
-      createdAt: new Date().toISOString(),
-    };
-    mockConnectionProfiles.push(profile);
-    return profile;
-  },
   async configureModel(request) {
     await pause(80);
     mockModelConfiguration = {
+      profileId: request.profileId || "default",
       name: request.name.trim(),
       baseUrl: request.baseUrl.trim().replace(/\/+$/, ""),
+      textProtocol: request.textProtocol,
       textModel: request.textModel.trim(),
+      textSupportsVision: request.textSupportsVision,
+      textReasoning: request.textReasoning,
+      textThinkingLevel: request.textThinkingLevel,
+      textContextWindow: request.textContextWindow,
+      textMaxTokens: request.textMaxTokens,
       imageBaseUrl: request.imageBaseUrl?.trim().replace(/\/+$/, "") || null,
       imageModel: request.imageModel?.trim() || null,
       imageTrustedHosts: request.imageTrustedHosts,
@@ -1165,10 +1117,50 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       githubTokenMasked: request.githubToken ? "ghp••••ken" : null,
       persistence: "encrypted_local_database",
     };
+    mockModelProfiles.set(mockModelConfiguration.profileId, {
+      id: mockModelConfiguration.profileId,
+      name: mockModelConfiguration.name,
+      baseUrl: mockModelConfiguration.baseUrl,
+      textProtocol: mockModelConfiguration.textProtocol,
+      textModel: mockModelConfiguration.textModel,
+      textSupportsVision: mockModelConfiguration.textSupportsVision,
+      textReasoning: mockModelConfiguration.textReasoning,
+      textThinkingLevel: mockModelConfiguration.textThinkingLevel,
+      textContextWindow: mockModelConfiguration.textContextWindow,
+      textMaxTokens: mockModelConfiguration.textMaxTokens,
+      timeoutSeconds: mockModelConfiguration.timeoutSeconds,
+      secretConfigured: mockModelConfiguration.secretConfigured,
+      textKeyMasked: mockModelConfiguration.textKeyMasked,
+      active: true,
+    });
     return { ...mockModelConfiguration };
   },
   async modelConfiguration() {
     return mockModelConfiguration ? { ...mockModelConfiguration } : null;
+  },
+  async listModelProfiles() {
+    return [...mockModelProfiles.values()].map((profile) => ({ ...profile }));
+  },
+  async activateModelProfile(profileId) {
+    const profile = mockModelProfiles.get(profileId);
+    if (!profile) throw new Error("模型档案不存在");
+    if (!mockModelConfiguration) throw new Error("没有可用的活动配置");
+    mockModelConfiguration = {
+      ...mockModelConfiguration,
+      profileId: profile.id,
+      name: profile.name,
+      baseUrl: profile.baseUrl,
+      textProtocol: profile.textProtocol,
+      textModel: profile.textModel,
+      textSupportsVision: profile.textSupportsVision,
+      textReasoning: profile.textReasoning,
+      textThinkingLevel: profile.textThinkingLevel,
+      textContextWindow: profile.textContextWindow,
+      textMaxTokens: profile.textMaxTokens,
+      timeoutSeconds: profile.timeoutSeconds,
+    };
+    for (const [id, value] of mockModelProfiles) mockModelProfiles.set(id, { ...value, active: id === profile.id });
+    return { ...mockModelConfiguration };
   },
   async revealModelSecret() {
     return null;
@@ -1206,27 +1198,21 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
 };
 
 const tauriBridge: DesktopBridge = {
-  runtimeSnapshot: () => invoke<RuntimeSnapshot>("runtime_snapshot"),
-  ensureAgentRuntime: () => invoke<RuntimeSnapshot>("ensure_agent_runtime"),
-  stopAgentRuntime: () => invoke<RuntimeSnapshot>("stop_agent_runtime"),
+  piRuntimeSnapshot: () => invoke<RuntimeSnapshot>("pi_runtime_snapshot"),
+  ensurePiRuntime: () => invoke<RuntimeSnapshot>("ensure_pi_runtime"),
+  stopPiRuntime: () => invoke<RuntimeSnapshot>("stop_pi_runtime"),
+  piRuntimeVersion: () => invoke<PiRuntimeVersion>("pi_runtime_version"),
+  discoverPiModels: () => invoke<PiModelDiscoverySummary>("discover_pi_models"),
+  startPiArticleRun: (request) =>
+    invoke<PiAgentRun>("start_pi_article_run", { request }),
+  getPiRun: (runId) => invoke<PiAgentRun>("get_pi_run", { runId }),
+  getPiRunEvents: (runId, afterSequence = 0) =>
+    invoke<PiRunEvent[]>("pi_run_events", { runId, afterSequence }),
+  stopPiRun: (runId) => invoke<PiAgentRun>("stop_pi_run", { runId }),
+  stopPiOperation: (operationId) => invoke<void>("stop_pi_operation", { operationId }),
+  getPiArticle: (articleId) => invoke<PiArticle>("get_pi_article", { articleId }),
   listArticles: () => invoke<StoredArticleSummary[]>("list_articles"),
   saveDraft: (request) => invoke<SaveDraftReceipt>("save_draft", { request }),
-  runWorkflow: (request) => invoke<RunWorkflowSummary>("run_workflow", { request }),
-  planGenerationBatch: (request) =>
-    invoke<BatchTopicPlanSummary>("plan_generation_batch", { request }),
-  createGenerationBatch: (request) =>
-    invoke<GenerationBatchDetail>("create_generation_batch", { request }),
-  listGenerationBatches: () =>
-    invoke<GenerationBatchDetail[]>("list_generation_batches"),
-  getGenerationBatch: (request) =>
-    invoke<GenerationBatchDetail>("get_generation_batch", { request }),
-  cancelGenerationBatch: (request) =>
-    invoke<GenerationBatchDetail>("cancel_generation_batch", { request }),
-  retryGenerationItem: (request) =>
-    invoke<GenerationBatchDetail>("retry_generation_item", { request }),
-  getWorkflowActivity: (articleId) =>
-    invoke<WorkflowActivitySummary | null>("workflow_activity", { articleId }),
-  cancelWorkflow: (articleId) => invoke<void>("cancel_workflow", { articleId }),
   createPublishPlan: (request) =>
     invoke<PublishPlanSummary>("create_publish_plan", { request }),
   getPublishPlan: (request) =>
@@ -1237,6 +1223,10 @@ const tauriBridge: DesktopBridge = {
     invoke<PublishPlanSummary>("enqueue_publish_plan", { request }),
   processPublishJob: (request) =>
     invoke<ProcessPublishJobSummary>("process_publish_job", { request }),
+  reconcilePublishJob: (request) =>
+    invoke<ProcessPublishJobSummary>("reconcile_publish_job", { request }),
+  resolveUnknownPublishJob: (request) =>
+    invoke<ProcessPublishJobSummary>("resolve_unknown_publish_job", { request }),
   rewriteArticle: (request) =>
     invoke<RewriteArticleSummary>("rewrite_article", { request }),
   composeVisual: (request) =>
@@ -1245,21 +1235,22 @@ const tauriBridge: DesktopBridge = {
     invoke<GenerateImageSummary>("generate_image", { request }),
   extractTemplate: (request) =>
     invoke<TemplateExtractionSummary>("extract_template", { request }),
-  listConnectionProfiles: () =>
-    invoke<ConnectionProfilePublic[]>("list_connection_profiles"),
-  createConnectionProfile: (request) =>
-    invoke<ConnectionProfilePublic>("create_connection_profile", { request }),
   configureModel: (request) =>
     invoke<ModelConfigurationSummary>("configure_model", { request }),
   modelConfiguration: () =>
     invoke<ModelConfigurationSummary | null>("model_configuration"),
+  listModelProfiles: () => invoke<ModelProfileSummary[]>("list_model_profiles"),
+  activateModelProfile: (profileId) =>
+    invoke<ModelConfigurationSummary>("activate_model_profile", { profileId }),
   revealModelSecret: (kind) =>
     invoke<string | null>("reveal_model_secret", { kind }),
   testModelConnection: () =>
     invoke<ModelConnectionTestSummary>("test_model_connection"),
   githubApplicationInfo: () =>
     invoke<GitHubApplicationInfo>("github_application_info"),
-  wechatSyncStatus: () => invoke<WechatSyncBridgeStatus>("wechat_sync_status"),
+  wechatSyncStatus: (request) => invoke<WechatSyncBridgeStatus>("wechat_sync_status", {
+    forceRefresh: request?.forceRefresh ?? false,
+  }),
 };
 
 const DESKTOP_HOST_REQUIRED =
@@ -1270,38 +1261,39 @@ const desktopHostRequired = (): Promise<never> =>
 
 /** Browser previews are read-only and deliberately cannot simulate execution. */
 const browserPreviewBridge: DesktopBridge = {
-  runtimeSnapshot: async () => ({
+  piRuntimeSnapshot: async () => ({
     state: "standby",
     bridgeMode: "interface_only",
     generation: 0,
-    detail: "浏览器预览不能调用本地 Agent 或访问本地数据。请使用桌面应用。",
+    detail: "浏览器预览不能调用 Pi Agent Runtime。",
   }),
-  ensureAgentRuntime: desktopHostRequired,
-  stopAgentRuntime: desktopHostRequired,
+  ensurePiRuntime: desktopHostRequired,
+  stopPiRuntime: desktopHostRequired,
+  piRuntimeVersion: desktopHostRequired,
+  discoverPiModels: desktopHostRequired,
+  startPiArticleRun: desktopHostRequired,
+  getPiRun: desktopHostRequired,
+  getPiRunEvents: desktopHostRequired,
+  stopPiRun: desktopHostRequired,
+  stopPiOperation: desktopHostRequired,
+  getPiArticle: desktopHostRequired,
   listArticles: async () => [],
   saveDraft: desktopHostRequired,
-  runWorkflow: desktopHostRequired,
-  planGenerationBatch: desktopHostRequired,
-  createGenerationBatch: desktopHostRequired,
-  listGenerationBatches: desktopHostRequired,
-  getGenerationBatch: desktopHostRequired,
-  cancelGenerationBatch: desktopHostRequired,
-  retryGenerationItem: desktopHostRequired,
-  getWorkflowActivity: desktopHostRequired,
-  cancelWorkflow: desktopHostRequired,
   createPublishPlan: desktopHostRequired,
   getPublishPlan: desktopHostRequired,
   approvePublishPlan: desktopHostRequired,
   enqueuePublishPlan: desktopHostRequired,
   processPublishJob: desktopHostRequired,
+  reconcilePublishJob: desktopHostRequired,
+  resolveUnknownPublishJob: desktopHostRequired,
   rewriteArticle: desktopHostRequired,
   composeVisual: desktopHostRequired,
   generateImage: desktopHostRequired,
   extractTemplate: desktopHostRequired,
-  listConnectionProfiles: async () => [],
-  createConnectionProfile: desktopHostRequired,
   configureModel: desktopHostRequired,
   modelConfiguration: async () => null,
+  listModelProfiles: async () => [],
+  activateModelProfile: desktopHostRequired,
   revealModelSecret: desktopHostRequired,
   testModelConnection: desktopHostRequired,
   githubApplicationInfo: desktopHostRequired,
@@ -1341,35 +1333,37 @@ export async function subscribeToTemplateExtractionEvents(
  * endpoint nor plaintext provider/platform credentials.
  */
 export const desktopBridge: DesktopBridge = {
-  runtimeSnapshot: () => activeBridge().runtimeSnapshot(),
-  ensureAgentRuntime: () => activeBridge().ensureAgentRuntime(),
-  stopAgentRuntime: () => activeBridge().stopAgentRuntime(),
+  piRuntimeSnapshot: () => activeBridge().piRuntimeSnapshot(),
+  ensurePiRuntime: () => activeBridge().ensurePiRuntime(),
+  stopPiRuntime: () => activeBridge().stopPiRuntime(),
+  piRuntimeVersion: () => activeBridge().piRuntimeVersion(),
+  discoverPiModels: () => activeBridge().discoverPiModels(),
+  startPiArticleRun: (request) => activeBridge().startPiArticleRun(request),
+  getPiRun: (runId) => activeBridge().getPiRun(runId),
+  getPiRunEvents: (runId, afterSequence) =>
+    activeBridge().getPiRunEvents(runId, afterSequence),
+  stopPiRun: (runId) => activeBridge().stopPiRun(runId),
+  stopPiOperation: (operationId) => activeBridge().stopPiOperation(operationId),
+  getPiArticle: (articleId) => activeBridge().getPiArticle(articleId),
   listArticles: () => activeBridge().listArticles(),
   saveDraft: (request) => activeBridge().saveDraft(request),
-  runWorkflow: (request) => activeBridge().runWorkflow(request),
-  planGenerationBatch: (request) => activeBridge().planGenerationBatch(request),
-  createGenerationBatch: (request) => activeBridge().createGenerationBatch(request),
-  listGenerationBatches: () => activeBridge().listGenerationBatches(),
-  getGenerationBatch: (request) => activeBridge().getGenerationBatch(request),
-  cancelGenerationBatch: (request) => activeBridge().cancelGenerationBatch(request),
-  retryGenerationItem: (request) => activeBridge().retryGenerationItem(request),
-  getWorkflowActivity: (articleId) => activeBridge().getWorkflowActivity(articleId),
-  cancelWorkflow: (articleId) => activeBridge().cancelWorkflow(articleId),
   createPublishPlan: (request) => activeBridge().createPublishPlan(request),
   getPublishPlan: (request) => activeBridge().getPublishPlan(request),
   approvePublishPlan: (request) => activeBridge().approvePublishPlan(request),
   enqueuePublishPlan: (request) => activeBridge().enqueuePublishPlan(request),
   processPublishJob: (request) => activeBridge().processPublishJob(request),
+  reconcilePublishJob: (request) => activeBridge().reconcilePublishJob(request),
+  resolveUnknownPublishJob: (request) => activeBridge().resolveUnknownPublishJob(request),
   rewriteArticle: (request) => activeBridge().rewriteArticle(request),
   composeVisual: (request) => activeBridge().composeVisual(request),
   generateImage: (request) => activeBridge().generateImage(request),
   extractTemplate: (request) => activeBridge().extractTemplate(request),
-  listConnectionProfiles: () => activeBridge().listConnectionProfiles(),
-  createConnectionProfile: (request) => activeBridge().createConnectionProfile(request),
   configureModel: (request) => activeBridge().configureModel(request),
   modelConfiguration: () => activeBridge().modelConfiguration(),
+  listModelProfiles: () => activeBridge().listModelProfiles(),
+  activateModelProfile: (profileId) => activeBridge().activateModelProfile(profileId),
   revealModelSecret: (kind) => activeBridge().revealModelSecret(kind),
   testModelConnection: () => activeBridge().testModelConnection(),
   githubApplicationInfo: () => activeBridge().githubApplicationInfo(),
-  wechatSyncStatus: () => activeBridge().wechatSyncStatus(),
+  wechatSyncStatus: (request) => activeBridge().wechatSyncStatus(request),
 };

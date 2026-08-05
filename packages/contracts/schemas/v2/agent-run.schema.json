@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/agent-run.schema.json",
+  "title": "AgentRunV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "articleId", "sessionId", "agentId", "operation", "status", "baseRevisionId", "createdAt", "startedAt", "completedAt", "error"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "id": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "articleId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" }, { "type": "null" }] },
+    "sessionId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" }, { "type": "null" }] },
+    "agentId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/AgentId" },
+    "operation": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "status": { "enum": ["pending", "running", "waiting_user", "stopping", "stopped", "completed", "failed", "interrupted"] },
+    "baseRevisionId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" }, { "type": "null" }] },
+    "createdAt": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" },
+    "startedAt": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" }, { "type": "null" }] },
+    "completedAt": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" }, { "type": "null" }] },
+    "error": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Error" }, { "type": "null" }] }
+  }
+}

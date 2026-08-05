@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/article-file.schema.json",
+  "title": "ArticleFileV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "articleId", "title", "relativePath", "currentRevisionId", "contentHash", "updatedAt"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "articleId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "relativePath": { "type": "string", "const": "article.md" },
+    "currentRevisionId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "contentHash": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Sha256" },
+    "updatedAt": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" }
+  }
+}

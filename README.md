@@ -7,8 +7,8 @@ Open Publisher 把研究、写作、审核、配图规划、平台改写和发�
 可审计、可重试的确定性任务队列执行。
 
 后续产品与技术改进统一遵循
-[`稿流项目基线规范 v0.2`](docs/product/project-baseline.md)。该文档明确区分当前实现与
-目标设计，并固定了产品范围、Agent/Prompt、LangGraph 工作流、数据契约、安全边界、
+[`稿流项目基线规范 v0.3`](docs/product/project-baseline.md)。该文档明确区分当前实现与
+目标设计，并固定了产品范围、Agent/Prompt、Pi Agent Harness、数据契约、安全边界、
 测试门禁和实施顺序。
 
 当前版本为 `0.1.0-alpha`。P0 主要用于验证产品架构和本地演示闭环；默认使用
@@ -20,11 +20,11 @@ deterministic mock（确定性模拟）提供商，不会向真实模型或内�
 | --- | --- |
 | 桌面工作区 | React + Tauri v2，一级导航为创作、文章、模板、素材库和设置；发布是文章内的受控动作 |
 | 内容模型 | Markdown 主稿、不可变 `ArticleRevision`、内容寻址 Artifact 和平台派生稿 |
-| Agent 运行时 | Python Harness + LangGraph；当前默认主路径是工具增强的写作节点与确定性风险检查，其他节点按运行策略启用 |
+| Agent 运行时 | TypeScript + Bun + Hono Sidecar，以 Pi Agent Core 执行模型/工具循环、流式、取消、steer 与会话压缩 |
 | 模型接入 | 默认 Mock；提供 OpenAI-compatible 文本/图像提供商的接入边界，不内置独立模型网关 |
 | 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验；超时不会盲目重试 |
 | 平台接入 | 通过本机 WechatSync 动态读取当前已登录且已适配的平台，并在明确确认后保存平台草稿；不会点击最终发布 |
-| 工作流定制 | 版本化声明式工作流、必需节点与 DAG 校验；不执行用户提供的任意 Python/JavaScript |
+| 工作流定制 | 版本化声明式策略与产品 Harness；不执行用户提供的任意代码 |
 | 万能导互通 | 通过 `ContentPackage v1` 交换 Markdown、素材、哈希和来源信息，不共享数据库或凭据 |
 
 P0 **没有承诺**以下能力：
@@ -45,9 +45,9 @@ P0 **没有承诺**以下能力：
 ```mermaid
 flowchart LR
     UI["React WebView<br/>编辑与审阅"] -->|"类型化 Tauri 命令"| Rust["Rust Host<br/>校验 · 秘密边界 · 进程监管"]
-    Rust -->|"随机 loopback 端口<br/>每次启动独立 token"| Py["Python Sidecar<br/>FastAPI · Harness · LangGraph"]
-    Py --> Store["SQLite + Artifact Store"]
-    Py --> Outbox["确定性发布服务<br/>Outbox · 幂等 · 核验"]
+    Rust -->|"随机 loopback 端口<br/>每次启动独立 token"| Runtime["Pi Sidecar<br/>Bun · Hono · Product Harness"]
+    Runtime --> Store["SQLite + Markdown ArticleStore"]
+    Runtime --> Outbox["确定性发布服务<br/>Outbox · 幂等 · 核验"]
     Outbox --> API["官方 API"]
     Outbox --> Bridge["WechatSync 本机桥<br/>仅保存平台草稿"]
     Bridge --> Ext["浏览器扩展<br/>保持登录态"]
@@ -58,8 +58,8 @@ flowchart LR
 | --- | --- | --- |
 | 桌面界面 | React 19、TypeScript、Vite | Markdown 编辑、预览、审阅与任务状态展示 |
 | 本地主机 | Tauri v2、Rust | IPC 校验、Sidecar 生命周期和敏感能力边界 |
-| Agent Runtime | Python 3.12/3.13、FastAPI、LangGraph | Harness、模型访问、工作流、Artifact 与发布用例 |
-| 本地持久化 | SQLite、SQLAlchemy、Alembic | 修订、运行快照、任务、尝试与回执 |
+| Agent Runtime | TypeScript、Bun、Hono、Pi Agent Core | Harness、模型访问、工具循环、Artifact 与发布用例 |
+| 本地持久化 | SQLite、Markdown ArticleStore、Rust 密钥存储 | 修订、运行快照、任务、尝试与回执 |
 | 跨进程协议 | JSON Schema、TypeScript SDK | 桌面、Sidecar、扩展、技能和适配器的版本化契约 |
 | 浏览器助手 | Manifest V3 | 在明确来源的编辑器中填充草稿，异常时返回 `NEEDS_USER` |
 
@@ -71,10 +71,10 @@ flowchart LR
 
 当前开发路径以 Windows PowerShell 为准。请先准备：
 
-- Node.js 22.6+
+- Node.js 22.19+
 - pnpm 11（仓库声明版本为 `11.7.0`）
 - Rust 1.88（由 `rust-toolchain.toml` 固定）
-- Python 3.12 或 3.13
+- Bun 1.3.14（`pnpm install` 会提供仓库锁定的版本；亦可安装全局 Bun）
 
 在仓库根目录安装依赖：
 
@@ -82,8 +82,8 @@ flowchart LR
 .\scripts\bootstrap.ps1
 ```
 
-脚本会安装 pnpm workspace 依赖，创建 `.venv`，并以开发模式安装 Python Runtime
-及 LangGraph。首次安装依赖需要联网。
+脚本会安装 pnpm workspace 依赖。Pi Runtime 在开发时由 Bun 执行，在打包时编译为
+Tauri sidecar。首次安装依赖需要联网。
 
 启动完整桌面开发环境：
 
@@ -91,12 +91,11 @@ flowchart LR
 pnpm dev
 ```
 
-Tauri 的 Rust Host 会启动 Python Sidecar，为它选择随机本机端口并注入每次启动独立的
+Tauri 的 Rust Host 会启动 Bun 编译的 Pi Sidecar，为它选择随机本机端口并注入每次启动独立的
 Bearer token。端口和 token 不会返回给 WebView。
 
-P0 的运行边界是开发检出，不是可分发安装包。普通 Tauri bundle 会缺少 Python
-Sidecar 及其依赖，因此构建前置检查会主动阻止它；准确边界和仅供布局检查的显式覆盖
-方式见 [`release-packaging.md`](docs/development/release-packaging.md)。
+打包前置检查会编译并验证目标平台的 Pi Sidecar；安装包不要求系统 Python。准确的
+构建和签名边界见 [`release-packaging.md`](docs/development/release-packaging.md)。
 
 只开发界面时可以运行：
 
@@ -104,17 +103,17 @@ Sidecar 及其依赖，因此构建前置检查会主动阻止它；准确边界
 pnpm dev:web
 ```
 
-该模式使用 interface-only bridge，只展示本地界面与模拟数据，不能直接访问 Python
+该模式使用 interface-only bridge，只展示本地界面与模拟数据，不能直接访问 Pi
 Sidecar，也不能执行发布。
 
 运行当前全部基础检查：
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\quality_check.py
+pnpm quality
 ```
 
-它会依次执行 TypeScript 检查与测试、Web 构建、Python Ruff/Pytest，以及 Rust
-格式、编译检查和测试。真实模型及真实平台调用不属于默认测试。
+它会依次执行 TypeScript 检查与测试、Web 构建、Pi Runtime 编译与 bundle preflight，
+以及 Rust 格式、编译检查和测试。真实模型及真实平台调用不属于默认测试。
 
 详细演示步骤见
 [`docs/development/manual-demo.md`](docs/development/manual-demo.md)。
@@ -141,7 +140,7 @@ Issue 或测试夹具。详见 [`SECURITY.md`](SECURITY.md) 与
 
 ## 与万能导交换内容
 
-Open Publisher 和万能导保持两个独立应用，不共享数据库、Python 环境、插件进程或
+Open Publisher 和万能导保持两个独立应用，不共享数据库、运行环境、插件进程或
 平台凭据。`ContentPackage v1` 使用普通目录作为交换边界：
 
 ```text
@@ -162,7 +161,7 @@ content-package/
 
 ```text
 apps/desktop/                   React + Tauri v2 桌面端
-services/agent-runtime/         FastAPI + LangGraph 本地 Sidecar
+services/agent-runtime/         Bun + Hono + Pi Agent Core 本地 Sidecar
 extensions/browser-publisher/  Manifest V3 草稿填充扩展
 packages/contracts/             版本化 JSON Schema 与类型
 packages/platform-sdk/          平台适配器契约
@@ -174,7 +173,7 @@ docs/integrations/              平台与万能导集成边界
 scripts/                        安装与质量检查脚本
 ```
 
-跨桌面、Python、浏览器扩展或 Skill 的改动应先更新 `packages/contracts` 中的版本化
+跨桌面、Pi Runtime、浏览器扩展或 Skill 的改动应先更新 `packages/contracts` 中的版本化
 契约。贡献流程见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## 许可与第三方来源

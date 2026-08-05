@@ -37,7 +37,7 @@ describe("PublishDialog", () => {
           ],
         }}
         onClose={vi.fn()}
-        onRefresh={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         open
         platforms={platforms}
@@ -54,5 +54,31 @@ describe("PublishDialog", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: /CSDN/ }));
     expect(screen.getByRole("button", { name: "同步到 1 个草稿" })).toBeEnabled();
+  });
+
+  it("keeps a stale bridge snapshot read-only while the extension reconnects", () => {
+    render(
+      <PublishDialog
+        article={article}
+        bridge={{
+          available: false,
+          connected: false,
+          stale: true,
+          detail: "本地桥正在恢复连接。",
+          platforms: [{ id: "csdn", authenticated: true, accountLabel: "demo" }],
+        }}
+        onClose={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        open
+        platforms={platforms}
+        publishing={false}
+        refreshing={false}
+      />,
+    );
+
+    expect(screen.getByText(/连接正在恢复/)).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /CSDN/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /同步到/ })).toBeDisabled();
   });
 });

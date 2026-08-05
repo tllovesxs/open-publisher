@@ -30,6 +30,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/open-publisher-agent-runtime"
+    ],
     "category": "Productivity",
     "shortDescription": "本地优先智能写作与多平台发布工作台",
     "longDescription": "在本地完成 AI 辅助写作、证据与风险审核，并通过确定性任务队列发布到多个内容平台。",

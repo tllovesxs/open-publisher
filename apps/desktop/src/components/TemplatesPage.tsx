@@ -32,6 +32,7 @@ interface TemplatesPageProps {
   templates: MarkdownTemplate[];
   onChange: (templates: MarkdownTemplate[]) => void;
   onExtractTemplate: (sourceMarkdown: string) => Promise<MarkdownTemplate>;
+  onCancelExtraction?: () => void;
   onSelect: (templateId: string) => void;
   onStartCreating: () => void;
 }
@@ -93,6 +94,7 @@ export function TemplatesPage({
   templates,
   onChange,
   onExtractTemplate,
+  onCancelExtraction,
   onSelect,
   onStartCreating,
 }: TemplatesPageProps) {
@@ -177,9 +179,11 @@ export function TemplatesPage({
   };
 
   const closeExtraction = () => {
-    // The native command cannot be cancelled after dispatch. Invalidate the attempt so a
-    // late response never reopens the editor or overwrites a later retry.
+    // Invalidate first, then ask the native runtime to abort the matching
+    // request. A late response can therefore neither reopen this dialog nor
+    // overwrite a later retry.
     extractionAttemptRef.current += 1;
+    onCancelExtraction?.();
     renewExtractionWatchdogRef.current = null;
     stopExtractionWatchdogRef.current();
     setExtracting(false);
@@ -246,11 +250,7 @@ export function TemplatesPage({
         rejectWatchdog(new Error("分析等待超过 90 秒，未收到运行心跳。请检查模型连接后重试。"));
       }, EXTRACTION_WAIT_LIMIT_MS);
       if (event) {
-        setExtractionStatus(
-          event.eventType === "heartbeat"
-            ? `AI 正在分析，已等待 ${event.elapsedSeconds} 秒`
-            : event.detail,
-        );
+        setExtractionStatus(event.detail);
       }
     };
     const watchdog = new Promise<never>((_resolve, reject) => {

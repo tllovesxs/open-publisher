@@ -1,2 +1,0 @@
-"""Alembic revisions."""
-

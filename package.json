@@ -6,7 +6,10 @@
   "license": "AGPL-3.0-only",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "bun": "1.3.14"
   },
   "scripts": {
     "dev": "pnpm --filter @open-publisher/desktop dev",
@@ -14,8 +17,8 @@
     "build": "pnpm -r --if-present build",
     "check": "pnpm -r --if-present check",
     "test": "pnpm -r --if-present test",
-    "python:install": "python -m pip install -e \".[dev]\"",
-    "python:check": "python -m ruff check .",
-    "python:test": "python -m pytest"
+    "runtime:build": "node scripts/build_pi_runtime.mjs",
+    "desktop:bundle:preflight": "pnpm --filter @open-publisher/desktop bundle:preflight",
+    "quality": "node scripts/quality_check.mjs"
   }
 }

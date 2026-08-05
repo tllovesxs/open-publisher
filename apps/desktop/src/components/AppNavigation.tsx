@@ -1,5 +1,6 @@
 import {
   BookOpenText,
+  Bell,
   Images,
   Moon,
   PenLine,
@@ -28,6 +29,7 @@ const navigation: Array<{
 }> = [
   { id: "create", label: "创作", icon: PenLine },
   { id: "articles", label: "文章", icon: BookOpenText },
+  { id: "announcements", label: "公告", icon: Bell },
   { id: "templates", label: "模板", icon: LayoutTemplate },
   { id: "media", label: "素材库", icon: Images },
   { id: "settings", label: "设置", icon: Settings },

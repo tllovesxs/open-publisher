@@ -6,7 +6,7 @@
 
 ## 先给结论
 
-Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenAI Agents SDK、CrewAI、CopilotKit、Firecrawl、Exa 等运行时。我们已经有 Tauri/Rust、Python/LangGraph、Tavily、Markdown/媒体/工作流事件模型，继续保持这一条主线。
+Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenAI Agents SDK、CrewAI、CopilotKit、Firecrawl、Exa 等运行时。我们已经有 Tauri/Rust、TypeScript/Pi Agent Core、Tavily、Markdown/媒体/工作流事件模型，继续保持这一条主线。
 
 最值得吸收的是四类模式：
 
@@ -24,7 +24,7 @@ Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenA
 | Project Graveyard | 扫描本地项目和 Git 历史，识别长期停滞的项目，解释项目为什么停止，并建议继续、归档或收尾。 | 输出的是“决策和下一步”而不是泛泛总结。与发文无直接关系，但它的诊断报告格式可参考。`不建议引入`。 |
 | Scope Creep Detector | 对照任务说明和 Git diff，判断当前改动是否超出目标，并给出保留、拆分或说明理由的建议。 | 对开源项目维护很实用，可用于我们自己的 PR/提交检查。`后续可选`，不属于产品功能。 |
 | Commit Archaeologist | 追溯某文件或代码块的引入提交、后续修改和共改文件，从 Git 线索还原当初设计意图。 | 是代码维护 Skill，不是业务 Agent。`不建议引入`。 |
-| Advisor Orchestrator Worker | 用“顾问给方向、编排者拆任务、工作者执行”的三级角色完成复杂编码任务。 | 展示了模型角色分工，但多一层模型不等于更可靠；Open Publisher 的工作流应由 LangGraph 负责。`只借鉴职责边界`。 |
+| Advisor Orchestrator Worker | 用“顾问给方向、编排者拆任务、工作者执行”的三级角色完成复杂编码任务。 | 展示了模型角色分工，但多一层模型不等于更可靠；Open Publisher 的调度应由产品 Harness 负责。`只借鉴职责边界`。 |
 | Self-Improving Agent Skills | 对一个 Skill 执行任务、评测结果、修改 Skill、重新评测，形成迭代闭环。 | 未来可用于验证用户自定义写作 Skill 是否真的改善文章质量。当前缺少稳定评测集，不能自动改生产提示词。`后续可选`。 |
 | Thinking Out Loud | 把 Agent 的计划、当前工具调用和阶段性结论显式呈现给用户。 | 很适合映射到我们已有的 workflow event：用户应看到“正在检索/写作/配图/插入”，而不是黑盒等待。`直接借鉴`。 |
 | Skill Evals | 定义样例输入、期望行为和安全检查，用自动化方式评估一个 Skill。 | 是用户可添加 Skill 的必要保障方向。先实现静态校验、权限声明和手工试运行，再谈自动优化。`后续可选`。 |
@@ -46,7 +46,7 @@ Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenA
 | AI Travel Agent | 根据目的地、预算、天数生成行程。 | 展示约束收集和结构化计划，对文章项目只可借鉴输入 schema。`不建议引入`。 |
 | Gemini Multimodal Agent | 联合图片、视频理解与网页搜索回答问题。 | 与“用户给素材图，让模型决定插入位置”直接相关。当前 Visual Agent 已覆盖基础能力，可参考其多模态上下文组织。`直接借鉴模式`。 |
 | Mixture of Agents | 多个模型分别回答同一问题，再由聚合模型选择或综合答案。 | 能提高某些问答质量，但会成倍增加成本、延迟并让事实责任不清。文章默认流程不采用。`不建议默认使用`。 |
-| OpenAI Research Agent | 先判断问题，再让研究角色收集资料，最后由编辑整合为带来源的答案。 | “研究结果是 Writer 的受控输入”很适合我们；保留 Tavily 与 LangGraph，不引入 OpenAI SDK。`直接借鉴结构`。 |
+| OpenAI Research Agent | 先判断问题，再让研究角色收集资料，最后由编辑整合为带来源的答案。 | “研究结果是 Writer 的受控输入”很适合我们；保留 Tavily 与 Pi Harness，不引入 OpenAI SDK。`直接借鉴结构`。 |
 | Web Scraping AI Agent | 用户描述要抽取的内容，Agent 访问网页并按目标抽取字段。 | 可作为 Tavily 搜索结果打不开或用户指定 URL 时的受控补充。必须限制域名、超时和下载大小。`后续可选`。 |
 | xAI Finance Agent | 结合实时市场数据回答股票和金融问题。 | 是外部实时数据工具封装示例，领域无关。`不建议引入`。 |
 
@@ -145,7 +145,7 @@ Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenA
 | Agentic RAG Math Agent | 检索数学资料、给答案并依反馈修正。 | 展示受限的反馈循环，文章审稿可借鉴“一次限定修订”。`参考循环边界`。 |
 | Agentic RAG with Reasoning | 显式展示检索与推理步骤。 | 可借鉴阶段可视化，但不要向终端用户暴露原始模型思维链。`参考事件展示`。 |
 | Typed Agentic RAG (PydanticAI) | 以结构化 schema 约束答案、引用和拒答，证据不足时不编造。 | 最适合未来品牌资料库与事实型文章：来源、引文、置信状态应是数据字段。`重点参考`。 |
-| AI Blog Search (LangGraph) | 对博客内容做 LangGraph 检索、改写问题和回答。 | 和当前 LangGraph 最接近；可发展为“历史文章与模板搜索”。`后续可选`。 |
+| AI Blog Search (LangGraph) | 对博客内容做 LangGraph 检索、改写问题和回答。 | 作为历史检索/改写案例有参考价值；运行时保持 Pi Harness，不为此引入 LangGraph。`后续可选`。 |
 | Autonomous RAG | 对 PDF 问答，内部判断是检索内部资料还是联网补充。 | 可参考路由策略；使用时必须提示用户哪些内容来自网络。`后续可选`。 |
 | ContextualAI RAG Agent | 调用托管 RAG 服务快速搭建有依据的问答。 | 供应商专用，不适合当前本地优先桌面端。`不建议引入`。 |
 | Corrective RAG | 给检索结果评分，质量不足就改写查询并联网回退。 | 当我们真的有本地知识库后很有用；仅有 Tavily 搜索时不应先造向量库。`后续可选`。 |
@@ -169,7 +169,7 @@ Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenA
 | Llama3 Stateful Chat | 让本地聊天在会话之间保留状态。 | 可参考本地会话/草稿恢复。`参考持久化`。 |
 | Personalized Memory App | 长期保存用户事实并在后续对话中调用。 | 对品牌口吻、禁用词、受众偏好有价值；必须让用户可删除。`后续可选`。 |
 | Local ChatGPT with Memory | 本地聊天加每用户记忆。 | 适合本地隐私思路，不是文章工作流。`不建议直接引入`。 |
-| Multi-LLM Shared Memory | 让多个模型读取同一份会话记忆。 | 对多个 Agent 共享文章状态有启发，但我们已有 LangGraph state，应避免另一套记忆。`仅参考状态一致性`。 |
+| Multi-LLM Shared Memory | 让多个模型读取同一份会话记忆。 | 对多个 Agent 共享文章状态有启发，但我们已有 Pi 会话和 Markdown 持久状态，应避免另一套记忆。`仅参考状态一致性`。 |
 | Chat with GitHub | 对仓库内容做 RAG 问答。 | 可作为“从 Git 更新自动组织文章资料”的资料源。`后续可选`。 |
 | Chat with Gmail | 对邮箱提问和检索。 | 涉及敏感邮件权限，不建议首期接入。`不建议近期引入`。 |
 | Chat with PDF | 对 PDF 做问答。 | 非常常见的资料导入方式，未来文章参考资料可支持。`后续可选`。 |
@@ -193,8 +193,8 @@ Open Publisher 不应该引入这个仓库所使用的 Agno、Google ADK、OpenA
 
 | 教程 | 覆盖内容 | 对当前项目的判断 |
 | --- | --- | --- |
-| Google ADK Crash Course | 基础 Agent、模型无关调用、结构化输出、内置/函数/第三方/MCP 工具、会话和持久记忆、生命周期回调、插件、串行/循环/并行多 Agent，以及 YAML 研究团队。 | 这些概念 LangGraph 都能实现；不应为了教程再引入 ADK。最值得看的是结构化输出、工具权限和并行的条件。 |
-| OpenAI Agents SDK Crash Course | Agent 基础、函数调用、结构化输出、上下文、guardrail、session、handoff、追踪、语音，以及并行执行和 Agent-as-tool。 | 能帮助理解 Agent 设计，但会绑定 OpenAI SDK。我们应该在 LangGraph 中实现同等的事件追踪、取消、超时、重试和结构化状态。 |
+| Google ADK Crash Course | 基础 Agent、模型无关调用、结构化输出、内置/函数/第三方/MCP 工具、会话和持久记忆、生命周期回调、插件、串行/循环/并行多 Agent，以及 YAML 研究团队。 | 这些概念由 Pi Agent Core 和产品 Harness 覆盖；不应为了教程再引入 ADK。最值得看的是结构化输出、工具权限和并行的条件。 |
+| OpenAI Agents SDK Crash Course | Agent 基础、函数调用、结构化输出、上下文、guardrail、session、handoff、追踪、语音，以及并行执行和 Agent-as-tool。 | 能帮助理解 Agent 设计，但会绑定 OpenAI SDK。我们应在 Pi Harness 中实现同等的事件追踪、取消、超时、重试和结构化状态。 |
 
 ## 对 Open Publisher 的落地顺序
 

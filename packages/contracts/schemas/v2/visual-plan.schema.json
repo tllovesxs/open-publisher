@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/visual-plan.schema.json",
+  "title": "VisualPlanV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "articleId", "baseRevisionId", "insertions", "createdAt"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "id": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "articleId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "baseRevisionId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "insertions": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "anchorText", "purpose", "source", "assetId", "prompt", "altText"],
+        "properties": {
+          "id": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+          "anchorText": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "source": { "enum": ["asset", "generate"] },
+          "assetId": { "oneOf": [{ "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" }, { "type": "null" }] },
+          "prompt": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 8000 }, { "type": "null" }] },
+          "altText": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    },
+    "createdAt": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" }
+  }
+}

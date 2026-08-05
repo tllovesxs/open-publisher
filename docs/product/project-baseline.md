@@ -6,12 +6,12 @@ _面向后续产品设计、Agent 实现、提示词迭代、平台适配、测�
 
 | 项目 | 内容 |
 | --- | --- |
-| 基线版本 | `0.2` |
+| 基线版本 | `0.3` |
 | 文档状态 | Normative / 规范性 |
 | 冻结日期 | 2026-08-04 |
 | 产品名称 | 中文“稿流”，代码与协议名暂保留 `Open Publisher` |
 | 当前产品阶段 | 开发版；部分能力已实现，但尚未达到可分发、生产可用 |
-| 适用范围 | 本文合入之后的产品、前端、Rust Host、Python Runtime、浏览器扩展、契约与测试 |
+| 适用范围 | 本文合入之后的产品、前端、Rust Host、TypeScript Pi Runtime、浏览器扩展、契约与测试 |
 | 变更规则 | 任何偏离本文不变量的改动必须先提交 ADR，并同步升级本文版本 |
 
 本文同时描述“当前事实”和“目标规范”，但二者不会混写。能力状态统一使用：
@@ -44,7 +44,7 @@ _面向后续产品设计、Agent 实现、提示词迭代、平台适配、测�
 2. **React 不持有平台 Cookie、密码或持久化明文密钥。** 密钥录入和使用必须停留在 Rust/系统秘密边界；现有明文回显属于必须消除的实现偏差。
 3. **Agent 只生成结构化候选产物。** Agent 不能直接覆盖正本、删除数据或调用发布适配器。
 4. **每次正文变更都产生新的 `ArticleRevision`。** 旧修订不可原地覆盖，撤销也是一次显式修订。
-5. **跨语言对象先定义版本化 JSON Schema。** React、Rust、Python、扩展和插件不得各自发明同名 DTO。
+5. **跨边界对象先定义版本化 JSON Schema。** React、Rust、TypeScript Runtime、扩展和插件不得各自发明同名 DTO。
 6. **每次运行绑定不可变快照。** 至少记录输入修订、模型配置引用、Prompt 版本、工具版本、策略和预算。
 7. **外部写入必须经过人工确认、Outbox、幂等键、Attempt 与 Receipt。** 不确定结果进入核验，不能盲目重试。
 8. **模型、网页、模板和文件内容均是不可信数据。** 其中出现的“忽略规则”“执行命令”不得升级为系统指令。
@@ -54,7 +54,7 @@ _面向后续产品设计、Agent 实现、提示词迭代、平台适配、测�
 
 本项目不采用“每个步骤一个会聊天的 Agent”的架构。默认写文不是
 `研究 Agent → 提纲 Agent → 写作 Agent → 去 AI Agent → 审核 Agent`
-的长链，而是一个 Article Agent 在 LangGraph 中按需调用工具、生成内容并接受确定性门禁。
+的长链，而是一个 Writer Agent 在 Pi 工具循环中按需调用工具、生成内容并接受确定性门禁。
 
 当前阶段明确不做：
 
@@ -151,7 +151,7 @@ P0/P1 固定保留五个一级页面。发布是文章生命周期中的动作�
 | 多平台草稿 | Experimental | WechatSync 桥可发现登录平台并同步草稿；仓库扩展有四个平台的 DOM 适配雏形 | 自有安全配对桥、逐平台认证、核验和真实 E2E |
 | 最终自动发布 | Retired | 不属于当前产品安全边界 | 如未来评估，必须另立 ADR 和平台级授权设计 |
 | 批量生文 | Retired | 后端存在遗留批次模型，界面已移除 | 不得重新暴露，除非单篇稳定后重新立项 |
-| 安装包 | Planned | 当前依赖源码检出与本地 Python 环境 | Sidecar 打包、签名、迁移、干净机器测试与三平台制品 |
+| 安装包 | Experimental | Pi Sidecar 已由 Bun 编译并作为 Tauri external binary 进入打包输入；安装包不依赖系统 Python | Sidecar 签名、干净机器验证与三平台制品 |
 
 ### 版本路线
 
@@ -341,7 +341,7 @@ Article Agent 支持三种项目资料入口：
 
 Tavily 和 GitHub 作为工具连接配置，不混入文本模型 Key。前端只显示掩码和“重新输入/删除”，不回显完整密钥。
 
-业务实体统一落到 Python SQLite 和 Artifact Store。React `localStorage` 只允许保存主题、窗口、面板宽度等 UI 偏好，以及尚未提交的短期输入；文章、模板、素材、会话、运行、模型配置和发布记录不得以 `localStorage` 或浏览器 IndexedDB 作为长期权威存储。
+业务实体统一落到 TypeScript Runtime 管理的 SQLite、Markdown ArticleStore 和 Artifact Store。React `localStorage` 只允许保存主题、窗口、面板宽度等 UI 偏好，以及尚未提交的短期输入；文章、模板、素材、会话、运行、模型配置和发布记录不得以 `localStorage` 或浏览器 IndexedDB 作为长期权威存储。
 
 ## 🧠 Agent 系统与提示词基线
 
@@ -375,7 +375,7 @@ Article Agent 采用“观察 → 决定是否使用工具 → 获取结果 → 
 - 需要更多资料时返回 `needs_input` 或带缺口的草稿；
 - 模型不能调用文件写入、Shell、发布、密钥或浏览器 Cookie 工具。
 
-LangGraph 负责状态、节点路由、检查点、中断和恢复；Harness 负责预算、权限、事件、取消、快照和 Artifact。两者职责不能混淆。
+Pi Agent Core 负责模型与工具循环、流式事件、取消、steer、会话和压缩；稿流 Runtime 负责预算、权限、持久事件、Markdown 检查点、修订、恢复和 Artifact。Pi 的内存状态不能代替稿流的持久业务状态。
 
 ### 通用运行信封
 
@@ -467,24 +467,23 @@ interface ArticlePatch {
 
 ### Prompt 管理规范
 
-目前部分生产 Prompt 硬编码在 Python 文件中，目标结构统一为：
+生产 Prompt 已迁移到 TypeScript Pi Runtime。写文的系统 Prompt 与创作 Prompt 以版本化
+Markdown 文件保存；受结构化工具契约约束的改文、模板和视觉说明暂与对应 TypeScript
+Service 共置。后续新增 Prompt 必须遵循同样的版本与评测规范：
 
 ```text
-services/agent-runtime/src/open_publisher_runtime/resources/prompts/
-  manifest.yaml
-  topic-intelligence/
+services/agent-runtime/
+  src/prompts/writer/
     system.v1.md
-  article/
-    system.v2.md
-    create.v2.md
-    rewrite.v1.md
-  template/
-    profile.v2.md
-  review/
-    semantic.v1.md
+    create.v1.md
+  src/agent/
+    rewrite-service.ts
+    pi-template-extraction-service.ts
+    visual-planning-service.ts
 ```
 
-`manifest.yaml` 为每个 Prompt 记录：
+当某个 Prompt 从 Service 内联说明提升为独立资源时，需增加 `manifest.yaml`，为每个
+Prompt 记录：
 
 ```yaml
 id: article.system
@@ -904,14 +903,14 @@ Visual Agent 完整执行仓库内置的 `baoyu-article-illustrator` 工作流�
 
 ## 🔄 工作流与运行时基线
 
-### 默认 LangGraph
+### 默认 Pi Writer 工具循环
 
 普通写文使用一个小而清晰的图，不把所有可选能力串成固定长链：
 
 ```mermaid
 flowchart TD
-    accTitle: 默认文章 LangGraph
-    accDescr: 图先构建写作上下文，再由 Article Agent 按需调用搜索、GitHub 或项目读取工具，保存正文后并行执行确定性审核和可选视觉任务。
+    accTitle: 默认 Pi Writer 工具循环
+    accDescr: Runtime 先构建写作上下文，再由 Writer Agent 按需调用搜索、GitHub 或项目读取工具，保存正文后执行确定性审核和可选视觉任务。
 
     start_node["接收 CreationBrief"] --> context_node["构建 FactLedger 与上下文"]
     context_node --> need_tool{"Article Agent 是否需要工具"}
@@ -972,12 +971,12 @@ AI 侧栏可以委派 `visual.illustrate.v1`，但委派形成新的子运行和
 ```mermaid
 sequenceDiagram
     accTitle: Article Agent 流式写作
-    accDescr: 模型 token 经 Python 转换为运行事件，Rust 代理给 React；前端平滑打字，Python 只在段落和最终完成时持久化。
+    accDescr: 模型 token 经 TypeScript Runtime 转换为运行事件，Rust 代理给 React；前端平滑打字，Runtime 只在检查点和最终完成时持久化。
 
     actor user as 用户
     participant ui as React
     participant rust_host as Rust Host
-    participant runtime as Python Runtime
+    participant runtime as TypeScript Pi Runtime
     participant provider as Model Provider
     participant store as SQLite / Artifact
 
@@ -1002,7 +1001,7 @@ sequenceDiagram
 
 实现规则：
 
-- Python 按供应商真实 delta 立即发 `output_delta`，不等待完整段落；
+- TypeScript Runtime 按供应商真实 delta 立即发 `output_delta`，不等待完整段落；
 - 前端把 delta 加入字符队列，以 `requestAnimationFrame` 或短节拍按 1–4 个字符渲染；
 - 队列积压时动态加速，不能逐段突然跳出，也不能为了效果拖慢已完成结果；
 - 后端不逐字写 SQLite，只在完整 Markdown 段落、节点完成和最终结果时持久化；
@@ -1087,7 +1086,7 @@ stateDiagram-v2
 
 1. UI 发送 `cancel(run_id, expected_generation)`；
 2. Runtime 原子设置取消令牌并记录 `run_cancel_requested`；
-3. 令牌向 LangGraph、Provider HTTP 流、搜索、GitHub、项目读取和图片任务传播；
+3. 取消信号通过 Pi Agent Core 向 Provider HTTP 流、搜索、GitHub、项目读取和图片任务传播；
 4. 节点停止产生新写入，已完成 Artifact 和段落检查点保留；
 5. 运行进入 `cancelled`，不是“生成失败”；
 6. UI 保留已进入编辑器的内容，并显示“已停止，可继续编辑或重试”；
@@ -1151,14 +1150,14 @@ RunSnapshot 至少包含：
 | --- | --- | --- | --- |
 | 桌面 UI | React 19 + TypeScript + Vite | 编辑器、流式状态、丰富交互和未来 Web 复用 | 密钥、文件系统和平台 Cookie |
 | 桌面 Host | Tauri v2 + Rust[^tauri] | 小体积壳、原生 IPC、进程与秘密边界 | Agent 决策和内容业务 |
-| Agent Runtime | Python 3.12/3.13 + FastAPI + Pydantic[^fastapi] | 模型、检索、图像与内容生态成熟 | 浏览器 UI 和系统凭据展示 |
-| 工作流 | LangGraph 1.x + 自研 Harness[^langgraph] | 图状态、条件路由、检查点、人机中断；Harness 补预算和权限 | 任意代码工作流 |
-| 持久化 | SQLite + SQLAlchemy + Alembic | 本地优先、事务、迁移和可移植 | 大文件字节本身 |
+| Agent Runtime | TypeScript + Hono + Bun Sidecar | 与桌面共享类型，便于打包为单一可执行文件 | 浏览器 UI 和系统凭据展示 |
+| Agent 核心 | Pi Agent Core + Pi AI[^pi-agent] | 模型/工具循环、流式、取消、会话和压缩 | 业务持久化、任意代码工作流 |
+| 持久化 | SQLite + Drizzle + Markdown ArticleStore | 本地优先、事务、迁移、可移植和外部编辑 | 大文件字节本身 |
 | Artifact | 本地内容寻址文件存储 | 图片/Prompt/研究产物去重与原子保存 | 业务查询 |
 | 桌面协议 | JSON Schema + Tauri command | 跨语言稳定、可验证 | 无版本对象 |
 | 浏览器助手 | Manifest V3 | 在用户已登录浏览器内填充平台草稿 | 导出 Cookie、绕过验证、最终发布 |
 
-Python 没有选错。React/TypeScript 负责产品界面，Rust 负责本地可信边界，Python 负责 Agent 生态，三者边界清晰时比把所有逻辑塞进一种语言更容易维护。后续 Web 版可以复用 React 页面与 Python 业务服务，但必须重新设计身份、租户、任务和云端秘密，不直接暴露桌面 Sidecar。
+Python 原型验证了产品边界，但 0.3 起不再作为最终 Runtime。React/TypeScript 负责产品界面，Rust 负责本地可信边界，TypeScript Sidecar 负责 Agent 和内容业务。后续 Web 版可以复用 React 页面、契约与 TypeScript 领域服务，但必须重新设计身份、租户、任务和云端秘密，不能直接暴露桌面 Sidecar。
 
 当前不引入 LiteLLM、One-API、Portkey 等网关。文本与图片分别使用 OpenAI-compatible Provider Adapter 足以满足单机产品；只有出现多租户、集中计费、跨 Provider 自动路由和高并发治理时再立项网关。
 
@@ -1167,7 +1166,7 @@ Python 没有选错。React/TypeScript 负责产品界面，Rust 负责本地可
 ```mermaid
 flowchart LR
     accTitle: 稿流进程和信任边界
-    accDescr: React 只能通过白名单 Tauri 命令访问 Rust；Rust 用随机本机端口和启动令牌监管 Python，Python 再访问模型、搜索、数据存储和受控发布桥。
+    accDescr: React 只能通过白名单 Tauri 命令访问 Rust；Rust 用随机本机端口和启动令牌监管 TypeScript Sidecar，Runtime 再访问模型、搜索、数据存储和受控发布桥。
 
     subgraph webview_boundary["不可信 WebView"]
         react_ui["React UI"]
@@ -1180,8 +1179,8 @@ flowchart LR
     end
 
     subgraph runtime_boundary["本机 Agent Runtime"]
-        fastapi["FastAPI Sidecar"]
-        harness["Harness + LangGraph"]
+        fastapi["Hono Sidecar"]
+        harness["Product Harness + Pi Agent"]
         database["SQLite"]
         artifact_store["Artifact Store"]
     end
@@ -1213,20 +1212,20 @@ flowchart LR
 | --- | --- | --- | --- |
 | 密钥回显 | 设置页显式“查看”可以让明文经过 WebView | 移除完整明文回显，只允许重新输入/删除；如需确认由原生安全控件完成 | P0 |
 | Sidecar 密钥 | 启动时通过子进程环境变量注入 | 短期、限定 Provider/操作的凭据租约 | P1 |
-| 业务持久化 | 部分模板、素材、对话仍在 localStorage/IndexedDB | Python SQLite + Artifact Store 为唯一权威 | P0 |
+| 业务持久化 | 部分模板、素材、对话仍在 localStorage/IndexedDB | Runtime SQLite + Markdown ArticleStore + Artifact Store 为唯一权威 | P0 |
 | 工作流事件 | 桌面高频轮询 `/runs/active`，delta 部分只在内存 | 单调游标 SSE、断线重连和有界回放 | P0 |
 | 取消 | 已有取消通道，部分终态仍表现为 failed | 传播到 HTTP/工具/图片并使用独立 cancelled/timed_out | P0 |
-| 数据迁移 | 启动会 `create_all()` 补表 | Alembic 受控升级、备份和回滚提示 | P0 |
-| 安装包 | Python 环境未随 Tauri 制品打包 | 锁定 Sidecar、签名、SBOM 和干净机器验证 | P1 |
+| 数据迁移 | 遗留 Runtime 启动会 `create_all()` 补表 | TypeScript migration runner 受控升级、备份和回滚提示 | P0 |
+| 安装包 | TypeScript Sidecar 尚未随 Tauri 制品打包 | Bun 编译、锁定 Sidecar、签名、SBOM 和干净机器验证 | P1 |
 | 浏览器发布 | WechatSync 可用，自有扩展无桌面认证投递桥 | 自有短期配对协议和逐平台认证 | P1 |
 
 ### 契约先行
 
-任何跨 React/Rust/Python/扩展的数据改动按以下顺序：
+任何跨 React/Rust/TypeScript Runtime/扩展的数据改动按以下顺序：
 
 1. 在 `packages/contracts/schemas/v1` 或新的主版本目录更新 JSON Schema；
 2. 增加合法、边界和非法 fixture；
-3. 更新 TypeScript、Pydantic 和 Rust DTO；
+3. 更新 TypeScript Runtime、React 和 Rust DTO；
 4. 增加跨语言兼容测试；
 5. 再改业务实现和 UI；
 6. 如不向后兼容，记录迁移与弃用窗口。
@@ -1522,7 +1521,7 @@ OpenPublisher/
 - 日志按大小和天数轮转；
 - 删除文章先进入恢复站，Artifact 只有在无引用且超过保留期后垃圾回收；
 - 备份包含业务 SQLite、Artifact 和版本清单，不导出秘密，除非用户使用独立加密备份流程；
-- 数据库升级必须通过 Alembic，升级前检测空间并创建可验证备份；
+- 数据库升级必须通过版本化 TypeScript migration runner，升级前检测空间并创建可验证备份；
 - `metadata.create_all()` 只允许测试和全新开发库，不代替生产迁移。
 
 ### 修订、自动保存和撤销
@@ -1574,7 +1573,7 @@ OpenPublisher/
 3. 业务数据库只保存 `secret_ref`；
 4. 设置页只显示 `configured: true` 和不可逆掩码；
 5. 用户可以测试、替换和删除，不能通过普通 WebView API 读回完整值；
-6. Rust 给 Python 发限定 Provider、操作和期限的租约；
+6. Rust 给 TypeScript Runtime 发限定 Provider、操作和期限的租约；
 7. 日志、错误、运行快照和诊断导出统一脱敏。
 
 当前 Windows DPAPI 数据库存储是可用基础，但“眼睛显示完整 Key”违反目标不变量，应在 P0 移除，不能在文档中把它包装成便利功能。
@@ -1696,7 +1695,7 @@ AIWriteX 根目录 `LICENSE` 为 Apache-2.0，但 `NOTICE` 同时加入了限制
 | Schema/纯函数 | 否 | JSON Schema、Markdown 解析、哈希、状态转换、平台转换、Prompt 渲染 |
 | 单元测试 | 否 | Agent 路由、工具权限、超时、Patch、素材匹配、模板变量 |
 | 组件测试 | 否 | 编辑器选区、打字机、停止按钮、失败卡、重试、设置和发布弹窗 |
-| 进程集成 | 否，使用 Mock | React → Rust → Python、事件流、SQLite、重启恢复、Outbox |
+| 进程集成 | 否，使用 Mock | React → Rust → TypeScript Runtime、事件流、SQLite、重启恢复、Outbox |
 | 真实模型 E2E | 是，显式 opt-in | 工具调用、长文完整性、项目宣传、模板、改文、生图 |
 | 真实平台 E2E | 是，显式 opt-in | 登录探测、草稿填充/保存、图片、回执和人工核验 |
 | 安装包 Smoke | 首次可离线 | 干净机器安装、Sidecar、迁移、升级、卸载和进程终止 |
@@ -1704,7 +1703,7 @@ AIWriteX 根目录 `LICENSE` 为 Apache-2.0，但 `NOTICE` 同时加入了限制
 默认质量命令：
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\quality_check.py
+pnpm quality
 ```
 
 任何默认测试不得读取开发者真实 Key、调用计费模型或写入内容平台。真实测试使用独立标记、独立环境变量和醒目确认；运行结果和日志必须脱敏。
@@ -1820,16 +1819,16 @@ P0 必须全部满足：
 对外发布可分发 Alpha 前还需：
 
 - Windows 安装包在干净机器完成安装、首次启动、写文、重启、升级和卸载 Smoke；
-- Python Sidecar 及依赖锁定、带校验值并随 Tauri 制品正确启动；
+- Bun 编译的 TypeScript Sidecar 及依赖锁定、带校验值并随 Tauri 制品正确启动；
 - 构建签名、SBOM、许可证清单、秘密扫描和依赖审计；
-- Alembic 升级、备份、空间不足和失败回滚测试；
+- TypeScript migration runner 升级、备份、空间不足和失败回滚测试；
 - CSDN、微信公众号、知乎和小红书分别通过最新真实编辑器 opt-in E2E；
 - 浏览器配对、过期、重放、来源绑定和扩展更新测试；
 - 模型限流、断网、长时间生图、休眠/唤醒与进程树回收；
 - 隐私政策、扩展权限说明、第三方归属和已知限制；
 - README 的每项“支持”都能链接到 Adapter 认证记录。
 
-安装包大小不是架构目标本身。目标是避免内置 Chromium、完整开发环境和无关模型依赖；Tauri 壳、前端资源、Rust Host 与裁剪后的 Python Sidecar 分别计量。只有可分发构建完成后才报告真实安装包与安装后占用，不继续用缺少 Sidecar 的 UI Shell 大小或理论估算宣传。
+安装包大小不是架构目标本身。目标是避免内置 Chromium、完整开发环境和无关模型依赖；Tauri 壳、前端资源、Rust Host 与 Bun 编译的 TypeScript Sidecar 分别计量。只有可分发构建完成后才报告真实安装包与安装后占用，不继续用缺少 Sidecar 的 UI Shell 大小或理论估算宣传。
 
 ### 实施计划
 
@@ -1880,7 +1879,7 @@ P0 必须全部满足：
 - 让 Agent 直接产生外部写入；
 - 增加最终自动发布；
 - 将秘密暴露给 WebView；
-- 改变 Python/Rust/React 信任边界；
+- 改变 TypeScript Runtime/Rust/React 信任边界；
 - 增加云端服务、多用户或同步；
 - 引入 LLM 网关、任意代码 Skill 或第三方 Agent Runtime；
 - 改变许可证或直接复用存在许可疑问的项目；
@@ -1923,8 +1922,8 @@ Prompt PR 必须附：
 本文的框架与接口判断以官方资料为准：
 
 - Tauri v2 提供桌面应用框架与前后端 IPC 边界。[^tauri]
-- LangGraph 用于持久状态、流式执行和人机中断，并允许确定性节点与 Agent 节点组合。[^langgraph]
-- FastAPI 是 Python Sidecar 的 HTTP/流式接口层。[^fastapi]
+- Pi Agent Core 提供模型工具循环、流式事件、取消、会话与压缩能力。[^pi-agent]
+- Hono 是 TypeScript Sidecar 的本机 HTTP/流式接口层。[^hono]
 - Tavily Search API 是当前通用网页搜索工具边界。[^tavily]
 - GitHub REST API 是公开仓库读取工具边界。[^github-rest]
 
@@ -1934,11 +1933,12 @@ Prompt PR 必须附：
 
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
+| `0.3` | 2026-08-04 | 采用 ADR 0003，以 TypeScript、Bun、Hono、Pi Agent Core 和 Markdown ArticleStore 取代最终 Python/FastAPI/LangGraph Runtime；保留 Rust 信任边界与确定性发布 |
 | `0.2` | 2026-08-04 | 首次统一产品范围、五页信息架构、四类 Agent/工作流、Prompt 草案、LangGraph/Harness、数据、安全、AIWriteX clean-room、测试和路线图 |
 
 [^tauri]: Tauri v2 官方文档，<https://v2.tauri.app/>
-[^langgraph]: LangGraph 官方概览，<https://docs.langchain.com/oss/python/langgraph/overview>
-[^fastapi]: FastAPI 官方文档，<https://fastapi.tiangolo.com/>
+[^pi-agent]: Pi Agent Core，<https://github.com/earendil-works/pi/tree/main/packages/agent>
+[^hono]: Hono 官方文档，<https://hono.dev/>
 [^tavily]: Tavily Search API 官方文档，<https://docs.tavily.com/documentation/api-reference/endpoint/search>
 [^github-rest]: GitHub REST API 官方文档，<https://docs.github.com/en/rest/repos>
 [^aiwritex-repo]: AIWriteX GitHub 仓库与本次审计修订，<https://github.com/iniwap/AIWriteX/tree/9688554b3bc1db82afe2080dda9a1b14716b16c5>

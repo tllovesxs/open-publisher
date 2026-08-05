@@ -10,26 +10,17 @@ describe("desktopBridge browser preview boundary", () => {
   });
 
   it("does not simulate writes or Agent execution outside the desktop host", async () => {
-    const snapshot = await desktopBridge.runtimeSnapshot();
+    const snapshot = await desktopBridge.piRuntimeSnapshot();
     expect(snapshot).toMatchObject({
       state: "standby",
       bridgeMode: "interface_only",
     });
-    expect(snapshot.detail).toContain("浏览器预览不能调用本地 Agent");
+    expect(snapshot.detail).toContain("浏览器预览不能调用 Pi Agent Runtime");
     await expect(
       desktopBridge.saveDraft({
         articleId: "article-1",
         baseRevision: null,
         markdown: "# draft",
-      }),
-    ).rejects.toThrow(/桌面应用/);
-    await expect(
-      desktopBridge.runWorkflow({
-        articleId: "article-1",
-        revisionId: "revision-1",
-        topic: "Local-first",
-        disabledOptionalNodeIds: [],
-        agentInstructions: [],
       }),
     ).rejects.toThrow(/桌面应用/);
     await expect(
@@ -44,7 +35,7 @@ describe("desktopBridge browser preview boundary", () => {
 
   it("keeps the test-only mock on the narrow Rust-shaped contract", async () => {
     setDesktopBridgeForTests(testOnlyMockDesktopBridge);
-    const snapshot = await desktopBridge.runtimeSnapshot();
+    const snapshot = await desktopBridge.piRuntimeSnapshot();
     expect(snapshot.bridgeMode).toBe("interface_only");
     expect(snapshot).not.toHaveProperty("endpoint");
     expect(snapshot).not.toHaveProperty("apiKey");
@@ -65,33 +56,9 @@ describe("desktopBridge browser preview boundary", () => {
       revisionNumber: 1,
     });
 
-    const workflow = await desktopBridge.runWorkflow({
-      articleId: "article-1",
-      revisionId: receipt.revisionId,
-      topic: "Local-first",
-      disabledOptionalNodeIds: ["research", "natural-style"],
-      agentInstructions: [
-        {
-          id: "writer",
-          name: "写作 Agent",
-          role: "主笔",
-          nodeId: "draft",
-          prompt: "使用清晰、可验证的中文表达。",
-          skills: [],
-        },
-      ],
-    });
-    expect(workflow.status).toBe("completed");
-    expect(workflow.artifacts).toHaveLength(5);
-    expect(workflow.outputRevisionId).not.toBe(receipt.revisionId);
-    expect(workflow.outputMarkdown).toContain("# draft");
-    expect(workflow).not.toHaveProperty("endpoint");
-    expect(workflow).not.toHaveProperty("token");
-    expect(workflow).not.toHaveProperty("contentPackage");
-
     const draftPlan = await desktopBridge.createPublishPlan({
       articleId: "article-1",
-      revisionId: workflow.outputRevisionId,
+      revisionId: receipt.revisionId,
       platforms: ["wechat", "csdn"],
     });
     expect(draftPlan.status).toBe("draft");
@@ -158,29 +125,18 @@ describe("desktopBridge browser preview boundary", () => {
     expect(template.markdown).not.toContain("原始文章");
     expect(template).not.toHaveProperty("sourceMarkdown");
 
-    expect(await desktopBridge.listConnectionProfiles()).toEqual([]);
-    const profile = await desktopBridge.createConnectionProfile({
-      name: "Deterministic mock",
-      provider: "mock",
-      baseUrl: null,
-      secretEnvVar: null,
-      defaultTextModel: "mock-text",
-      defaultImageModel: "mock-image",
-      timeoutSeconds: 30,
-    });
-    expect(profile.secretScheme).toBe("mock");
-    expect(profile).not.toHaveProperty("secretRef");
-    expect(profile).not.toHaveProperty("secretEnvVar");
-    expect(profile).not.toHaveProperty("apiKey");
-    expect(profile).not.toHaveProperty("endpoint");
-    expect(profile).not.toHaveProperty("token");
-    expect(await desktopBridge.listConnectionProfiles()).toEqual([profile]);
-
     const configuration = await desktopBridge.configureModel({
       name: "Session model",
+      profileId: "session-model",
       baseUrl: "https://example.com/v1",
+      textProtocol: "openai-completions",
       textApiKey: "test-only-secret",
       textModel: "test-text-model",
+      textSupportsVision: false,
+      textReasoning: false,
+      textThinkingLevel: "off",
+      textContextWindow: 128000,
+      textMaxTokens: 16384,
       imageBaseUrl: null,
       imageModel: null,
       imageApiKey: "",

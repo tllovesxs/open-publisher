@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/review-report.schema.json",
+  "title": "ReviewReportV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "articleId", "revisionId", "verdict", "findings", "createdAt"],
+  "properties": {
+    "schemaVersion": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/SchemaVersion" },
+    "id": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "articleId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "revisionId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+    "verdict": { "enum": ["pass", "needs_changes", "blocked"] },
+    "findings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "severity", "message", "evidence"],
+        "properties": {
+          "code": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+          "severity": { "enum": ["info", "warning", "error", "blocking"] },
+          "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "evidence": { "type": "string", "maxLength": 4000 }
+        }
+      }
+    },
+    "createdAt": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Timestamp" }
+  }
+}

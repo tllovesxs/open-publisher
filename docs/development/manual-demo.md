@@ -11,8 +11,8 @@ From the repository root in PowerShell:
 .\scripts\bootstrap.ps1
 ```
 
-The script installs workspace dependencies and creates the development virtual environment. The
-first run needs network access for packages; ordinary demo runs do not.
+The script installs workspace dependencies. The first run needs network access for packages;
+ordinary demo runs do not.
 
 ## Desktop demo
 
@@ -22,7 +22,7 @@ Run the Tauri application:
 pnpm dev
 ```
 
-In development, Rust starts the Python runtime on a random loopback port with a per-launch bearer
+In development, Rust starts the Pi runtime on a random loopback port with a per-launch bearer
 token. Neither value is returned to the WebView. Use the top-bar **运行工作流** action to run the
 deterministic article workflow. Rust resolves the desktop article to its durable backend revision,
 selects the current workflow, starts a run, and returns the output Markdown plus a bounded Artifact
@@ -50,7 +50,7 @@ For UI-only work, run:
 pnpm dev:web
 ```
 
-The browser build deliberately uses the interface-only bridge; it cannot reach the Python API.
+The browser build deliberately uses the interface-only bridge; it cannot reach the Pi API.
 
 ## Sidecar-only demo
 
@@ -58,29 +58,22 @@ The runtime can also be started directly for backend development:
 
 ```powershell
 $env:OPEN_PUBLISHER_API_TOKEN = "replace-with-a-long-random-development-token"
-.\.venv\Scripts\open-publisher-agent-runtime.exe
+bun .\services\agent-runtime\src\main.ts
 ```
 
 Every request, including `/health`, requires `Authorization: Bearer <token>`. This prevents an
 unrelated local process from probing or driving the Sidecar.
 
-To turn a `content_package` object returned by the demo/export API into a directory for Wandao,
-save that object as UTF-8 JSON and run:
-
-```powershell
-.\.venv\Scripts\open-publisher-content-package.exe materialize .\package.json .\content-package
-.\.venv\Scripts\open-publisher-content-package.exe verify .\content-package
-```
-
-The destination must not already exist. Materialization validates every path, Base64 payload, size,
-and hash before creating the final directory.
+ContentPackage materialization is performed by the Rust desktop boundary. The destination must not
+already exist; materialization validates every path, Base64 payload, size and hash before creating
+the final directory.
 
 ## Verify
 
 Run every available basic check:
 
 ```powershell
-.\.venv\Scripts\python .\scripts\quality_check.py
+pnpm quality
 ```
 
 Live WeChat, CSDN, and Toutiao tests are intentionally excluded. See
@@ -88,17 +81,15 @@ Live WeChat, CSDN, and Toutiao tests are intentionally excluded. See
 
 ## Explicit real-model E2E
 
-The real integration command calls SiliconFlow for text and one generated image, then exercises
-the same local Harness, approval binding, platform variants, idempotent outbox, dry-run receipts,
-SQLite reopen, and ContentPackage materialize/verify path. It never writes to a content platform.
-The API key is accepted only through the current process environment and is not included in the
-result report:
+The Pi Runtime's opt-in real integration suite calls a configured provider for text and one image,
+then exercises the same local Harness, approval binding, platform variants, idempotent outbox,
+SQLite reopen, and ContentPackage path. It never writes to a content platform. The API key is
+accepted only through the current process environment and is not included in the result report:
 
 ```powershell
-$env:OPEN_PUBLISHER_SILICONFLOW_API_KEY = "<temporary key>"
-.\services\agent-runtime\.venv\Scripts\open-publisher-real-e2e.exe `
-  --confirm-external-model-calls
-Remove-Item Env:OPEN_PUBLISHER_SILICONFLOW_API_KEY
+$env:OPEN_PUBLISHER_REAL_MODEL_KEY = "<temporary key>"
+pnpm --filter @open-publisher/agent-runtime test:real
+Remove-Item Env:OPEN_PUBLISHER_REAL_MODEL_KEY
 ```
 
 Outputs are written under `.local/real-e2e/` by default. Each run contains an isolated SQLite

@@ -1,36 +1,29 @@
 # Desktop release packaging boundary
 
-Open Publisher v0.1 P0 supports the Tauri desktop application from a clean development checkout.
-It does **not** produce a self-contained or distributable installer.
+Open Publisher packages a Tauri desktop application with a target-specific Bun-compiled Pi runtime
+sidecar. It does not require a separately installed Python interpreter.
 
-## Why release bundles are blocked
+## Sidecar packaging boundary
 
-The Rust supervisor currently launches the Python module from `services/agent-runtime` and resolves
-either a development virtual environment, `OPEN_PUBLISHER_PYTHON`, or `python` on `PATH`. Tauri does
-not bundle the Python interpreter, runtime dependencies, or service source. A normal `tauri build`
-can therefore produce a small UI-shell installer that works on the build checkout but cannot start
-the Sidecar on another machine.
+`beforeBuildCommand` builds `services/agent-runtime/src/main.ts` with Bun and stages the resulting
+target-specific `open-publisher-agent-runtime` executable as a Tauri `externalBin`. Rust launches
+that executable directly, so a release artifact contains the runtime and its locked dependency
+graph rather than resolving a source checkout or a system runtime.
 
-`beforeBuildCommand` runs `scripts/check_desktop_bundle.mjs` and fails before release compilation so
-this incomplete artifact is not mistaken for an installable product.
+`scripts/check_desktop_bundle.mjs` verifies that the staged sidecar exists, is plausibly complete,
+matches the host target and is listed in `bundle.externalBin`. It fails before release compilation
+when those invariants are not met.
 
-For local bundle-layout inspection only, a developer can acknowledge the limitation explicitly:
-
-```powershell
-$env:OPEN_PUBLISHER_ALLOW_DEV_SHELL_BUNDLE = "1"
-pnpm --filter @open-publisher/desktop tauri:build -- --bundles nsis
-Remove-Item Env:OPEN_PUBLISHER_ALLOW_DEV_SHELL_BUNDLE
-```
-
-The result is an unsigned development shell and must not be distributed.
+Build on the target operating system. Cross-compiling the Pi sidecar is deliberately rejected until
+the dependency and signing process for each target is reviewed.
 
 ## Release exit criteria
 
-A future installer may remove the guard only after it has:
+A distributable installer requires all of the following:
 
-- built a target-specific, versioned Python Sidecar artifact with locked dependencies;
-- declared that artifact as a Tauri external binary or reviewed bundle resource;
-- resolved the packaged executable at runtime without a source checkout or system Python;
+- built a target-specific, versioned Pi Sidecar artifact with locked dependencies;
+- declared that artifact as a Tauri external binary;
+- resolved the packaged executable at runtime without a source checkout or system runtime;
 - passed a post-install Sidecar health and deterministic workflow smoke test on a clean machine;
 - verified child-process termination, upgrade/uninstall behavior, signing, and artifact provenance.
 

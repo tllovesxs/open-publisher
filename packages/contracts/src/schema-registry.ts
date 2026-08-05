@@ -20,5 +20,20 @@ export const SCHEMA_IDS = {
     "https://schemas.openpublisher.dev/v1/template-extraction.schema.json",
 } as const;
 
+export const SCHEMA_IDS_V2 = {
+  RuntimeProtocol: "https://schemas.openpublisher.dev/v2/runtime-protocol.schema.json",
+  AgentRun: "https://schemas.openpublisher.dev/v2/agent-run.schema.json",
+  AgentEvent: "https://schemas.openpublisher.dev/v2/agent-event.schema.json",
+  ArticleFile: "https://schemas.openpublisher.dev/v2/article-file.schema.json",
+  ArticleWrite: "https://schemas.openpublisher.dev/v2/article-write.schema.json",
+  ArticlePatch: "https://schemas.openpublisher.dev/v2/article-patch.schema.json",
+  VisualPlan: "https://schemas.openpublisher.dev/v2/visual-plan.schema.json",
+  ReviewReport: "https://schemas.openpublisher.dev/v2/review-report.schema.json",
+  ToolExecution: "https://schemas.openpublisher.dev/v2/tool-execution.schema.json",
+} as const;
+
+export type ContractSchemaNameV2 = keyof typeof SCHEMA_IDS_V2;
+export type ContractSchemaIdV2 = (typeof SCHEMA_IDS_V2)[ContractSchemaNameV2];
+
 export type ContractSchemaName = keyof typeof SCHEMA_IDS;
 export type ContractSchemaId = (typeof SCHEMA_IDS)[ContractSchemaName];
