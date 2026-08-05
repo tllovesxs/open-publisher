@@ -127,8 +127,19 @@ const MODEL_PLAN_PARAMETERS = Type.Object({
   }), { maxItems: MAX_PLACEMENTS }),
 });
 
+/**
+ * Keep the cross-language visual contract in Unicode scalar characters.
+ * JavaScript's String#slice counts UTF-16 code units, which can split an
+ * emoji and does not line up with Rust's `str::chars().count()` boundary.
+ */
+const truncateCharacters = (value: string, maximum: number): string =>
+  Array.from(value).slice(0, maximum).join("");
+
 const clean = (value: string, maximum: number): string =>
-  value.replace(/\s+/g, " ").trim().slice(0, maximum);
+  truncateCharacters(value.replace(/\s+/g, " ").trim(), maximum);
+
+const truncatePrompt = (value: string, maximum: number): string =>
+  truncateCharacters(value, maximum);
 
 const hashMarkdown = (markdown: string): `sha256:${string}` =>
   `sha256:${createHash("sha256").update(markdown, "utf8").digest("hex")}`;
@@ -265,7 +276,7 @@ const promptFor = (
   filename: string,
 ): string => {
   const labelAnchor = placement.anchorExcerpt ?? placement.afterHeading ?? "文章核心观点";
-  return [
+  return truncatePrompt([
     "---",
     `illustration_id: ${placement.id}`,
     `type: ${placement.visualType}`,
@@ -285,7 +296,7 @@ const promptFor = (
     "ASPECT: 3:2 landscape.",
     "",
     "Do not include brand marks, watermarks, portraits, fabricated metrics, decorative text, or claims not supported by the article.",
-  ].join("\n");
+  ].join("\n"), 12_000);
 };
 
 const targetCountFor = (markdown: string, request: VisualCompositionRequest): number => {
@@ -349,22 +360,24 @@ const normalizeModelPlacements = (
 ): readonly ModelPlacement[] => {
   const expected = targetCountFor(markdown, request);
   if (!candidate || candidate.length !== expected) return fallbackModelPlacements(markdown, request);
-  return candidate.map((placement) => ({
+  const normalized = candidate.map((placement) => ({
     position: clean(placement.position, 800),
     purpose: clean(placement.purpose, 900),
     visualContent: clean(placement.visualContent, 1_500),
     visualType: isVisualType(placement.visualType) ? placement.visualType : request.preferredType,
-    source: placement.source === "existing_asset" ? "existing_asset" : "generate",
+    source: placement.source === "existing_asset" ? "existing_asset" as const : "generate" as const,
     assetId: placement.assetId === null ? null : clean(placement.assetId, 100) || null,
     selectionReason: clean(placement.selectionReason, 900),
     alt: clean(placement.alt, 180),
-  })).every((placement) => placement.position && placement.purpose && placement.visualContent && placement.selectionReason && placement.alt)
-    ? candidate.map((placement) => ({
-      position: clean(placement.position, 800), purpose: clean(placement.purpose, 900), visualContent: clean(placement.visualContent, 1_500),
-      visualType: isVisualType(placement.visualType) ? placement.visualType : request.preferredType,
-      source: placement.source === "existing_asset" ? "existing_asset" : "generate", assetId: placement.assetId === null ? null : clean(placement.assetId, 100) || null,
-      selectionReason: clean(placement.selectionReason, 900), alt: clean(placement.alt, 180),
-    }))
+  }));
+  return normalized.every((placement) =>
+    placement.position
+    && placement.purpose
+    && placement.visualContent
+    && placement.selectionReason
+    && placement.alt,
+  )
+    ? normalized
     : fallbackModelPlacements(markdown, request);
 };
 
@@ -491,9 +504,11 @@ export class VisualPlanningService {
         source: selected ? "existing_asset" as const : "generate" as const,
         assetId: selected?.assetId ?? null,
         candidates,
-        selectionReason: selected
+        // The public desktop bridge enforces the same 900-character contract
+        // as the model tool. Keep the explanatory suffix inside that boundary.
+        selectionReason: clean(selected
           ? `${item.selectionReason} 已选素材与视觉目标匹配度为 ${Math.round(selected.score / 10)}%。`
-          : `${item.selectionReason} 没有达到阈值且未重复使用的素材，准备生成新图片。`,
+          : `${item.selectionReason} 没有达到阈值且未重复使用的素材，准备生成新图片。`, 900),
         alt: item.alt,
       };
       const filename = `${String(ordinal).padStart(2, "0")}-${item.visualType}-${slug(block?.heading ?? item.alt, `concept-${ordinal}`)}.png`;

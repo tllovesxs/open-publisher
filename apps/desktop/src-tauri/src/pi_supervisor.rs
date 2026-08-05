@@ -23,7 +23,8 @@ use crate::supervisor::{
     PublishReceiptSummary, PublishVariantSummary, ResolveUnknownPublishJobRequest,
     RewriteArticleRequest, RewriteArticleSummary, RewriteStreamEvent, RuntimeState,
     SaveDraftReceipt, SaveDraftRequest, StoredArticleSummary, TemplateExtractionSummary,
-    VisualCompositionPlanSummary, VisualMaterialCandidateSummary, VisualPlacementSummary,
+    VisualCompositionPlanSummary, VisualCompositionRequest, VisualMaterialCandidateSummary,
+    VisualPlacementSummary,
 };
 
 const RUNTIME_EXECUTABLE_NAME: &str = if cfg!(windows) {
@@ -287,12 +288,16 @@ struct PiTemplateExtractionResponse {
 
 /// Pi's internal visual-plan response. The public desktop DTO deliberately
 /// remains `ComposeVisualSummary` until the React bridge is migrated.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PiVisualPlanningResponse {
+    #[serde(default)]
     plan: PiVisualCompositionPlan,
+    #[serde(default)]
     provider: String,
+    #[serde(default)]
     model: String,
+    #[serde(default)]
     mocked: bool,
     #[serde(default)]
     provenance: Option<String>,
@@ -300,40 +305,62 @@ struct PiVisualPlanningResponse {
     fallback_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PiVisualCompositionPlan {
+    #[serde(default)]
     source_revision_hash: String,
+    #[serde(default)]
     target_count: u8,
+    #[serde(default)]
     settings: HashMap<String, String>,
+    #[serde(default)]
     needs_confirmation: bool,
+    #[serde(default)]
     placements: Vec<PiVisualPlacement>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PiVisualPlacement {
+    #[serde(default)]
     id: String,
+    #[serde(default)]
     block_id: Option<String>,
+    #[serde(default)]
     anchor_excerpt: Option<String>,
+    #[serde(default)]
     after_heading: Option<String>,
+    #[serde(default)]
     purpose: String,
+    #[serde(default)]
     visual_content: String,
+    #[serde(default)]
     visual_type: String,
+    #[serde(default)]
     source: String,
+    #[serde(default)]
     asset_id: Option<String>,
+    #[serde(default)]
     candidates: Vec<PiVisualMaterialCandidate>,
+    #[serde(default)]
     selection_reason: String,
+    #[serde(default)]
     alt: String,
+    #[serde(default)]
     generation_prompt: String,
+    #[serde(default)]
     prompt_file: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PiVisualMaterialCandidate {
+    #[serde(default)]
     asset_id: String,
+    #[serde(default)]
     score: u16,
+    #[serde(default)]
     description: String,
 }
 
@@ -749,14 +776,59 @@ impl PiRuntimeSupervisor {
             "visualComposition": visual_composition_body(&request.visual_composition),
             "modelProfile": model_profile,
         });
-        let response: PiVisualPlanningResponse = self.post_json_with_timeout(
+        let response: PiVisualPlanningResponse = match self.post_json_with_timeout(
             &connection,
             "/v2/visual/plan",
             &body,
             timeout,
             "配图规划",
-        )?;
-        public_visual_plan(response, &article.content_hash)
+        ) {
+            Ok(response) => response,
+            Err(_) => {
+                return Ok(deterministic_visual_summary(
+                    &article.markdown,
+                    &article.content_hash,
+                    &request.visual_composition,
+                ));
+            }
+        };
+        match public_visual_plan(response, &article.content_hash) {
+            Ok(summary) => Ok(summary),
+            Err(_primary_error) => {
+                // A model-backed plan is advisory. Its response must never
+                // prevent the article from receiving images when the runtime
+                // can still build its deterministic, article-anchored plan.
+                // Remove the operation id too: the completed first request may
+                // still be unwinding in the runtime's cancellation registry.
+                let mut fallback_body = body;
+                if let Some(object) = fallback_body.as_object_mut() {
+                    object.remove("modelProfile");
+                    object.remove("operationId");
+                }
+                let fallback = self.post_json_with_timeout(
+                    &connection,
+                    "/v2/visual/plan",
+                    &fallback_body,
+                    timeout,
+                    "配图规划降级",
+                );
+                match fallback {
+                    Ok(fallback) => match public_visual_plan(fallback, &article.content_hash) {
+                        Ok(summary) => Ok(summary),
+                        Err(_) => Ok(deterministic_visual_summary(
+                            &article.markdown,
+                            &article.content_hash,
+                            &request.visual_composition,
+                        )),
+                    },
+                    Err(_) => Ok(deterministic_visual_summary(
+                        &article.markdown,
+                        &article.content_hash,
+                        &request.visual_composition,
+                    )),
+                }
+            }
+        }
     }
 
     pub fn run(&self, run_id: &str) -> Result<PiAgentRun, String> {
@@ -1908,6 +1980,155 @@ fn visual_composition_body(request: &crate::supervisor::VisualCompositionRequest
     })
 }
 
+fn deterministic_visual_summary(
+    markdown: &str,
+    source_revision_hash: &str,
+    composition: &VisualCompositionRequest,
+) -> ComposeVisualSummary {
+    let character_count = markdown
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let target_count = match composition.mode.as_str() {
+        "fixed" => composition.target_count.min(6),
+        "auto" if character_count <= 900 => 1,
+        "auto" if character_count <= 2_000 => 2,
+        "auto" if character_count <= 3_800 => 3,
+        "auto" => 4,
+        _ => 0,
+    };
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    let mut heading = "文章核心观点".to_owned();
+    let mut paragraph = String::new();
+    let flush = |blocks: &mut Vec<(String, String)>, heading: &str, paragraph: &mut String| {
+        let excerpt = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !excerpt.trim().is_empty() {
+            blocks.push((heading.to_owned(), take_visual_chars(&excerpt, 220)));
+        }
+        paragraph.clear();
+    };
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("#") {
+            flush(&mut blocks, &heading, &mut paragraph);
+            let value = value.trim_start_matches('#').trim();
+            if !value.is_empty() {
+                heading = take_visual_chars(value, 180);
+            }
+        } else if trimmed.is_empty() {
+            flush(&mut blocks, &heading, &mut paragraph);
+        } else if !trimmed.starts_with("```")
+            && !trimmed.starts_with("- ")
+            && !trimmed.starts_with("* ")
+            && !trimmed.starts_with("> ")
+        {
+            if !paragraph.is_empty() {
+                paragraph.push(' ');
+            }
+            paragraph.push_str(trimmed);
+        }
+    }
+    flush(&mut blocks, &heading, &mut paragraph);
+    if blocks.is_empty() {
+        blocks.push((
+            take_visual_chars(&title_from_markdown(markdown, "文章核心观点"), 180),
+            "文章核心观点".to_owned(),
+        ));
+    }
+
+    let settings = HashMap::from([
+        ("type".to_owned(), composition.preferred_type.clone()),
+        ("density".to_owned(), composition.density.clone()),
+        ("style".to_owned(), composition.style.clone()),
+        (
+            "palette".to_owned(),
+            composition
+                .palette
+                .clone()
+                .unwrap_or_else(|| "default".to_owned()),
+        ),
+        ("asset_scope".to_owned(), composition.asset_scope.clone()),
+        (
+            "generation_batch_size".to_owned(),
+            composition.generation_batch_size.to_string(),
+        ),
+        (
+            "material_match_threshold".to_owned(),
+            composition.material_match_threshold.to_string(),
+        ),
+        (
+            "image_backend".to_owned(),
+            composition.preferred_image_backend.clone(),
+        ),
+    ]);
+    let mut placements = Vec::with_capacity(usize::from(target_count));
+    for index in 0..usize::from(target_count) {
+        let (section, excerpt) = blocks[index % blocks.len()].clone();
+        let visual_content = format!(
+            "围绕“{}”解释关键概念、关系或执行步骤的{}配图",
+            take_visual_chars(&excerpt, 160),
+            composition.preferred_type
+        );
+        let alt = take_visual_chars(&visual_content, 180);
+        let asset = composition
+            .assets
+            .get(index)
+            .filter(|asset| composition.asset_scope != "none" && !asset.id.trim().is_empty());
+        let source = if asset.is_some() {
+            "existing_asset"
+        } else {
+            "generate"
+        };
+        let asset_id = asset.map(|item| item.id.clone());
+        let selection_reason = if asset.is_some() {
+            "本地保底规划按用户选择顺序安排素材；可在确认步骤中调整。".to_owned()
+        } else {
+            "本地保底规划未找到可用素材，将根据文章锚点生成图片。".to_owned()
+        };
+        let id = format!("illustration-{}", index + 1);
+        let visual_type = composition.preferred_type.clone();
+        let generation_prompt =
+            fallback_generation_prompt(&id, &visual_type, &alt, &visual_content);
+        placements.push(VisualPlacementSummary {
+            id,
+            block_id: Some(format!("block-{}", index + 1)),
+            anchor_excerpt: Some(excerpt),
+            after_heading: Some(section),
+            purpose: "帮助读者在对应段落后快速理解核心关系。".to_owned(),
+            visual_content,
+            visual_type,
+            source: source.to_owned(),
+            asset_id,
+            candidates: Vec::new(),
+            selection_reason,
+            alt,
+            generation_prompt: Some(generation_prompt),
+            prompt_file: Some(format!("prompts/{:02}-fallback.md", index + 1)),
+        });
+    }
+    ComposeVisualSummary {
+        plan: VisualCompositionPlanSummary {
+            source_revision_hash: source_revision_hash.to_owned(),
+            target_count,
+            settings,
+            needs_confirmation: !composition.skip_confirmation,
+            placements,
+        },
+        provider: "local-deterministic".to_owned(),
+        model: "article-illustrator-rules-v1".to_owned(),
+        mocked: false,
+    }
+}
+
+fn take_visual_chars(value: &str, maximum: usize) -> String {
+    value
+        .chars()
+        .take(maximum)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 fn public_visual_plan(
     response: PiVisualPlanningResponse,
     expected_revision_hash: &str,
@@ -1920,36 +2141,50 @@ fn public_visual_plan(
         provenance,
         fallback_reason,
     } = response;
-    if mocked
-        || provider.trim().is_empty()
-        || provider.len() > 100
-        || provider.chars().any(char::is_control)
-        || model.trim().is_empty()
-        || model.len() > 300
-        || model.chars().any(char::is_control)
-        || provenance
-            .as_deref()
-            .is_some_and(|value| !matches!(value, "pi" | "local_deterministic"))
-        || fallback_reason
-            .as_deref()
-            .is_some_and(|value| value.len() > 2_000 || value.chars().any(char::is_control))
-    {
-        return Err("Pi Runtime 返回了无效的视觉规划结果。".to_owned());
+    if mocked {
+        return Err("Pi Runtime 视觉规划字段 mocked 必须为 false。".to_owned());
     }
-    if plan.source_revision_hash != expected_revision_hash
-        || !valid_sha256(&plan.source_revision_hash)
-        || plan.target_count > 6
-        || plan.placements.len() != usize::from(plan.target_count)
-        || plan.settings.len() > 16
-        || plan.settings.iter().any(|(key, value)| {
-            key.is_empty()
-                || key.len() > 100
-                || key.chars().any(char::is_control)
-                || value.len() > 200
-                || value.chars().any(char::is_control)
-        })
+    if !required_visual_text(&provider, 100, false) {
+        return Err("Pi Runtime 视觉规划字段 provider 无效。".to_owned());
+    }
+    if !required_visual_text(&model, 300, false) {
+        return Err("Pi Runtime 视觉规划字段 model 无效。".to_owned());
+    }
+    if provenance
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "pi" | "local_deterministic"))
     {
-        return Err("Pi Runtime 返回了不匹配当前文章的视觉规划。".to_owned());
+        return Err("Pi Runtime 视觉规划字段 provenance 无效。".to_owned());
+    }
+    if fallback_reason
+        .as_deref()
+        .is_some_and(|value| value.chars().count() > 2_000 || value.chars().any(char::is_control))
+    {
+        return Err("Pi Runtime 视觉规划字段 fallbackReason 无效。".to_owned());
+    }
+    if plan.source_revision_hash != expected_revision_hash {
+        return Err("Pi Runtime 视觉规划的 sourceRevisionHash 与当前文章不一致。".to_owned());
+    }
+    if !valid_sha256(&plan.source_revision_hash) {
+        return Err("Pi Runtime 视觉规划字段 sourceRevisionHash 无效。".to_owned());
+    }
+    if plan.target_count > 6 {
+        return Err("Pi Runtime 视觉规划字段 targetCount 超出范围。".to_owned());
+    }
+    if plan.placements.len() != usize::from(plan.target_count) {
+        return Err("Pi Runtime 视觉规划的 placements 数量与 targetCount 不一致。".to_owned());
+    }
+    if plan.settings.len() > 16 {
+        return Err("Pi Runtime 视觉规划字段 settings 数量超出范围。".to_owned());
+    }
+    if plan.settings.iter().any(|(key, value)| {
+        key.is_empty()
+            || key.chars().count() > 100
+            || key.chars().any(char::is_control)
+            || value.chars().count() > 200
+            || value.chars().any(char::is_control)
+    }) {
+        return Err("Pi Runtime 视觉规划字段 settings 包含无效键值。".to_owned());
     }
     let mut ids = HashSet::new();
     let placements = plan
@@ -1977,78 +2212,193 @@ fn public_visual_placement(
     ordinal: usize,
     seen: &mut HashSet<String>,
 ) -> Result<VisualPlacementSummary, String> {
-    if value.id != format!("illustration-{ordinal}")
-        || !seen.insert(value.id.clone())
-        || value
-            .block_id
-            .as_deref()
-            .is_some_and(|id| validate_identifier(id, "blockId").is_err())
-        || !optional_visual_text(value.anchor_excerpt.as_deref(), 240)
-        || !optional_visual_text(value.after_heading.as_deref(), 180)
-        || !required_visual_text(&value.purpose, 900, false)
-        || !required_visual_text(&value.visual_content, 1_500, false)
-        || !matches!(
-            value.visual_type.as_str(),
-            "infographic" | "scene" | "flowchart" | "comparison" | "framework" | "timeline"
-        )
-        || !matches!(value.source.as_str(), "existing_asset" | "generate")
-        || !required_visual_text(&value.selection_reason, 900, false)
-        || !required_visual_text(&value.alt, 180, false)
-        || !required_visual_text(&value.generation_prompt, 12_000, true)
-        || !value.prompt_file.starts_with("prompts/")
-        || !required_visual_text(&value.prompt_file, 220, false)
-        || (value.source == "existing_asset"
-            && value
-                .asset_id
-                .as_deref()
-                .map_or(true, |id| validate_visual_asset_id(id).is_err()))
-        || (value.source == "generate" && value.asset_id.is_some())
-        || value.candidates.len() > 5
-    {
-        return Err("Pi Runtime 返回了无效的配图位置。".to_owned());
+    let label = format!("配图位置 #{ordinal}");
+    let expected_id = format!("illustration-{ordinal}");
+    if !value.id.trim().is_empty() && !legacy_visual_id_matches(&value.id, ordinal) {
+        return Err(format!("Pi Runtime {label} 字段 id 无效。"));
     }
+    if !seen.insert(expected_id.clone()) {
+        return Err(format!("Pi Runtime {label} 字段 id 重复。"));
+    }
+    // Block and anchor metadata are advisory. Older Runtime builds omitted
+    // or formatted these fields differently, so normalize invalid optional
+    // values to `None` rather than rejecting the entire visual plan.
+    let block_id = value
+        .block_id
+        .filter(|id| validate_identifier(id, "blockId").is_ok());
+    let anchor_excerpt = normalize_optional_visual_text(value.anchor_excerpt, 240);
+    let after_heading = normalize_optional_visual_text(value.after_heading, 180);
+
+    let purpose = required_visual_field(value.purpose, 900, false, &label, "purpose")?;
+    let visual_content =
+        required_visual_field(value.visual_content, 1_500, false, &label, "visualContent")?;
+    let visual_type = normalize_visual_type(&value.visual_type)
+        .ok_or_else(|| format!("Pi Runtime {label} 字段 visualType 无效。"))?;
+    let mut source = normalize_visual_source(&value.source)
+        .ok_or_else(|| format!("Pi Runtime {label} 字段 source 无效。"))?;
+    let selection_reason = required_visual_field(
+        value.selection_reason,
+        900,
+        false,
+        &label,
+        "selectionReason",
+    )?;
+    let alt = required_visual_field(value.alt, 180, false, &label, "alt")?;
+
+    let mut asset_id = value
+        .asset_id
+        .filter(|id| validate_visual_asset_id(id).is_ok());
+    if source == "existing_asset" && asset_id.is_none() {
+        // A missing/legacy asset id cannot be trusted. Generate a replacement
+        // image instead of rejecting the article's whole visual plan.
+        source = "generate".to_owned();
+    }
+    if source == "generate" {
+        asset_id = None;
+    }
+
+    let generation_prompt = if required_visual_text(&value.generation_prompt, 12_000, true) {
+        value.generation_prompt.trim().to_owned()
+    } else if value.generation_prompt.trim().is_empty() {
+        fallback_generation_prompt(&expected_id, &visual_type, &alt, &visual_content)
+    } else {
+        return Err(format!("Pi Runtime {label} 字段 generationPrompt 无效。"));
+    };
+    let prompt_file = normalize_prompt_file(&value.prompt_file, ordinal, &visual_type);
+
+    if value.candidates.len() > 5 {
+        return Err(format!("Pi Runtime {label} 字段 candidates 数量超出范围。"));
+    }
+    // Candidate metadata is advisory. Ignore malformed entries while keeping
+    // valid suggestions, rather than discarding an otherwise usable plan.
     let candidates = value
         .candidates
         .into_iter()
-        .map(|candidate| {
+        .filter_map(|candidate| {
             if validate_visual_asset_id(&candidate.asset_id).is_err()
                 || candidate.score > 1_000
                 || !required_visual_text(&candidate.description, 900, true)
             {
-                return Err("Pi Runtime 返回了无效的素材候选。".to_owned());
+                return None;
             }
-            Ok(VisualMaterialCandidateSummary {
+            Some(VisualMaterialCandidateSummary {
                 asset_id: candidate.asset_id,
                 score: candidate.score,
-                description: candidate.description,
+                description: candidate.description.trim().to_owned(),
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Vec<_>>();
     Ok(VisualPlacementSummary {
-        id: value.id,
-        block_id: value.block_id,
-        anchor_excerpt: value.anchor_excerpt,
-        after_heading: value.after_heading,
-        purpose: value.purpose,
-        visual_content: value.visual_content,
-        visual_type: value.visual_type,
-        source: value.source,
-        asset_id: value.asset_id,
+        id: expected_id,
+        block_id,
+        anchor_excerpt,
+        after_heading,
+        purpose,
+        visual_content,
+        visual_type,
+        source,
+        asset_id,
         candidates,
-        selection_reason: value.selection_reason,
-        alt: value.alt,
-        generation_prompt: Some(value.generation_prompt),
-        prompt_file: Some(value.prompt_file),
+        selection_reason,
+        alt,
+        generation_prompt: Some(generation_prompt),
+        prompt_file: Some(prompt_file),
     })
 }
 
-fn optional_visual_text(value: Option<&str>, maximum: usize) -> bool {
-    value.map_or(true, |text| required_visual_text(text, maximum, false))
+fn legacy_visual_id_matches(value: &str, ordinal: usize) -> bool {
+    let Some(suffix) = value.trim().strip_prefix("illustration") else {
+        return false;
+    };
+    let suffix = suffix.trim_start_matches(['-', '_', ':']);
+    suffix.parse::<usize>().ok() == Some(ordinal)
+}
+
+fn normalize_visual_type(value: &str) -> Option<String> {
+    let key = value
+        .trim()
+        .chars()
+        .filter(|character| !matches!(character, '_' | '-' | ' '))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let canonical = match key.as_str() {
+        "infographic" | "infograph" => "infographic",
+        "scene" | "sceneboard" => "scene",
+        "flowchart" | "process" => "flowchart",
+        "comparison" | "compare" => "comparison",
+        "framework" | "architecture" => "framework",
+        "timeline" | "chronology" => "timeline",
+        _ => return None,
+    };
+    Some(canonical.to_owned())
+}
+
+fn normalize_visual_source(value: &str) -> Option<String> {
+    let key = value
+        .trim()
+        .chars()
+        .filter(|character| !matches!(character, '_' | '-' | ' '))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let canonical = match key.as_str() {
+        "existingasset" | "asset" | "material" => "existing_asset",
+        "generate" | "generated" | "ai" => "generate",
+        _ => return None,
+    };
+    Some(canonical.to_owned())
+}
+
+fn normalize_optional_visual_text(value: Option<String>, maximum: usize) -> Option<String> {
+    value.and_then(|text| {
+        let text = text.trim().to_owned();
+        required_visual_text(&text, maximum, false).then_some(text)
+    })
+}
+
+fn required_visual_field(
+    value: String,
+    maximum: usize,
+    allow_newlines: bool,
+    placement_label: &str,
+    field: &str,
+) -> Result<String, String> {
+    let value = value.trim().to_owned();
+    if required_visual_text(&value, maximum, allow_newlines) {
+        Ok(value)
+    } else {
+        Err(format!("Pi Runtime {placement_label} 字段 {field} 无效。"))
+    }
+}
+
+fn fallback_generation_prompt(
+    id: &str,
+    visual_type: &str,
+    alt: &str,
+    visual_content: &str,
+) -> String {
+    format!(
+        "---\nillustration_id: {id}\ntype: {visual_type}\naspect_ratio: 3:2\n---\n\n# {alt}\n\nCreate one clear 3:2 {visual_type} illustration.\nZONES: {visual_content}\nKeep it explanatory, uncluttered, and free of watermarks or fabricated text."
+    )
+}
+
+fn normalize_prompt_file(value: &str, ordinal: usize, visual_type: &str) -> String {
+    let value = value.trim();
+    if value.starts_with("prompts/")
+        && !value.contains("..")
+        && required_visual_text(value, 220, false)
+    {
+        value.to_owned()
+    } else {
+        format!("prompts/{ordinal:02}-{visual_type}.md")
+    }
 }
 
 fn required_visual_text(value: &str, maximum: usize, allow_newlines: bool) -> bool {
     !value.trim().is_empty()
-        && value.len() <= maximum
+        // The Runtime and native boundary both define limits in visible
+        // Unicode characters, not UTF-8 bytes. This keeps Chinese/emoji
+        // responses from being rejected solely during the Rust handoff.
+        && value.chars().count() <= maximum
         && !value.chars().any(|character| {
             character.is_control() && !(allow_newlines && matches!(character, '\n' | '\t'))
         })
@@ -2440,13 +2790,16 @@ fn safe_status_message(status: StatusCode) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, sync::Arc, time::Duration};
+    use std::{collections::HashMap, fs, sync::Arc, time::Duration};
 
+    use serde_json::json;
     use tempfile::tempdir;
 
     use super::{
-        bounded_operation_timeout, encode_component, staged_development_runtime, strong_token,
-        title_from_markdown, validate_identifier, PiRuntimeSupervisor,
+        bounded_operation_timeout, deterministic_visual_summary, encode_component,
+        public_visual_plan, staged_development_runtime, strong_token, title_from_markdown,
+        validate_identifier, PiRuntimeSupervisor, PiVisualCompositionPlan, PiVisualPlacement,
+        PiVisualPlanningResponse, VisualCompositionRequest,
     };
     use crate::supervisor::{ModelConfigurationStore, SaveDraftRequest};
 
@@ -2462,6 +2815,168 @@ mod tests {
         assert!(validate_identifier("run:1234-test", "runId").is_ok());
         assert!(validate_identifier("../article", "articleId").is_err());
         assert!(validate_identifier("article/secret", "articleId").is_err());
+    }
+
+    #[test]
+    fn visual_plan_validation_reports_the_invalid_field() {
+        let hash = format!("sha256:{}", "0".repeat(64));
+        let response = PiVisualPlanningResponse {
+            plan: PiVisualCompositionPlan {
+                source_revision_hash: hash.clone(),
+                target_count: 1,
+                settings: HashMap::new(),
+                needs_confirmation: false,
+                placements: vec![PiVisualPlacement {
+                    id: "illustration-1".to_owned(),
+                    block_id: Some("block-1-anchor".to_owned()),
+                    anchor_excerpt: Some("文章段落".to_owned()),
+                    after_heading: Some("章节".to_owned()),
+                    purpose: String::new(),
+                    visual_content: "解释文章关系".to_owned(),
+                    visual_type: "framework".to_owned(),
+                    source: "generate".to_owned(),
+                    asset_id: None,
+                    candidates: Vec::new(),
+                    selection_reason: "按文章结构规划".to_owned(),
+                    alt: "文章关系图".to_owned(),
+                    generation_prompt: "prompt".to_owned(),
+                    prompt_file: "prompts/01-framework.md".to_owned(),
+                }],
+            },
+            provider: "pi".to_owned(),
+            model: "test-model".to_owned(),
+            mocked: false,
+            provenance: Some("pi".to_owned()),
+            fallback_reason: None,
+        };
+        let error = public_visual_plan(response, &hash).expect_err("invalid purpose");
+        assert!(
+            error.contains("purpose"),
+            "unexpected validation error: {error}"
+        );
+        assert!(
+            error.contains("配图位置 #1"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    #[test]
+    fn visual_plan_uses_unicode_character_limits_for_cjk_fields() {
+        let hash = format!("sha256:{}", "1".repeat(64));
+        let response = PiVisualPlanningResponse {
+            plan: PiVisualCompositionPlan {
+                source_revision_hash: hash.clone(),
+                target_count: 1,
+                settings: HashMap::new(),
+                needs_confirmation: false,
+                placements: vec![PiVisualPlacement {
+                    id: "illustration-1".to_owned(),
+                    block_id: None,
+                    anchor_excerpt: None,
+                    after_heading: None,
+                    purpose: "目".repeat(900),
+                    visual_content: "图".repeat(1_500),
+                    visual_type: "framework".to_owned(),
+                    source: "generate".to_owned(),
+                    asset_id: None,
+                    candidates: Vec::new(),
+                    selection_reason: "因".repeat(900),
+                    alt: "图".repeat(180),
+                    generation_prompt: String::new(),
+                    prompt_file: String::new(),
+                }],
+            },
+            provider: "pi".to_owned(),
+            model: "test-model".to_owned(),
+            mocked: false,
+            provenance: Some("pi".to_owned()),
+            fallback_reason: None,
+        };
+
+        let summary = public_visual_plan(response, &hash).expect("CJK fields fit character limits");
+        let placement = &summary.plan.placements[0];
+        assert_eq!(placement.purpose.chars().count(), 900);
+        assert_eq!(placement.visual_content.chars().count(), 1_500);
+        assert_eq!(placement.selection_reason.chars().count(), 900);
+        assert!(placement
+            .generation_prompt
+            .as_deref()
+            .is_some_and(|value| !value.is_empty()));
+    }
+
+    #[test]
+    fn visual_plan_normalizes_legacy_aliases_and_missing_optional_fields() {
+        let hash = format!("sha256:{}", "2".repeat(64));
+        let response: PiVisualPlanningResponse = serde_json::from_value(json!({
+            "plan": {
+                "sourceRevisionHash": hash,
+                "targetCount": 1,
+                "settings": {},
+                "needsConfirmation": true,
+                "placements": [{
+                    "id": "illustration:1",
+                    "blockId": "not a valid block id",
+                    "anchorExcerpt": "\u{0001}",
+                    "purpose": "解释文章中的流程关系",
+                    "visualContent": "用流程图展示步骤和状态变化",
+                    "visualType": "flow_chart",
+                    "source": "asset",
+                    "assetId": "media-flow",
+                    "candidates": [{
+                        "assetId": "bad id",
+                        "score": 999,
+                        "description": "无效候选"
+                    }],
+                    "selectionReason": "素材描述与流程关系匹配",
+                    "alt": "流程关系图"
+                }]
+            },
+            "provider": "pi",
+            "model": "test-model",
+            "mocked": false,
+            "provenance": "pi"
+        }))
+        .expect("legacy visual response deserializes");
+
+        let summary =
+            public_visual_plan(response, &hash).expect("legacy visual response normalizes");
+        let placement = &summary.plan.placements[0];
+        assert_eq!(placement.id, "illustration-1");
+        assert_eq!(placement.visual_type, "flowchart");
+        assert_eq!(placement.source, "existing_asset");
+        assert_eq!(placement.asset_id.as_deref(), Some("media-flow"));
+        assert!(placement.block_id.is_none());
+        assert!(placement.anchor_excerpt.is_none());
+        assert!(placement.candidates.is_empty());
+        assert_eq!(
+            placement.prompt_file.as_deref(),
+            Some("prompts/01-flowchart.md")
+        );
+        assert!(placement
+            .generation_prompt
+            .as_deref()
+            .is_some_and(|value| value.contains("illustration_id: illustration-1")));
+    }
+
+    #[test]
+    fn deterministic_visual_fallback_is_explicit_and_article_anchored() {
+        let markdown = "# 架构说明\n\n采集、编排与发布三个阶段通过数据流连接。\n\n## 回滚\n\n失败时可以回到草稿状态。";
+        let source_revision_hash = format!("sha256:{}", "3".repeat(64));
+        let composition = VisualCompositionRequest {
+            mode: "fixed".to_owned(),
+            target_count: 2,
+            ..VisualCompositionRequest::default()
+        };
+        let summary = deterministic_visual_summary(markdown, &source_revision_hash, &composition);
+        assert_eq!(summary.provider, "local-deterministic");
+        assert_eq!(summary.model, "article-illustrator-rules-v1");
+        assert_eq!(summary.plan.target_count, 2);
+        assert_eq!(summary.plan.placements.len(), 2);
+        assert!(summary
+            .plan
+            .placements
+            .iter()
+            .all(|placement| placement.block_id.is_some()));
     }
 
     #[test]

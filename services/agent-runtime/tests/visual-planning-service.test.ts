@@ -79,19 +79,30 @@ const visualComposition = {
 };
 
 class FauxVisualFactory implements WriterAgentFactory {
+  constructor(
+    private readonly longSelectionReason = false,
+    private readonly longChineseFields = false,
+  ) {}
+
   createWriterAgent(options: CreateWriterAgentOptions): Agent {
     const faux = fauxProvider({ provider: "faux-visual", tokensPerSecond: 10_000 });
     faux.setResponses([fauxAssistantMessage(fauxToolCall("return_visual_plan", {
       placements: [
         {
           position: "系统架构 / 采集、编排、发布三层",
-          purpose: "解释三层模块之间的数据流。",
-          visualContent: "采集、编排、发布三层模块和数据流向的框架图。",
+          purpose: this.longChineseFields ? "目".repeat(900) : "解释三层模块之间的数据流。",
+          visualContent: this.longChineseFields
+            ? "图".repeat(1_500)
+            : "采集、编排、发布三层模块和数据流向的框架图。",
           visualType: "framework",
           source: "existing_asset",
           assetId: "media-architecture",
-          selectionReason: "素材描述准确覆盖三层架构与数据流。",
-          alt: "采集、编排与发布三层架构图",
+          selectionReason: this.longChineseFields
+            ? "因".repeat(900)
+            : this.longSelectionReason
+              ? "x".repeat(900)
+              : "素材描述准确覆盖三层架构与数据流。",
+          alt: this.longChineseFields ? "图".repeat(180) : "采集、编排与发布三层架构图",
         },
         {
           position: "实践 / 从一个可回滚的发布流程开始",
@@ -168,5 +179,37 @@ describe("VisualPlanningService", () => {
     })).rejects.toThrow("does not match");
     expect(autoImageCount("字".repeat(1_500))).toBe(2);
     expect(autoImageCount("字".repeat(4_000))).toBe(4);
+  });
+
+  it("keeps the generated selection explanation within the desktop bridge limit", async () => {
+    const secrets: SecretProvider = { resolve: async () => "test-key" };
+    const result = await new VisualPlanningService(secrets, new FauxVisualFactory(true)).plan({
+      markdown,
+      sourceRevisionHash: contentHash(markdown),
+      visualComposition,
+      modelProfile: profile,
+    });
+
+    expect(result.provenance).toBe("pi");
+    expect(result.plan.placements[0]?.selectionReason).toHaveLength(900);
+  });
+
+  it("keeps CJK model fields within the shared character limits", async () => {
+    const secrets: SecretProvider = { resolve: async () => "test-key" };
+    const result = await new VisualPlanningService(secrets, new FauxVisualFactory(false, true)).plan({
+      markdown,
+      sourceRevisionHash: contentHash(markdown),
+      visualComposition,
+      modelProfile: profile,
+    });
+
+    expect(result.provenance).toBe("pi");
+    const placement = result.plan.placements[0];
+    expect(placement?.purpose).toHaveLength(900);
+    expect(placement?.visualContent).toHaveLength(1_500);
+    expect(placement?.selectionReason).toHaveLength(900);
+    expect(placement?.alt).toHaveLength(180);
+    expect(placement?.generationPrompt).toBeTruthy();
+    expect(Array.from(placement?.generationPrompt ?? "").length).toBeLessThanOrEqual(12_000);
   });
 });
