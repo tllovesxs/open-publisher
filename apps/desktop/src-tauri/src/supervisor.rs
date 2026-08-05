@@ -757,8 +757,12 @@ impl ModelConfigurationStore {
             .profiles
             .iter()
             .map(|profile| {
-                let secret =
-                    load_database_secret(&self.data_dir, &model_profile_secret_name(&profile.id))?;
+                let resolved_secret = resolve_profile_text_api_key(
+                    &self.data_dir,
+                    profile,
+                    state.configuration.as_ref(),
+                    self.secret_store.as_ref(),
+                )?;
                 Ok(ModelProfileSummary {
                     id: profile.id.clone(),
                     name: profile.name.clone(),
@@ -772,8 +776,8 @@ impl ModelConfigurationStore {
                     text_max_tokens: profile.text_max_tokens,
                     native_web_search: profile.native_web_search.clone(),
                     timeout_seconds: profile.timeout_seconds,
-                    secret_configured: secret.is_some(),
-                    text_key_masked: secret.as_deref().and_then(mask_secret),
+                    secret_configured: resolved_secret.is_some(),
+                    text_key_masked: resolved_secret.as_deref().and_then(mask_secret),
                     active: active_profile_id == Some(profile.id.as_str()),
                 })
             })
@@ -792,17 +796,23 @@ impl ModelConfigurationStore {
             .find(|profile| profile.id == profile_id)
             .cloned()
             .ok_or_else(|| "找不到这个模型档案。".to_owned())?;
-        let text_api_key =
-            load_database_secret(&self.data_dir, &model_profile_secret_name(&profile.id))?
-                .or_else(|| {
-                    state
-                        .configuration
-                        .as_ref()
-                        .filter(|configuration| configuration.profile_id == profile.id)
-                        .map(|configuration| configuration.text_api_key.clone())
-                })
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "该模型档案缺少 API Key，请编辑后重新保存。".to_owned())?;
+        let profile_secret_name = model_profile_secret_name(&profile.id);
+        let profile_secret = load_database_secret(&self.data_dir, &profile_secret_name)?;
+        let text_api_key = resolve_profile_text_api_key(
+            &self.data_dir,
+            &profile,
+            state.configuration.as_ref(),
+            self.secret_store.as_ref(),
+        )?
+        .ok_or_else(|| "该模型档案缺少 API Key，请编辑后重新保存。".to_owned())?;
+
+        // Profiles written before profile-scoped secrets were introduced only
+        // have the shared text key. Once that key is successfully resolved,
+        // copy it to the profile-specific slot so future activations are
+        // independent of the legacy shared value.
+        if non_empty_secret(profile_secret).is_none() {
+            save_database_secret(&self.data_dir, &profile_secret_name, &text_api_key)?;
+        }
         let previous = state.configuration.as_ref();
         let configuration = PrivateModelConfiguration {
             profile_id: profile.id,
@@ -967,6 +977,59 @@ fn validate_model_profile_id(value: String) -> Result<String, String> {
 
 fn model_profile_secret_name(profile_id: &str) -> String {
     format!("pi-model-profile-{profile_id}")
+}
+
+/// Resolve a profile's text credential across the storage formats used by
+/// older releases. Profile-scoped secrets are authoritative; the active
+/// in-memory configuration and legacy shared keys are migration fallbacks.
+/// Empty values are treated as missing because an empty secret is represented
+/// by a deleted database row.
+fn resolve_profile_text_api_key(
+    data_dir: &Path,
+    profile: &PersistedModelProfile,
+    active_configuration: Option<&PrivateModelConfiguration>,
+    secret_store: &dyn SecretStore,
+) -> Result<Option<String>, String> {
+    let profile_secret = load_database_secret(data_dir, &model_profile_secret_name(&profile.id))?;
+    let active_secret = active_configuration
+        .filter(|configuration| configuration.profile_id == profile.id)
+        .map(|configuration| configuration.text_api_key.clone());
+
+    // `TEXT_MODEL_API_KEY_SECRET` was the shared slot before each model
+    // profile received its own credential. Keep it as a one-time migration
+    // fallback so existing profiles remain usable after an upgrade.
+    let shared_secret = load_database_secret(data_dir, TEXT_MODEL_API_KEY_SECRET)?;
+    let legacy_database_secret = load_database_secret(data_dir, MODEL_API_KEY_SECRET)?;
+    let legacy_keyring_secret = secret_store.read(MODEL_API_KEY_SECRET).ok().flatten();
+    Ok(select_profile_text_api_key(
+        profile_secret,
+        active_secret,
+        shared_secret,
+        legacy_database_secret,
+        legacy_keyring_secret,
+    ))
+}
+
+fn non_empty_secret(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+fn select_profile_text_api_key(
+    profile_secret: Option<String>,
+    active_secret: Option<String>,
+    shared_secret: Option<String>,
+    legacy_database_secret: Option<String>,
+    legacy_keyring_secret: Option<String>,
+) -> Option<String> {
+    [
+        profile_secret,
+        active_secret,
+        shared_secret,
+        legacy_database_secret,
+        legacy_keyring_secret,
+    ]
+    .into_iter()
+    .find_map(non_empty_secret)
 }
 
 fn normalize_thinking_level(value: &str) -> Result<String, String> {
@@ -1505,4 +1568,51 @@ fn normalize_public_option(
         return Err(format!("{label}不能超过 {maximum} 个可见字符。"));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_profile_text_api_key;
+
+    #[test]
+    fn profile_secret_has_priority_over_legacy_slots() {
+        assert_eq!(
+            select_profile_text_api_key(
+                Some("profile-key".to_owned()),
+                Some("active-key".to_owned()),
+                Some("shared-key".to_owned()),
+                Some("legacy-db-key".to_owned()),
+                Some("legacy-keyring-key".to_owned()),
+            ),
+            Some("profile-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn shared_key_is_used_when_an_old_profile_has_no_scoped_secret() {
+        assert_eq!(
+            select_profile_text_api_key(
+                None,
+                None,
+                Some("shared-key".to_owned()),
+                Some("legacy-db-key".to_owned()),
+                Some("legacy-keyring-key".to_owned()),
+            ),
+            Some("shared-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn blank_secrets_are_treated_as_missing() {
+        assert_eq!(
+            select_profile_text_api_key(
+                Some("  ".to_owned()),
+                Some("\n".to_owned()),
+                None,
+                Some("legacy-db-key".to_owned()),
+                None,
+            ),
+            Some("legacy-db-key".to_owned())
+        );
+    }
 }
