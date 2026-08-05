@@ -1310,6 +1310,12 @@ export function setDesktopBridgeForTests(bridge: DesktopBridge | null) {
 const activeBridge = () =>
   testBridgeOverride ?? (isTauriHost() ? tauriBridge : browserPreviewBridge);
 
+/** Synchronizes the app's persisted theme with the native window frame. */
+export async function syncNativeWindowTheme(theme: "light" | "dark"): Promise<void> {
+  if (!isTauriHost()) return;
+  await invoke<void>("sync_window_theme", { theme });
+}
+
 export async function subscribeToRewriteEvents(
   listener: (event: RewriteStreamEvent) => void,
 ): Promise<() => void> {

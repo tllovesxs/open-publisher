@@ -33,6 +33,27 @@ struct DesktopState {
     desktop_services: Arc<DesktopIntegrationService>,
 }
 
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum NativeWindowTheme {
+    Light,
+    Dark,
+}
+
+impl NativeWindowTheme {
+    #[cfg(target_os = "windows")]
+    const fn is_dark(self) -> bool {
+        matches!(self, Self::Dark)
+    }
+
+    const fn to_tauri_theme(self) -> tauri::Theme {
+        match self {
+            Self::Light => tauri::Theme::Light,
+            Self::Dark => tauri::Theme::Dark,
+        }
+    }
+}
+
 const TEMPLATE_EXTRACTION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Clone, serde::Serialize)]
@@ -466,6 +487,24 @@ async fn wechat_sync_status(
     .map_err(|_| "WechatSync status lookup was cancelled".to_owned())
 }
 
+/// Keeps native titlebar and DWM material in step with the user's in-app
+/// light/dark preference. Browser previews skip this command entirely.
+#[tauri::command]
+fn sync_window_theme(theme: NativeWindowTheme, app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "无法找到主窗口以同步主题。".to_owned())?;
+
+    window
+        .set_theme(Some(theme.to_tauri_theme()))
+        .map_err(|error| format!("无法同步原生窗口主题：{error}"))?;
+
+    #[cfg(target_os = "windows")]
+    window_effects::sync_windows_mica_theme(&window, theme.is_dark());
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -527,7 +566,8 @@ pub fn run() {
             reveal_model_secret,
             test_model_connection,
             github_application_info,
-            wechat_sync_status
+            wechat_sync_status,
+            sync_window_theme
         ])
         .run(tauri::generate_context!())
         .expect("error while running Open Publisher");

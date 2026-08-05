@@ -33,6 +33,7 @@ import {
 import { platformDefinitionFor, platforms } from "./data/platforms";
 import {
   desktopBridge,
+  syncNativeWindowTheme,
   type ConfigureModelRequest,
   type DisabledOptionalNodeId,
   type GitHubApplicationInfo,
@@ -1681,6 +1682,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     replaceStudioTextValue("open-publisher-theme", theme);
+    void syncNativeWindowTheme(theme).catch(() => undefined);
   }, [theme]);
 
   useEffect(() => {

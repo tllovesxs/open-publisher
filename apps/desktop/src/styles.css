@@ -59,11 +59,14 @@
   color-scheme: dark;
   --app-background: transparent;
   --content-background: #202020;
-  --glass-surface: rgb(40 40 40 / 52%);
-  --glass-surface-strong: rgb(48 48 48 / 72%);
-  --glass-border: rgb(255 255 255 / 14%);
-  --glass-border-subtle: rgb(255 255 255 / 8%);
-  --glass-shadow: 0 10px 32px rgb(0 0 0 / 22%);
+  /* A dark Mica surface needs a stable charcoal base. The slight evergreen
+     bias lets the native wallpaper tone read at the edge without turning the
+     chrome into a broad green-grey slab. */
+  --glass-surface: rgb(20 24 20 / 86%);
+  --glass-surface-strong: rgb(27 31 27 / 92%);
+  --glass-border: rgb(255 255 255 / 10%);
+  --glass-border-subtle: rgb(255 255 255 / 6%);
+  --glass-shadow: 0 12px 34px rgb(0 0 0 / 28%);
   --glass-blur: 24px;
   --panel-radius: 18px;
   --canvas: var(--content-background);
@@ -90,14 +93,14 @@
   --warning-soft: #433720;
   --danger: #eb928d;
   --danger-soft: #4a2d2d;
-  --glass-highlight: inset 0 1px rgb(255 255 255 / 8%);
+  --glass-highlight: inset 0 1px rgb(255 255 255 / 6%);
   --chrome-glass: var(--glass-surface);
   --chrome-glass-soft: var(--glass-surface-strong);
   --chrome-border: var(--glass-border-subtle);
   --chrome-border-gradient: var(--glass-border);
-  --chrome-highlight: rgb(255 255 255 / 12%);
-  --chrome-hover: rgb(255 255 255 / 8%);
-  --chrome-active: rgb(255 255 255 / 13%);
+  --chrome-highlight: rgb(255 255 255 / 6%);
+  --chrome-hover: rgb(255 255 255 / 6%);
+  --chrome-active: rgb(255 255 255 / 10%);
   --shadow-overlay: 0 0 0 1px rgb(0 0 0 / 16%), 0 16px 32px rgb(0 0 0 / 28%);
 }
 
@@ -6646,6 +6649,29 @@ body,
   border-color: var(--glass-border);
   background: var(--glass-surface-strong);
   box-shadow: inset 0 1px rgb(255 255 255 / 32%);
+}
+
+/* The navigation selection should lift from dark Mica, not become another
+ * opaque panel. This keeps the active destination clear while preserving the
+ * native material as the continuous background. */
+:root[data-theme="dark"] .app-navigation__item:hover,
+:root[data-theme="dark"] .article-list-item:hover,
+:root[data-theme="dark"] .article-assistant__toggle:hover,
+:root[data-theme="dark"] .workflow-workspace__toggle:hover {
+  background: var(--chrome-hover);
+}
+
+:root[data-theme="dark"] .app-navigation__item.is-active,
+:root[data-theme="dark"] .article-list-item.is-active {
+  border-color: var(--glass-border-subtle);
+  background: var(--chrome-active);
+  box-shadow: inset 0 1px var(--chrome-highlight);
+}
+
+:root[data-theme="dark"] .brand-mark {
+  border-color: var(--glass-border);
+  background: rgb(255 255 255 / 5%);
+  box-shadow: inset 0 1px rgb(255 255 255 / 5%);
 }
 
 /* The assistant composer is the shared floating-input treatment. */

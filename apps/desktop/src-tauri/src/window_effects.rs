@@ -43,6 +43,12 @@ pub fn install_windows_mica(app: &tauri::App) {
     });
 }
 
+/// Reapplies the DWM mode after React explicitly changes the app theme.
+#[cfg(target_os = "windows")]
+pub fn sync_windows_mica_theme<R: Runtime>(window: &WebviewWindow<R>, dark_mode: bool) {
+    apply_mica(window, dark_mode);
+}
+
 #[cfg(target_os = "windows")]
 fn window_prefers_dark_theme<R: Runtime>(window: &WebviewWindow<R>) -> bool {
     matches!(window.theme(), Ok(Theme::Dark))
