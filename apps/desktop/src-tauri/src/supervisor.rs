@@ -991,13 +991,17 @@ fn resolve_profile_text_api_key(
     secret_store: &dyn SecretStore,
 ) -> Result<Option<String>, String> {
     let profile_secret = load_database_secret(data_dir, &model_profile_secret_name(&profile.id))?;
+    let profile_is_active =
+        active_configuration.is_some_and(|configuration| configuration.profile_id == profile.id);
     let active_secret = active_configuration
         .filter(|configuration| configuration.profile_id == profile.id)
         .map(|configuration| configuration.text_api_key.clone());
 
     // `TEXT_MODEL_API_KEY_SECRET` was the shared slot before each model
-    // profile received its own credential. Keep it as a one-time migration
-    // fallback so existing profiles remain usable after an upgrade.
+    // profile received its own credential. For the active profile it is a
+    // safe fallback. For an inactive legacy profile it must be considered
+    // only after `MODEL_API_KEY_SECRET`: the shared slot may already contain
+    // the active profile's newer credential.
     let shared_secret = load_database_secret(data_dir, TEXT_MODEL_API_KEY_SECRET)?;
     let legacy_database_secret = load_database_secret(data_dir, MODEL_API_KEY_SECRET)?;
     let legacy_keyring_secret = secret_store.read(MODEL_API_KEY_SECRET).ok().flatten();
@@ -1007,6 +1011,7 @@ fn resolve_profile_text_api_key(
         shared_secret,
         legacy_database_secret,
         legacy_keyring_secret,
+        profile_is_active,
     ))
 }
 
@@ -1020,16 +1025,26 @@ fn select_profile_text_api_key(
     shared_secret: Option<String>,
     legacy_database_secret: Option<String>,
     legacy_keyring_secret: Option<String>,
+    profile_is_active: bool,
 ) -> Option<String> {
-    [
-        profile_secret,
-        active_secret,
-        shared_secret,
-        legacy_database_secret,
-        legacy_keyring_secret,
-    ]
-    .into_iter()
-    .find_map(non_empty_secret)
+    let candidates = if profile_is_active {
+        vec![
+            profile_secret,
+            active_secret,
+            shared_secret,
+            legacy_database_secret,
+            legacy_keyring_secret,
+        ]
+    } else {
+        vec![
+            profile_secret,
+            legacy_database_secret,
+            legacy_keyring_secret,
+            shared_secret,
+            active_secret,
+        ]
+    };
+    candidates.into_iter().find_map(non_empty_secret)
 }
 
 fn normalize_thinking_level(value: &str) -> Result<String, String> {
@@ -1583,13 +1598,14 @@ mod tests {
                 Some("shared-key".to_owned()),
                 Some("legacy-db-key".to_owned()),
                 Some("legacy-keyring-key".to_owned()),
+                true,
             ),
             Some("profile-key".to_owned())
         );
     }
 
     #[test]
-    fn shared_key_is_used_when_an_old_profile_has_no_scoped_secret() {
+    fn inactive_profile_prefers_legacy_key_over_shared_key() {
         assert_eq!(
             select_profile_text_api_key(
                 None,
@@ -1597,6 +1613,37 @@ mod tests {
                 Some("shared-key".to_owned()),
                 Some("legacy-db-key".to_owned()),
                 Some("legacy-keyring-key".to_owned()),
+                false,
+            ),
+            Some("legacy-db-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn active_profile_prefers_shared_key_over_legacy_key() {
+        assert_eq!(
+            select_profile_text_api_key(
+                None,
+                Some("active-key".to_owned()),
+                Some("shared-key".to_owned()),
+                Some("legacy-db-key".to_owned()),
+                None,
+                true,
+            ),
+            Some("active-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn inactive_profile_uses_shared_key_only_as_last_compatibility_fallback() {
+        assert_eq!(
+            select_profile_text_api_key(
+                None,
+                None,
+                Some("shared-key".to_owned()),
+                None,
+                None,
+                false,
             ),
             Some("shared-key".to_owned())
         );
@@ -1611,6 +1658,7 @@ mod tests {
                 None,
                 Some("legacy-db-key".to_owned()),
                 None,
+                false,
             ),
             Some("legacy-db-key".to_owned())
         );
