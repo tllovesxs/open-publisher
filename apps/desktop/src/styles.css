@@ -3558,6 +3558,15 @@ p {
   background: color-mix(in srgb, var(--accent-soft) 65%, var(--surface));
 }
 
+.model-profile-switcher__list > button.is-missing-secret {
+  border-style: dashed;
+}
+
+.model-profile-switcher__list > button.is-missing-secret:hover {
+  border-color: color-mix(in srgb, var(--warning) 58%, var(--border));
+  background: color-mix(in srgb, var(--warning-soft) 38%, var(--surface));
+}
+
 .model-profile-switcher__mark {
   display: grid;
   width: 26px;
@@ -3592,6 +3601,17 @@ p {
 .model-profile-switcher__copy small {
   color: var(--muted);
   font-size: 9px;
+}
+
+.model-profile-switcher__status {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.model-profile-switcher__list > button.is-missing-secret .model-profile-switcher__status {
+  color: var(--warning);
 }
 
 .settings-form {

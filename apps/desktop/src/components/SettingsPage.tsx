@@ -201,6 +201,27 @@ export function SettingsPage({
     setShowGithubToken(false);
   };
 
+  const editModelProfile = (profile: ModelProfileSummary) => {
+    // A profile without a scoped key cannot be activated yet. Load its
+    // public fields into the editor so the user can add the key and save it
+    // instead of being left with a non-actionable activation error.
+    setProfileId(profile.id);
+    setName(profile.name);
+    setBaseUrl(profile.baseUrl);
+    setTextProtocol(profile.textProtocol);
+    setTextModel(profile.textModel);
+    setTextSupportsVision(profile.textSupportsVision);
+    setTextReasoning(profile.textReasoning);
+    setTextThinkingLevel(profile.textThinkingLevel);
+    setTextContextWindow(profile.textContextWindow);
+    setTextMaxTokens(profile.textMaxTokens);
+    setNativeWebSearch(profile.nativeWebSearch ?? "auto");
+    setTimeoutSeconds(profile.timeoutSeconds);
+    clearSecretInputs();
+    setValidation("这个档案尚未配置文本 API Key，请输入后点击“保存并测试”。");
+    window.setTimeout(() => document.getElementById("model-api-key")?.focus(), 0);
+  };
+
   const revealSecret = async (kind: ModelSecretKind) => {
     try {
       const value = await onRevealSecret(kind);
@@ -400,10 +421,19 @@ export function SettingsPage({
                   )}
                   {modelProfiles.map((profile) => (
                     <button
-                      className={profile.active ? "is-active" : ""}
+                      aria-label={
+                        profile.active
+                          ? `${profile.name}（当前活动模型）`
+                          : profile.secretConfigured
+                            ? `切换到 ${profile.name}`
+                            : `编辑 ${profile.name}，补充 API Key`
+                      }
+                      className={`${profile.active ? "is-active" : ""}${profile.secretConfigured ? "" : " is-missing-secret"}`}
                       key={profile.id}
                       onClick={() => {
-                        if (!profile.active) onActivateModelProfile(profile.id);
+                        if (profile.active) return;
+                        if (profile.secretConfigured) onActivateModelProfile(profile.id);
+                        else editModelProfile(profile);
                       }}
                       type="button"
                     >
@@ -412,7 +442,13 @@ export function SettingsPage({
                         <strong>{profile.name}</strong>
                         <small>{profile.textModel} · {profile.textProtocol.replace("-", " ")}</small>
                       </span>
-                      {profile.active && <CheckCircle2 aria-label="当前活动模型" size={15} />}
+                      {profile.active ? (
+                        <CheckCircle2 aria-label="当前活动模型" size={15} />
+                      ) : (
+                        <small className="model-profile-switcher__status">
+                          {profile.secretConfigured ? "切换" : "需密钥"}
+                        </small>
+                      )}
                     </button>
                   ))}
                 </div>
