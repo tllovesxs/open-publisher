@@ -1,6 +1,7 @@
 mod desktop_services;
 mod pi_supervisor;
 mod supervisor;
+mod window_effects;
 
 use std::{
     sync::{mpsc, Arc},
@@ -469,6 +470,9 @@ async fn wechat_sync_status(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            window_effects::install_windows_mica(app);
+
             let app_data_dir = app.path().app_local_data_dir()?;
             // Keep the former directory name for one release so existing
             // encrypted model profiles remain readable. It is now a Rust

@@ -19,6 +19,7 @@
         "minWidth": 760,
         "minHeight": 600,
         "center": true,
+        "transparent": true,
         "resizable": true,
         "fullscreen": false
       }

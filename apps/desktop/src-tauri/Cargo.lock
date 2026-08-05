@@ -2096,6 +2096,7 @@ version = "0.1.0"
 dependencies = [
  "keyring",
  "rand",
+ "raw-window-handle",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
