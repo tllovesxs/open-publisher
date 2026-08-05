@@ -6923,3 +6923,85 @@ body,
     transition: none;
   }
 }
+
+/* Theme-aware native selects. Keep the native combobox semantics and
+   keyboard behavior, while giving the creation controls one glass treatment
+   in both themes. `color-scheme` also tells the Windows WebView how to paint
+   the opened option list instead of falling back to a white menu in dark mode. */
+select {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: var(--surface-raised);
+  color: var(--ink);
+}
+
+.creation-toolbar > label.creation-toolbar__choice,
+.creation-model-select {
+  position: relative;
+}
+
+.creation-toolbar > label.creation-toolbar__choice select,
+.creation-model-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background-color: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.creation-toolbar > label.creation-toolbar__choice select {
+  padding-right: 24px;
+}
+
+.creation-model-select select {
+  padding-right: 24px;
+}
+
+.creation-toolbar > label.creation-toolbar__choice::after,
+.creation-model-select::after {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--muted);
+  content: "";
+  pointer-events: none;
+  transform: translateY(-65%) rotate(45deg);
+}
+
+.creation-toolbar > label.creation-toolbar__choice:focus-within,
+.creation-model-select:focus-within {
+  border-color: color-mix(in srgb, var(--ink) 30%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.creation-toolbar > label.creation-toolbar__choice select:focus-visible,
+.creation-model-select select:focus-visible {
+  outline: 0;
+}
+
+@media (forced-colors: active) {
+  .creation-toolbar > label.creation-toolbar__choice select,
+  .creation-model-select select {
+    appearance: auto;
+    -webkit-appearance: auto;
+  }
+
+  .creation-toolbar > label.creation-toolbar__choice::after,
+  .creation-model-select::after {
+    display: none;
+  }
+}
