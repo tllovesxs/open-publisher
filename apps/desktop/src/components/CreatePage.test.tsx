@@ -23,7 +23,7 @@ function renderCreatePage() {
   const onCreate = vi.fn();
   const onActivateModelProfile = vi.fn();
   const onOpenSettings = vi.fn();
-  render(
+  const rendered = render(
     <CreatePage
       activeModelProfileId="writing"
       generating={false}
@@ -40,7 +40,7 @@ function renderCreatePage() {
       templates={[]}
     />,
   );
-  return { onActivateModelProfile, onCreate, onOpenSettings };
+  return { ...rendered, onActivateModelProfile, onCreate, onOpenSettings };
 }
 
 describe("CreatePage", () => {
@@ -107,5 +107,29 @@ describe("CreatePage", () => {
 
     fireEvent.change(screen.getByLabelText("写作模型"), { target: { value: "__settings__" } });
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports folder reading progress and preserves a source manifest", async () => {
+    const { container, onCreate } = renderCreatePage();
+    const readme = new File(["# Project\n\nA local project note."], "README.md", { type: "text/markdown" });
+    Object.defineProperty(readme, "webkitRelativePath", { configurable: true, value: "demo/README.md" });
+    const folderInput = container.querySelector<HTMLInputElement>("input[aria-label='选择项目文件夹']");
+    expect(folderInput).not.toBeNull();
+
+    fireEvent.change(folderInput!, { target: { files: [readme] } });
+    expect(screen.getByRole("status", { name: "项目文件夹读取状态" })).toHaveTextContent("正在读取项目文件夹");
+    expect(screen.getByRole("button", { name: "项目文件夹" })).toBeDisabled();
+
+    await waitFor(() => {
+      expect(screen.getByRole("status", { name: "项目文件夹读取状态" })).toHaveTextContent("项目文件夹已读取");
+    });
+    expect(screen.getByRole("button", { name: "项目文件夹" })).toBeEnabled();
+    expect(screen.getByRole("status", { name: "项目文件夹读取状态" })).toHaveTextContent("已读 1 · 跳过 0");
+
+    fireEvent.change(screen.getByLabelText("文章主题"), { target: { value: "介绍这个项目" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      references: expect.stringContaining("来源文件：`demo/README.md`"),
+    }));
   });
 });
