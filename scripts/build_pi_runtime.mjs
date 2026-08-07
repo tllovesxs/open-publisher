@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,29 @@ const canRun = (command) => {
     shell: false,
   });
   return !result.error && result.status === 0;
+};
+
+const resolveExecutablePath = (command) => {
+  if (isAbsolute(command) || existsSync(command)) {
+    return resolve(command);
+  }
+
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const located = spawnSync(locator, [command], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    stdio: "pipe",
+    shell: false,
+  });
+  if (located.error || located.status !== 0) {
+    return null;
+  }
+
+  const match = located.stdout
+    ?.split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line && existsSync(line));
+  return match ? resolve(match) : null;
 };
 
 const localBunCandidates = () => {
@@ -62,7 +85,10 @@ const resolveBun = () => {
 
   for (const candidate of [process.env.OPEN_PUBLISHER_BUN, process.env.BUN_EXE, "bun"]) {
     if (candidate && canRun(candidate)) {
-      return candidate;
+      const executablePath = resolveExecutablePath(candidate);
+      if (executablePath) {
+        return executablePath;
+      }
     }
   }
 
