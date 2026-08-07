@@ -5,7 +5,7 @@ packages:
   - "services/*"
   - "skills/*"
 
-onlyBuiltDependencies:
-  - "@google/genai"
-  - "bun"
-  - "protobufjs"
+allowBuilds:
+  "@google/genai": false
+  "bun": false
+  "protobufjs": false
