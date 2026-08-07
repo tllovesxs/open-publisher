@@ -417,16 +417,16 @@ export function MediaPage({
               </dl>
               <label className="media-details__field">
                 <span>替代文本</span>
-                <input aria-label="替代文本" maxLength={160} onChange={(event) => setDetailsDraft({ ...detailsDraft, alt: event.target.value })} value={detailsDraft.alt} />
+                <input aria-label="替代文本" maxLength={2_000} onChange={(event) => setDetailsDraft({ ...detailsDraft, alt: event.target.value })} value={detailsDraft.alt} />
               </label>
               <label className="media-details__field">
                 <span>图片内容描述</span>
-                <textarea aria-label="图片内容描述" maxLength={600} onChange={(event) => setDetailsDraft({ ...detailsDraft, visualDescription: event.target.value })} placeholder="例如：三个模块通过事件总线传递任务状态。" rows={4} value={detailsDraft.visualDescription} />
+                <textarea aria-label="图片内容描述" maxLength={12_000} onChange={(event) => setDetailsDraft({ ...detailsDraft, visualDescription: event.target.value })} placeholder="例如：三个模块通过事件总线传递任务状态。" rows={4} value={detailsDraft.visualDescription} />
                 <small>描述图片客观呈现的内容，供模型匹配文章段落。</small>
               </label>
               <label className="media-details__field">
                 <span>使用场景</span>
-                <textarea aria-label="使用场景" maxLength={600} onChange={(event) => setDetailsDraft({ ...detailsDraft, usageHint: event.target.value })} placeholder="例如：放在介绍工作流节点关系的小节之后。" rows={3} value={detailsDraft.usageHint} />
+                <textarea aria-label="使用场景" maxLength={12_000} onChange={(event) => setDetailsDraft({ ...detailsDraft, usageHint: event.target.value })} placeholder="例如：放在介绍工作流节点关系的小节之后。" rows={3} value={detailsDraft.usageHint} />
               </label>
               <label className="media-details__field">
                 <span>标签</span>

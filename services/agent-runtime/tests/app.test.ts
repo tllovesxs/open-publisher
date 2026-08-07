@@ -17,6 +17,9 @@ const config: RuntimeConfig = {
   dataDir: "C:\\runtime-data",
   articleDir: "C:\\runtime-data\\articles",
   protocolVersion: "2",
+  wechatSyncToken: "",
+  wechatSyncWebsocketPort: 9527,
+  wechatSyncHttpPort: 9528,
 };
 
 describe("runtime API", () => {
@@ -175,6 +178,63 @@ describe("runtime API", () => {
     });
   });
 
+  it("exposes revision history and restores a revision without overwriting it", async () => {
+    const articleStore = new ArticleStore(await mkdtemp(join(tmpdir(), "open-publisher-history-api-")));
+    await articleStore.initialize();
+    const first = await articleStore.commit({
+      schemaVersion: "2",
+      articleId: "article:history-api",
+      baseRevisionId: null,
+      baseContentHash: null,
+      title: "Original",
+      markdown: "# Original",
+      reason: "writer-create",
+    });
+    await articleStore.commit({
+      schemaVersion: "2",
+      articleId: first.articleId,
+      baseRevisionId: first.currentRevisionId,
+      baseContentHash: first.contentHash,
+      title: "Changed",
+      markdown: "# Changed",
+      reason: "editor-save",
+    });
+    const app = createRuntimeApp({
+      config,
+      readiness: () => ({ ready: true, checks: { storage: "ready" } }),
+      articleStore,
+    });
+    const headers = { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json" };
+
+    const history = await app.request(`/v2/articles/${first.articleId}/revisions`, { headers });
+    expect(history.status).toBe(200);
+    await expect(history.json()).resolves.toMatchObject({
+      revisions: [
+        { revisionNumber: 2, isCurrent: true },
+        { revisionId: first.currentRevisionId, revisionNumber: 1, isCurrent: false },
+      ],
+    });
+
+    const preview = await app.request(
+      `/v2/articles/${first.articleId}/revisions/${first.currentRevisionId}`,
+      { headers },
+    );
+    expect(preview.status).toBe(200);
+    await expect(preview.json()).resolves.toMatchObject({ markdown: "# Original" });
+
+    const restore = await app.request(
+      `/v2/articles/${first.articleId}/revisions/${first.currentRevisionId}/restore`,
+      { method: "POST", headers, body: "{}" },
+    );
+    expect(restore.status).toBe(201);
+    await expect(restore.json()).resolves.toMatchObject({
+      markdown: "# Original",
+      revisionNumber: 3,
+      reason: `restore:${first.currentRevisionId}`,
+      isCurrent: true,
+    });
+  });
+
   it("plans visuals only against the current canonical article revision", async () => {
     const articleStore = new ArticleStore(await mkdtemp(join(tmpdir(), "open-publisher-api-")));
     await articleStore.initialize();
@@ -213,10 +273,18 @@ describe("runtime API", () => {
       markdown: article.markdown,
       sourceRevisionHash: article.contentHash,
       instruction: "请配一张流程图",
+      images: [{
+        assetId: "media-visual-input",
+        name: "流程截图.png",
+        mimeType: "image/png",
+        data: "aW1hZ2U=",
+        intent: "insert",
+      }],
       visualComposition: {
         mode: "fixed",
         targetCount: 1,
         assets: [],
+        requiredAssetIds: [],
         assetScope: "none",
         preferredType: "flowchart",
         density: "balanced",
@@ -244,6 +312,7 @@ describe("runtime API", () => {
     expect(plan).toHaveBeenCalledWith(expect.objectContaining({
       markdown: article.markdown,
       sourceRevisionHash: article.contentHash,
+      images: body.images,
     }), undefined);
 
     const stale = await app.request("/v2/visual/plan", {

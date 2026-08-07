@@ -1,13 +1,16 @@
 import {
   Check,
+  Cloud,
+  CloudOff,
   CopyPlus,
   FileText,
   FileUp,
   LoaderCircle,
   Pencil,
-  Plus,
+  RefreshCw,
   Save,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -23,9 +26,8 @@ import {
 } from "../lib/desktopBridge";
 import type {
   MarkdownTemplate,
-  TemplateFixedBlock,
-  TemplateFixedBlockPosition,
 } from "../types";
+import type { ProductPromotionTemplateSource } from "../data/productPromotionTemplate";
 
 interface TemplatesPageProps {
   selectedTemplateId: string | null;
@@ -33,56 +35,17 @@ interface TemplatesPageProps {
   onChange: (templates: MarkdownTemplate[]) => void;
   onExtractTemplate: (sourceMarkdown: string) => Promise<MarkdownTemplate>;
   onCancelExtraction?: () => void;
+  onRefreshOfficialTemplate: () => void;
   onSelect: (templateId: string) => void;
   onStartCreating: () => void;
+  officialTemplateError: string | null;
+  officialTemplateSource: ProductPromotionTemplateSource;
 }
 
 type EditorSource = "manual" | "extracted";
 
 const EXTRACTION_WAIT_LIMIT_MS = 90_000;
 const EXTRACTION_HARD_LIMIT_MS = 12 * 60 * 1000;
-
-const blankTemplate = (): MarkdownTemplate => ({
-  id: `template-${Date.now()}`,
-  name: "未命名模板",
-  description: "自定义 Markdown 写作模板。",
-  category: "自定义",
-  markdown: "# {{title}}\n\n{{lead}}\n",
-  styleProfile: {
-    tone: "",
-    audience: "",
-    perspective: "",
-    sentenceStyle: "",
-    pacing: "",
-    density: "",
-  },
-  structureProfile: {
-    openingPattern: "",
-    sectionPattern: "",
-    conclusionPattern: "",
-    headingDepth: "",
-    paragraphPattern: "",
-  },
-  layoutProfile: {
-    useLists: true,
-    useTables: false,
-    useBlockquotes: false,
-    useCodeBlocks: false,
-    imagePlacement: "",
-    emphasisRules: "",
-  },
-  fixedBlocks: [],
-  variables: ["title", "lead", "closing"],
-  usageInstructions: "",
-  isBuiltIn: false,
-});
-
-const fixedPositions: Array<{ value: TemplateFixedBlockPosition; label: string }> = [
-  { value: "before_title", label: "标题之前" },
-  { value: "after_intro", label: "导语之后" },
-  { value: "before_closing", label: "结语之前" },
-  { value: "after_article", label: "全文之后" },
-];
 
 function errorMessage(error: unknown) {
   const detail = error instanceof Error ? error.message : String(error);
@@ -95,8 +58,11 @@ export function TemplatesPage({
   onChange,
   onExtractTemplate,
   onCancelExtraction,
+  onRefreshOfficialTemplate,
   onSelect,
   onStartCreating,
+  officialTemplateError,
+  officialTemplateSource,
 }: TemplatesPageProps) {
   const [editing, setEditing] = useState<MarkdownTemplate | null>(null);
   const [editorSource, setEditorSource] = useState<EditorSource>("manual");
@@ -125,6 +91,8 @@ export function TemplatesPage({
         .includes(normalized),
     );
   }, [query, templates]);
+  const officialTemplates = filtered.filter((template) => template.isBuiltIn);
+  const referenceTemplates = filtered.filter((template) => template.mode === "reference");
   const sourceCharacterCount = [...sourceMarkdown].length;
   const canExtract = sourceMarkdown.trim().length > 0
     && rightsConfirmed
@@ -203,6 +171,15 @@ export function TemplatesPage({
     setEditing(null);
   };
 
+  const removeReference = (template: MarkdownTemplate) => {
+    if (template.mode !== "reference") return;
+    if (!window.confirm(`删除仿写参考“${template.name}”？原文和分析结果会从本机模板库移除。`)) return;
+    const next = templates.filter((candidate) => candidate.id !== template.id);
+    onChange(next);
+    const official = next.find((candidate) => candidate.isBuiltIn);
+    if (official) onSelect(official.id);
+  };
+
   const importMarkdown = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -221,7 +198,7 @@ export function TemplatesPage({
     if (!canExtract) {
       setExtractError(rightsConfirmed
         ? "请先粘贴或导入一篇 Markdown 文章。"
-        : "请确认你拥有这篇文章的使用授权后再创建参考模板。",
+        : "请确认你拥有这篇文章的使用授权后再生成仿写参考。",
       );
       return;
     }
@@ -288,38 +265,57 @@ export function TemplatesPage({
     <section className="page page--studio">
       <header className="page-heading page-heading--actions">
         <div>
-          <span className="page-kicker">Markdown 格式库</span>
-          <h1>模板</h1>
-          <p>选择一份结构作为文章起点，也可以维护自己的常用格式。</p>
+          <span className="page-kicker">写作模板</span>
+          <h1>产品推广</h1>
+          <p>使用官方推广蓝图直接创作，或导入一篇文章作为高保真写法参考。</p>
         </div>
         <div className="template-heading-actions">
+          <span
+            className={`template-source is-${officialTemplateSource}`}
+            title={officialTemplateError ?? undefined}
+          >
+            {officialTemplateSource === "loading"
+              ? <LoaderCircle aria-hidden="true" className="is-spinning" size={14} />
+              : officialTemplateSource === "remote"
+              ? <Cloud aria-hidden="true" size={14} />
+              : <CloudOff aria-hidden="true" size={14} />}
+            {officialTemplateSource === "loading"
+              ? "正在同步"
+              : officialTemplateSource === "remote"
+              ? "GitHub 最新版"
+              : officialTemplateSource === "cached"
+              ? "本地缓存"
+              : "安装包版本"}
+          </span>
           <button
             className="button button--quiet"
-            onClick={() => openManualEditor(blankTemplate())}
+            disabled={officialTemplateSource === "loading"}
+            onClick={onRefreshOfficialTemplate}
             type="button"
           >
-            <Plus aria-hidden="true" size={16} />
-            新建模板
+            <RefreshCw aria-hidden="true" className={officialTemplateSource === "loading" ? "is-spinning" : undefined} size={16} />
+            更新模板
           </button>
           <button className="button button--primary" onClick={openExtraction} type="button">
-            <Sparkles aria-hidden="true" size={16} />
-            创建参考模板
+            <FileUp aria-hidden="true" size={16} />
+            导入参考文章
           </button>
         </div>
       </header>
 
       <div className="template-layout">
-        <aside className="template-browser" aria-label="模板列表">
+        <aside className="template-browser" aria-label="产品推广模板库">
           <label className="template-search">
-            <span className="visually-hidden">搜索模板</span>
+            <span className="visually-hidden">搜索参考文章</span>
             <input
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索模板"
+              placeholder="搜索参考文章"
               value={query}
             />
           </label>
           <div className="template-grid">
-            {filtered.map((template) => (
+            {officialTemplates.length > 0 && <span className="template-grid__label">官方模板</span>}
+            {officialTemplates.map((template) => (
               <button
                 aria-pressed={selected?.id === template.id}
                 className={`template-card${selected?.id === template.id ? " is-selected" : ""}`}
@@ -331,7 +327,7 @@ export function TemplatesPage({
                   <FileText aria-hidden="true" size={18} />
                 </span>
                 <span className="template-card__copy">
-                  <small>{template.category}</small>
+                  <small>产品推广蓝图</small>
                   <strong>{template.name}</strong>
                   <span>{template.description}</span>
                 </span>
@@ -340,6 +336,31 @@ export function TemplatesPage({
                 )}
               </button>
             ))}
+            {referenceTemplates.length > 0 && <span className="template-grid__label">仿写参考</span>}
+            {referenceTemplates.map((template) => (
+              <button
+                aria-pressed={selected?.id === template.id}
+                className={`template-card${selected?.id === template.id ? " is-selected" : ""}`}
+                key={template.id}
+                onClick={() => onSelect(template.id)}
+                type="button"
+              >
+                <span className="template-card__icon">
+                  <FileText aria-hidden="true" size={18} />
+                </span>
+                <span className="template-card__copy">
+                  <small>高保真参考</small>
+                  <strong>{template.name}</strong>
+                  <span>{template.description}</span>
+                </span>
+                {selected?.id === template.id && (
+                  <Check aria-hidden="true" className="template-card__check" size={16} />
+                )}
+              </button>
+            ))}
+            {referenceTemplates.length === 0 && query.trim() && (
+              <p className="template-grid__empty">没有匹配的参考文章。</p>
+            )}
           </div>
         </aside>
 
@@ -351,15 +372,17 @@ export function TemplatesPage({
                 <h2>{selected.name}</h2>
                 <p>{selected.description}</p>
               </div>
-              <button
-                aria-label="编辑模板"
-                className="icon-button"
-                onClick={() => openManualEditor(selected)}
-                title="编辑模板"
-                type="button"
-              >
-                <Pencil size={16} />
-              </button>
+              {selected.mode === "reference" && (
+                <button
+                  aria-label="编辑参考文章分析"
+                  className="icon-button"
+                  onClick={() => openManualEditor(selected)}
+                  title="编辑参考文章分析"
+                  type="button"
+                >
+                  <Pencil size={16} />
+                </button>
+              )}
             </header>
             {selected.mode === "reference" && selected.referenceMarkdown ? (
               <details className="template-preview__reference">
@@ -374,10 +397,16 @@ export function TemplatesPage({
               <span>固定片段：{selected.fixedBlocks.filter((block) => block.enabled && block.content.trim()).length} 个</span>
             </div>
             <footer>
-              <span>{selected.isBuiltIn ? "内置模板" : selected.mode === "reference" ? "本地参考模板" : "自定义模板"}</span>
+              <span>{selected.isBuiltIn ? "官方产品推广模板" : "参考原文仅保存在本机"}</span>
+              {selected.mode === "reference" && (
+                <button className="button button--quiet template-delete" onClick={() => removeReference(selected)} type="button">
+                  <Trash2 aria-hidden="true" size={15} />
+                  删除参考
+                </button>
+              )}
               <button className="button button--primary" onClick={onStartCreating} type="button">
                 <CopyPlus aria-hidden="true" size={16} />
-                用此模板创作
+                {selected.mode === "reference" ? "用此文章仿写" : "用产品推广模板创作"}
               </button>
             </footer>
           </article>
@@ -396,8 +425,8 @@ export function TemplatesPage({
           <section className="template-editor template-extractor">
             <header>
               <div>
-                <span className="page-kicker">高保真参考模板</span>
-                <h2 id="template-extraction-title">从文章分析写法</h2>
+                <span className="page-kicker">产品推广 · 高保真仿写</span>
+                <h2 id="template-extraction-title">导入参考文章</h2>
               </div>
               <button
                 aria-label="关闭文章提取"
@@ -410,11 +439,11 @@ export function TemplatesPage({
             </header>
             <div className="template-editor__body template-extractor__body">
               <p id="template-extraction-description" className="template-extractor__note">
-                完整原文只保存在本机；AI 只提取可编辑的文风、结构和排版蓝图，不将原文变成占位符。
+                完整原文只保存在本机。AI 会提取结构、语气、节奏与排版，创作时仍只使用新产品资料中的事实。
               </p>
               <div className="template-extractor__actions">
                 <input
-                  accept=".md,text/markdown,text/plain"
+                  accept=".md,.markdown,.txt,text/markdown,text/plain"
                   aria-label="导入 Markdown 文件"
                   className="visually-hidden"
                   onChange={(event) => void importMarkdown(event)}
@@ -474,7 +503,7 @@ export function TemplatesPage({
               </button>
               <button className="button button--primary" disabled={!canExtract} onClick={() => void extractTemplate()} type="button">
                 {extracting ? <LoaderCircle aria-hidden="true" className="is-spinning" size={16} /> : <Sparkles aria-hidden="true" size={16} />}
-                {extractError ? "重新分析" : "分析参考模板"}
+                  {extractError ? "重新分析" : "生成仿写参考"}
               </button>
             </footer>
           </section>
@@ -493,10 +522,10 @@ export function TemplatesPage({
             <header>
               <div>
                 <span className="page-kicker">
-                  {editorSource === "extracted" ? "AI 分析结果" : editing.mode === "reference" ? "高保真参考模板" : "Markdown 模板"}
+                  {editorSource === "extracted" ? "AI 分析结果" : "高保真仿写参考"}
                 </span>
                 <h2 id="template-editor-title">
-                  {editorSource === "extracted" ? "审核并保存参考模板" : "编辑模板"}
+                  {editorSource === "extracted" ? "审核并保存仿写参考" : "编辑仿写参考"}
                 </h2>
               </div>
               <button
@@ -509,22 +538,13 @@ export function TemplatesPage({
               </button>
             </header>
             <div className="template-editor__body">
-              <div className="form-grid form-grid--two">
-                <label className="field">
-                  <span>名称</span>
-                  <input
-                    onChange={(event) => setEditing({ ...editing, name: event.target.value })}
-                    value={editing.name}
-                  />
-                </label>
-                <label className="field">
-                  <span>分类</span>
-                  <input
-                    onChange={(event) => setEditing({ ...editing, category: event.target.value })}
-                    value={editing.category}
-                  />
-                </label>
-              </div>
+              <label className="field">
+                <span>参考文章名称</span>
+                <input
+                  onChange={(event) => setEditing({ ...editing, name: event.target.value })}
+                  value={editing.name}
+                />
+              </label>
               <label className="field">
                 <span>说明</span>
                 <input
@@ -610,23 +630,8 @@ export function TemplatesPage({
               </fieldset>
               <label className="field">
                 <span>使用说明</span>
-                <textarea maxLength={4000} onChange={(event) => setEditing({ ...editing, usageInstructions: event.target.value })} placeholder="告诉 Agent 哪些规则必须保持，以及哪些内容需要替换。" rows={3} value={editing.usageInstructions} />
+                <textarea maxLength={20000} onChange={(event) => setEditing({ ...editing, usageInstructions: event.target.value })} placeholder="告诉 Agent 哪些规则必须保持，以及哪些内容需要替换。" rows={3} value={editing.usageInstructions} />
               </label>
-              <fieldset className="template-editor__fieldset">
-                <legend>固定片段</legend>
-                <p className="template-extractor__note">固定片段由程序在文章生成后插入，不会被模型改写或删除。可直接填写项目介绍、项目地址和求 Star 文案；{"{{title}}"}、{"{{topic}}"} 会自动替换。</p>
-                {editing.fixedBlocks.map((block, index) => (
-                  <div className="template-fixed-block" key={block.id}>
-                    <div className="form-grid form-grid--two">
-                      <label className="field"><span>名称</span><input value={block.label} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) })} /></label>
-                      <label className="field"><span>位置</span><select value={block.position} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, position: event.target.value as TemplateFixedBlockPosition } : item) })}>{fixedPositions.map((position) => <option key={position.value} value={position.value}>{position.label}</option>)}</select></label>
-                    </div>
-                    <label className="field"><span><input checked={block.enabled} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item) })} type="checkbox" /> 启用</span><textarea maxLength={4000} onChange={(event) => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.map((item, itemIndex) => itemIndex === index ? { ...item, content: event.target.value } : item) })} placeholder="例如：项目地址：{{project_link}}\n如果有帮助，欢迎 Star。" rows={3} value={block.content} /></label>
-                    <button className="text-button" onClick={() => setEditing({ ...editing, fixedBlocks: editing.fixedBlocks.filter((_, itemIndex) => itemIndex !== index) })} type="button">删除片段</button>
-                  </div>
-                ))}
-                <button className="button button--quiet" onClick={() => { const block: TemplateFixedBlock = { id: `block-${Date.now()}`, label: "新固定片段", enabled: true, content: "", position: "after_article" }; setEditing({ ...editing, fixedBlocks: [...editing.fixedBlocks, block] }); }} type="button">添加固定片段</button>
-              </fieldset>
             </div>
             <footer>
               <button className="button button--quiet" onClick={() => setEditing(null)} type="button">
@@ -634,7 +639,7 @@ export function TemplatesPage({
               </button>
               <button className="button button--primary" onClick={save} type="button">
                 <Save aria-hidden="true" size={16} />
-                保存模板
+                保存仿写参考
               </button>
             </footer>
           </section>

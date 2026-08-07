@@ -9,7 +9,6 @@ use crate::supervisor::{GitHubApplicationInfo, WechatSyncBridgeStatus, WechatSyn
 const REPOSITORY: &str = "tllovesxs/open-publisher";
 const AUTHOR: &str = "tllovesxs";
 const AUTHOR_URL: &str = "https://github.com/tllovesxs";
-const WECHATSYNC_BRIDGE_ORIGIN: &str = "http://127.0.0.1:9528";
 const WECHATSYNC_STATUS_ATTEMPTS: usize = 2;
 const WECHATSYNC_STATUS_RETRY_DELAY: Duration = Duration::from_millis(220);
 
@@ -90,7 +89,11 @@ impl DesktopIntegrationService {
     /// Reads only the existing bridge health and `listPlatforms` endpoint.
     /// Retries are restricted to these idempotent reads; publishing remains
     /// owned by the deterministic publish outbox.
-    pub fn wechat_sync_status(&self, force_refresh: bool) -> WechatSyncBridgeStatus {
+    pub fn wechat_sync_status(
+        &self,
+        force_refresh: bool,
+        bridge_origin: &str,
+    ) -> WechatSyncBridgeStatus {
         let client = match Client::builder()
             .connect_timeout(Duration::from_millis(700))
             .timeout(Duration::from_secs(3))
@@ -101,11 +104,11 @@ impl DesktopIntegrationService {
             Ok(client) => client,
             Err(_) => return unavailable_wechat_sync_status("无法初始化本地 WechatSync 连接。"),
         };
-        let health = match read_wechat_sync_health(&client) {
+        let health = match read_wechat_sync_health(&client, bridge_origin) {
             Ok(health) => health,
             Err(detail) => {
                 return unavailable_wechat_sync_status(&format!(
-                    "未连接到 WechatSync 本地桥（{detail}）。请确认官方 CLI/MCP Bridge 正在运行。"
+                    "无法启动 WechatSync 本地桥（{detail}）。请检查设置中的服务地址，并确认端口未被其他程序占用。"
                 ));
             }
         };
@@ -113,7 +116,8 @@ impl DesktopIntegrationService {
             return WechatSyncBridgeStatus {
                 available: true,
                 connected: false,
-                detail: "WechatSync 本地桥已启动，正在等待浏览器扩展重新连接。无需重复启动插件。"
+                state: "extension_waiting".to_owned(),
+                detail: "本地桥已启动，正在等待浏览器扩展连接。请在插件中开启“CLI / MCP 连接”，并使用设置页显示的同一地址。"
                     .to_owned(),
                 platforms: Vec::new(),
             };
@@ -122,15 +126,28 @@ impl DesktopIntegrationService {
             "method": "listPlatforms",
             "params": { "forceRefresh": force_refresh },
         });
-        let response = match read_wechat_sync_platforms(&client, &request) {
+        let response = match read_wechat_sync_platforms(&client, bridge_origin, &request) {
             Ok(response) => response,
             Err(detail) => {
                 return WechatSyncBridgeStatus {
                     available: true,
-                    connected: true,
-                    detail: format!(
-                        "WechatSync 已连接，但平台登录状态暂时无法读取（{detail}）。稍后会自动重试。"
-                    ),
+                    connected: false,
+                    state: if detail.contains("HTTP 401") {
+                        "token_required"
+                    } else if detail.contains("HTTP 403") {
+                        "token_rejected"
+                    } else {
+                        "bridge_error"
+                    }
+                    .to_owned(),
+                    detail: if detail.contains("HTTP 401") {
+                        "WechatSync Token 尚未配置。请将浏览器扩展中显示的 Token 填入设置。"
+                            .to_owned()
+                    } else if detail.contains("HTTP 403") {
+                        "Token 与浏览器扩展不一致。请在设置中更新 Token 后重试。".to_owned()
+                    } else {
+                        format!("WechatSync 已连接，但平台状态读取失败（{detail}）。")
+                    },
                     platforms: Vec::new(),
                 };
             }
@@ -157,6 +174,7 @@ impl DesktopIntegrationService {
         WechatSyncBridgeStatus {
             available: true,
             connected: true,
+            state: "connected".to_owned(),
             detail: "WechatSync 已连接；登录状态来自浏览器扩展。".to_owned(),
             platforms,
         }
@@ -193,30 +211,53 @@ struct WechatSyncPlatformWire {
     username: Option<String>,
 }
 
-fn read_wechat_sync_health(client: &Client) -> Result<WechatSyncHealthWire, String> {
+fn read_wechat_sync_health(
+    client: &Client,
+    bridge_origin: &str,
+) -> Result<WechatSyncHealthWire, String> {
     retry_wechat_sync_read(|| {
-        client
-            .get(format!("{WECHATSYNC_BRIDGE_ORIGIN}/status"))
+        let response = client
+            .get(format!("{bridge_origin}/status"))
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .and_then(|response| response.json::<WechatSyncHealthWire>())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        read_wechat_sync_json(response)
     })
 }
 
 fn read_wechat_sync_platforms(
     client: &Client,
+    bridge_origin: &str,
     request: &Value,
 ) -> Result<WechatSyncRequestWire, String> {
     retry_wechat_sync_read(|| {
-        client
-            .post(format!("{WECHATSYNC_BRIDGE_ORIGIN}/request"))
+        let response = client
+            .post(format!("{bridge_origin}/request"))
             .json(request)
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .and_then(|response| response.json::<WechatSyncRequestWire>())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        read_wechat_sync_json(response)
     })
+}
+
+fn read_wechat_sync_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+) -> Result<T, String> {
+    let status = response.status();
+    if !status.is_success() {
+        let detail = response
+            .text()
+            .ok()
+            .and_then(|body| serde_json::from_str::<Value>(&body).ok())
+            .and_then(|body| body.get("error").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| {
+                status
+                    .canonical_reason()
+                    .unwrap_or("unknown error")
+                    .to_owned()
+            });
+        return Err(format!("HTTP {}: {detail}", status.as_u16()));
+    }
+    response.json::<T>().map_err(|error| error.to_string())
 }
 
 fn retry_wechat_sync_read<T>(
@@ -263,6 +304,7 @@ fn unavailable_wechat_sync_status(detail: &str) -> WechatSyncBridgeStatus {
     WechatSyncBridgeStatus {
         available: false,
         connected: false,
+        state: "service_unreachable".to_owned(),
         detail: detail.to_owned(),
         platforms: Vec::new(),
     }

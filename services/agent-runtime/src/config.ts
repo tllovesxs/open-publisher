@@ -7,6 +7,9 @@ export interface RuntimeConfig {
   readonly dataDir: string;
   readonly articleDir: string;
   readonly protocolVersion: "2";
+  readonly wechatSyncToken: string;
+  readonly wechatSyncWebsocketPort: number;
+  readonly wechatSyncHttpPort: number;
 }
 
 const requireValue = (environment: NodeJS.ProcessEnv, key: string): string => {
@@ -29,6 +32,26 @@ export const loadRuntimeConfig = (environment: NodeJS.ProcessEnv): RuntimeConfig
     throw new Error(`Unsupported protocol version: ${protocolVersion}`);
   }
 
+  const wechatSyncWebsocketPort = Number.parseInt(
+    environment.OPEN_PUBLISHER_WECHATSYNC_WS_PORT?.trim() || "9527",
+    10,
+  );
+  const wechatSyncHttpPort = Number.parseInt(
+    environment.OPEN_PUBLISHER_WECHATSYNC_HTTP_PORT?.trim() || "9528",
+    10,
+  );
+  if (
+    !Number.isInteger(wechatSyncWebsocketPort)
+    || !Number.isInteger(wechatSyncHttpPort)
+    || wechatSyncWebsocketPort < 1
+    || wechatSyncHttpPort < 1
+    || wechatSyncWebsocketPort > 65_535
+    || wechatSyncHttpPort > 65_535
+    || wechatSyncWebsocketPort === wechatSyncHttpPort
+  ) {
+    throw new Error("WechatSync bridge ports must be distinct integers between 1 and 65535");
+  }
+
   return {
     host: "127.0.0.1",
     port,
@@ -36,5 +59,8 @@ export const loadRuntimeConfig = (environment: NodeJS.ProcessEnv): RuntimeConfig
     dataDir: resolve(requireValue(environment, "OPEN_PUBLISHER_DATA_DIR")),
     articleDir: resolve(requireValue(environment, "OPEN_PUBLISHER_ARTICLE_DIR")),
     protocolVersion,
+    wechatSyncToken: environment.OPEN_PUBLISHER_WECHATSYNC_TOKEN?.trim() || "",
+    wechatSyncWebsocketPort,
+    wechatSyncHttpPort,
   };
 };

@@ -11,6 +11,7 @@ use serde_json::Value;
 
 const MODEL_CONFIGURATION_FILE: &str = "model-configuration.json";
 const MODEL_PROFILES_FILE: &str = "model-profiles.json";
+const PUBLISHER_BRIDGE_CONFIGURATION_FILE: &str = "publisher-bridge-configuration.json";
 const MODEL_SECRETS_DATABASE_FILE: &str = "model-secrets.sqlite3";
 const DESKTOP_KEYRING_SERVICE: &str = "io.openpublisher.desktop";
 // `MODEL_API_KEY_SECRET` is retained only to migrate configurations created
@@ -20,6 +21,9 @@ const TEXT_MODEL_API_KEY_SECRET: &str = "text-model-api-key";
 const IMAGE_MODEL_API_KEY_SECRET: &str = "image-model-api-key";
 const TAVILY_API_KEY_SECRET: &str = "tavily-api-key";
 const GITHUB_TOKEN_SECRET: &str = "github-token";
+const WECHATSYNC_TOKEN_SECRET: &str = "wechat-sync-token";
+const DEFAULT_WECHATSYNC_SERVER_URL: &str = "ws://localhost:9527";
+const WECHATSYNC_INTERNAL_HTTP_PORT: u16 = 9528;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +50,8 @@ pub struct SaveDraftRequest {
     pub article_id: String,
     pub base_revision: Option<String>,
     pub markdown: String,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,6 +109,10 @@ pub struct VisualCompositionRequest {
     pub target_count: u8,
     #[serde(default)]
     pub assets: Vec<VisualAssetInstruction>,
+    /// Images explicitly requested by the user for insertion. The visual
+    /// planner must retain these ids even when their metadata score is low.
+    #[serde(default)]
+    pub required_asset_ids: Vec<String>,
     #[serde(default = "default_visual_asset_scope")]
     pub asset_scope: String,
     #[serde(default = "default_visual_type")]
@@ -129,6 +139,7 @@ impl Default for VisualCompositionRequest {
             mode: default_visual_mode(),
             target_count: 0,
             assets: Vec::new(),
+            required_asset_ids: Vec::new(),
             asset_scope: default_visual_asset_scope(),
             preferred_type: default_visual_type(),
             density: default_visual_density(),
@@ -151,7 +162,7 @@ fn default_visual_asset_scope() -> String {
 }
 
 fn default_visual_type() -> String {
-    "infographic".to_owned()
+    "scene".to_owned()
 }
 
 fn default_visual_density() -> String {
@@ -265,6 +276,18 @@ pub struct RewriteArticleRequest {
     pub instruction: String,
     pub selected_texts: Vec<String>,
     pub conversation: Vec<RewriteConversationMessage>,
+    #[serde(default)]
+    pub images: Vec<PromptImageAttachment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PromptImageAttachment {
+    pub asset_id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub data: String,
+    pub intent: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,6 +318,10 @@ pub struct ComposeVisualRequest {
     pub article_id: String,
     pub markdown: String,
     pub instruction: String,
+    /// Local prompt attachments supplied for visual inspection by a capable
+    /// text model. They are separately validated before crossing to Pi.
+    #[serde(default)]
+    pub images: Vec<PromptImageAttachment>,
     pub visual_composition: VisualCompositionRequest,
 }
 
@@ -576,6 +603,7 @@ pub struct GitHubApplicationInfo {
 pub struct WechatSyncBridgeStatus {
     pub available: bool,
     pub connected: bool,
+    pub state: String,
     pub detail: String,
     pub platforms: Vec<WechatSyncPlatformStatus>,
 }
@@ -588,6 +616,42 @@ pub struct WechatSyncPlatformStatus {
     pub account_label: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigurePublisherBridgeRequest {
+    pub server_url: String,
+    #[serde(default)]
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublisherBridgeConfigurationSummary {
+    pub server_url: String,
+    pub token_configured: bool,
+    pub token_masked: Option<String>,
+    pub persistence: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublisherBridgeRuntimeConfiguration {
+    pub server_url: String,
+    pub websocket_port: u16,
+    pub http_port: u16,
+    pub token: String,
+}
+
+impl PublisherBridgeRuntimeConfiguration {
+    fn summary(&self) -> PublisherBridgeConfigurationSummary {
+        PublisherBridgeConfigurationSummary {
+            server_url: self.server_url.clone(),
+            token_configured: !self.token.is_empty(),
+            token_masked: mask_secret(&self.token),
+            persistence: "encrypted_local_database",
+        }
+    }
+}
+
 /// Read-only capability Pi needs to construct runtime-local secret leases.
 ///
 /// Model settings are persisted by the desktop host and exposed to the Pi
@@ -595,6 +659,17 @@ pub struct WechatSyncPlatformStatus {
 pub trait ModelConfigurationSource: Send + Sync + 'static {
     fn model_configuration(&self) -> Result<Option<ModelConfigurationSummary>, String>;
     fn reveal_model_secret(&self, kind: ModelSecretKind) -> Result<Option<String>, String>;
+
+    fn publisher_bridge_runtime_configuration(
+        &self,
+    ) -> Result<PublisherBridgeRuntimeConfiguration, String> {
+        Ok(PublisherBridgeRuntimeConfiguration {
+            server_url: DEFAULT_WECHATSYNC_SERVER_URL.to_owned(),
+            websocket_port: 9527,
+            http_port: WECHATSYNC_INTERNAL_HTTP_PORT,
+            token: String::new(),
+        })
+    }
 }
 
 struct ModelConfigurationState {
@@ -858,6 +933,81 @@ impl ModelConfigurationStore {
         };
         load_database_secret(&self.data_dir, secret_name)
     }
+
+    pub fn publisher_bridge_configuration(
+        &self,
+    ) -> Result<PublisherBridgeConfigurationSummary, String> {
+        self.load_publisher_bridge_runtime_configuration()
+            .map(|configuration| configuration.summary())
+    }
+
+    pub fn configure_publisher_bridge(
+        &self,
+        request: ConfigurePublisherBridgeRequest,
+    ) -> Result<PublisherBridgeConfigurationSummary, String> {
+        let server_url = normalize_wechat_sync_server_url(&request.server_url)?;
+        let existing_token = load_database_secret(&self.data_dir, WECHATSYNC_TOKEN_SECRET)?;
+        let token = if request.token.trim().is_empty() {
+            existing_token.unwrap_or_default()
+        } else {
+            validate_wechat_sync_token(&request.token)?
+        };
+        if token.is_empty() {
+            return Err("请填写浏览器扩展中显示的 WechatSync Token。".to_owned());
+        }
+        let persisted = PersistedPublisherBridgeConfiguration {
+            schema_version: 1,
+            server_url: server_url.clone(),
+        };
+        save_database_secret(&self.data_dir, WECHATSYNC_TOKEN_SECRET, &token)?;
+        fs::create_dir_all(&self.data_dir).map_err(|_| "无法创建发布连接配置目录。".to_owned())?;
+        let contents = serde_json::to_vec_pretty(&persisted)
+            .map_err(|_| "无法序列化发布连接配置。".to_owned())?;
+        fs::write(
+            publisher_bridge_configuration_path(&self.data_dir),
+            contents,
+        )
+        .map_err(|_| "无法保存发布连接配置。".to_owned())?;
+        Ok(PublisherBridgeRuntimeConfiguration {
+            websocket_port: websocket_port_from_url(&server_url)?,
+            http_port: WECHATSYNC_INTERNAL_HTTP_PORT,
+            server_url,
+            token,
+        }
+        .summary())
+    }
+
+    pub fn reveal_publisher_bridge_token(&self) -> Result<Option<String>, String> {
+        load_database_secret(&self.data_dir, WECHATSYNC_TOKEN_SECRET)
+    }
+
+    pub fn load_publisher_bridge_runtime_configuration(
+        &self,
+    ) -> Result<PublisherBridgeRuntimeConfiguration, String> {
+        let path = publisher_bridge_configuration_path(&self.data_dir);
+        let server_url = match fs::read(path) {
+            Ok(bytes) => {
+                let persisted: PersistedPublisherBridgeConfiguration =
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| "发布连接配置文件无效。".to_owned())?;
+                if persisted.schema_version != 1 {
+                    return Err("发布连接配置版本不受支持。".to_owned());
+                }
+                normalize_wechat_sync_server_url(&persisted.server_url)?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                DEFAULT_WECHATSYNC_SERVER_URL.to_owned()
+            }
+            Err(_) => return Err("无法读取发布连接配置。".to_owned()),
+        };
+        Ok(PublisherBridgeRuntimeConfiguration {
+            websocket_port: websocket_port_from_url(&server_url)?,
+            http_port: WECHATSYNC_INTERNAL_HTTP_PORT,
+            server_url,
+            token: load_database_secret(&self.data_dir, WECHATSYNC_TOKEN_SECRET)?
+                .unwrap_or_default(),
+        })
+    }
 }
 
 impl ModelConfigurationSource for ModelConfigurationStore {
@@ -871,6 +1021,12 @@ impl ModelConfigurationSource for ModelConfigurationStore {
 
     fn reveal_model_secret(&self, kind: ModelSecretKind) -> Result<Option<String>, String> {
         self.reveal_model_secret(kind)
+    }
+
+    fn publisher_bridge_runtime_configuration(
+        &self,
+    ) -> Result<PublisherBridgeRuntimeConfiguration, String> {
+        self.load_publisher_bridge_runtime_configuration()
     }
 }
 
@@ -928,6 +1084,13 @@ struct PersistedModelProfile {
     timeout_seconds: u16,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedPublisherBridgeConfiguration {
+    schema_version: u8,
+    server_url: String,
+}
+
 trait SecretStore: Send + Sync {
     fn read(&self, name: &str) -> Result<Option<String>, String>;
 }
@@ -956,6 +1119,62 @@ fn model_configuration_path(data_dir: &Path) -> PathBuf {
 
 fn model_profiles_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MODEL_PROFILES_FILE)
+}
+
+fn publisher_bridge_configuration_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(PUBLISHER_BRIDGE_CONFIGURATION_FILE)
+}
+
+fn normalize_wechat_sync_server_url(value: &str) -> Result<String, String> {
+    let value = value.trim().trim_end_matches('/');
+    if value.is_empty() || value.len() > 2_048 {
+        return Err("WechatSync 服务器地址无效。".to_owned());
+    }
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|_| "WechatSync 服务器地址必须是完整的 ws:// URL。".to_owned())?;
+    if parsed.scheme() != "ws"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return Err("WechatSync 服务器地址必须是不含路径或参数的 ws:// 地址。".to_owned());
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "WechatSync 服务器地址缺少主机名。".to_owned())?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !loopback {
+        return Err("当前版本仅允许本机 WechatSync 桥接地址。".to_owned());
+    }
+    let port = parsed
+        .port()
+        .ok_or_else(|| "WechatSync 服务器地址必须显式包含端口。".to_owned())?;
+    if port == WECHATSYNC_INTERNAL_HTTP_PORT {
+        return Err(format!(
+            "WechatSync WebSocket 端口不能使用 {WECHATSYNC_INTERNAL_HTTP_PORT}，该端口为本机内部转发保留。"
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn websocket_port_from_url(value: &str) -> Result<u16, String> {
+    reqwest::Url::parse(value)
+        .ok()
+        .and_then(|url| url.port())
+        .ok_or_else(|| "WechatSync 服务器地址缺少端口。".to_owned())
+}
+
+fn validate_wechat_sync_token(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 4_096 || value.chars().any(char::is_control) {
+        return Err("WechatSync Token 格式无效。".to_owned());
+    }
+    Ok(value.to_owned())
 }
 
 fn validate_model_profile_id(value: String) -> Result<String, String> {
@@ -1587,7 +1806,29 @@ fn normalize_public_option(
 
 #[cfg(test)]
 mod tests {
-    use super::select_profile_text_api_key;
+    use super::{
+        normalize_wechat_sync_server_url, select_profile_text_api_key, validate_wechat_sync_token,
+    };
+
+    #[test]
+    fn publisher_bridge_accepts_only_explicit_local_websocket_ports() {
+        assert_eq!(
+            normalize_wechat_sync_server_url(" ws://localhost:9527/ ").expect("local bridge URL"),
+            "ws://localhost:9527"
+        );
+        assert!(normalize_wechat_sync_server_url("http://localhost:9527").is_err());
+        assert!(normalize_wechat_sync_server_url("ws://example.com:9527").is_err());
+        assert!(normalize_wechat_sync_server_url("ws://localhost:9528").is_err());
+    }
+
+    #[test]
+    fn publisher_bridge_token_is_trimmed_and_rejects_controls() {
+        assert_eq!(
+            validate_wechat_sync_token("  extension-token  ").expect("valid token"),
+            "extension-token"
+        );
+        assert!(validate_wechat_sync_token("bad\ntoken").is_err());
+    }
 
     #[test]
     fn profile_secret_has_priority_over_legacy_slots() {

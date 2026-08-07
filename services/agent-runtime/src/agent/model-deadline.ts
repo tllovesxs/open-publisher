@@ -5,7 +5,7 @@ export class ModelDeadlineExceededError extends Error {
   readonly code = "MODEL_DEADLINE_EXCEEDED";
 
   constructor(readonly operation: string, readonly timeoutSeconds: number) {
-    super(`${operation} exceeded the configured model timeout (${timeoutSeconds}s)`);
+    super(`${operation} exceeded its model execution timeout (${timeoutSeconds}s)`);
     this.name = "ModelDeadlineExceededError";
   }
 }
@@ -27,9 +27,15 @@ export const runWithModelDeadline = async <T>(
   operation: string,
   work: () => Promise<T>,
   externalSignal?: AbortSignal,
+  minimumTimeoutSeconds = 0,
 ): Promise<T> => {
+  // A saved provider timeout is appropriate for ordinary requests, but a
+  // whole-document rewrite has to receive and return substantially more text.
+  // Callers can raise the operation floor while the profile limit still
+  // remains the default for all short operations.
+  const timeoutSeconds = Math.max(profile.timeoutSeconds, minimumTimeoutSeconds);
   let expired = false;
-  const timeoutError = new ModelDeadlineExceededError(operation, profile.timeoutSeconds);
+  const timeoutError = new ModelDeadlineExceededError(operation, timeoutSeconds);
   let rejectDeadline: ((reason: Error) => void) | undefined;
   let rejectCancellation: ((reason: Error) => void) | undefined;
   const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
@@ -45,7 +51,7 @@ export const runWithModelDeadline = async <T>(
     expired = true;
     abortAgent();
     rejectDeadline?.(timeoutError);
-  }, profile.timeoutSeconds * 1_000);
+  }, timeoutSeconds * 1_000);
   try {
     if (externalSignal?.aborted) throw cancellationError(operation);
     return await Promise.race([work(), deadline, cancellation]);

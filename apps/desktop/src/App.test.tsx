@@ -148,10 +148,12 @@ const setImagePlan = (mode: "none" | "fixed", count = 1) => {
 describe("desktop product flow", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     setDesktopBridgeForTests(nativeTestBridge);
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     setDesktopBridgeForTests(null);
   });
@@ -203,6 +205,7 @@ describe("desktop product flow", () => {
       disabledNodeIds: [],
       template,
       imageAssets: [],
+      inputImages: [],
       imagePlan: { mode: "none", targetCount: 0, materialMatchThreshold: 30 },
       webSearchMode: "off",
     });
@@ -210,6 +213,9 @@ describe("desktop product flow", () => {
     expect(seed).toContain("open-publisher-reference-template:v1:");
     expect(seed).toContain("独特的参考表达只用于分析。");
     expect(seed).toContain("开篇切入动作、段落粒度、章节推进");
+    expect(seed).toContain("产品推广事实表");
+    expect(seed).toContain("参考文章只属于‘表达源’");
+    expect(seed).toContain("当前产品资料才属于‘事实源’");
     expect(seed).not.toContain("phrase_blacklist");
   });
 
@@ -227,6 +233,7 @@ describe("desktop product flow", () => {
       disabledNodeIds: [],
       template: null,
       imageAssets: [],
+      inputImages: [],
       imagePlan: { mode: "none", targetCount: 0, materialMatchThreshold: 30 },
       webSearchMode: "off",
     });
@@ -234,7 +241,7 @@ describe("desktop product flow", () => {
     expect(seed).toContain(references);
   });
 
-  it("normalizes selected asset metadata to the visual sidecar protocol limits", () => {
+  it("normalizes selected asset metadata without clipping normal long descriptions", () => {
     const description = `图片内容\r\n${"可用于解释工作流的图示。".repeat(120)}\u0007`;
     const composition = visualCompositionFromCreation({
       topic: "测试文章",
@@ -260,12 +267,13 @@ describe("desktop product flow", () => {
         source: "uploaded",
         createdAt: "2026-08-04T00:00:00.000Z",
       }],
+      inputImages: [],
       imagePlan: { mode: "auto", targetCount: 0, materialMatchThreshold: 30 },
       webSearchMode: "auto",
     });
 
     const asset = composition.assets[0]!;
-    expect(Array.from(asset.description)).toHaveLength(600);
+    expect(Array.from(asset.description).length).toBeGreaterThan(600);
     expect(asset.description).not.toMatch(/[\r\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/);
     expect(Array.from(asset.alt)).toHaveLength(4);
     expect(asset.alt).toBe("工作流图");
@@ -338,6 +346,159 @@ describe("desktop product flow", () => {
     expect((screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value).not.toContain(
       "{{",
     );
+  });
+
+  it("completes planned image generation and inserts the result into the saved Markdown", async () => {
+    const visualContentHash = "visual-composition-test-hash";
+    const composeVisual = vi.fn<DesktopBridge["composeVisual"]>(async ({ visualComposition }) => ({
+      plan: {
+        sourceRevisionHash: visualContentHash,
+        targetCount: 1,
+        settings: { generation_batch_size: "1" },
+        needsConfirmation: false,
+        placements: [{
+          id: "illustration-1",
+          blockId: null,
+          anchorExcerpt: null,
+          afterHeading: null,
+          purpose: "用一张概念图帮助理解文章主题。",
+          visualContent: "文章核心概念的简洁信息图。",
+          visualType: "infographic",
+          source: "generate",
+          assetId: null,
+          candidates: [],
+          selectionReason: "当前没有匹配素材，使用 AI 生图。",
+          alt: "模拟文章配图 1",
+          generationPrompt: "Create one concise explanatory infographic.",
+          promptFile: "prompts/01-test.md",
+        }],
+      },
+      provider: "test-provider",
+      model: "test-model",
+      mocked: false,
+    }));
+    const getPiArticle = vi.fn<DesktopBridge["getPiArticle"]>(async (articleId) => {
+      const article = (await testOnlyMockDesktopBridge.listArticles()).find(
+        (candidate) => candidate.articleId === articleId,
+      );
+      if (!article) throw new Error("测试文章不存在");
+      return {
+        schemaVersion: "2",
+        articleId,
+        title: article.title,
+        relativePath: "article.md",
+        currentRevisionId: article.revisionId,
+        contentHash: visualContentHash,
+        updatedAt: article.updatedAt,
+        markdown: article.markdown,
+      };
+    });
+    const generateImage = vi.fn<DesktopBridge["generateImage"]>(
+      testOnlyMockDesktopBridge.generateImage,
+    );
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      composeVisual,
+      getPiArticle,
+      generateImage,
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+    setImagePlan("fixed", 1);
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "完整配图工作流" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    await waitFor(() => expect(
+      (screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value,
+    ).toMatch(/!\[模拟文章配图 1\]\(asset:\/\/generated-/), { timeout: 5_000 });
+    expect(composeVisual).toHaveBeenCalledTimes(1);
+    expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "Create one concise explanatory infographic.",
+      size: "1536x1024",
+    }));
+  });
+
+  it("reopens a dismissed visual plan and requires regeneration after the article changes", async () => {
+    const visualContentHash = `sha256:${"a".repeat(64)}`;
+    const composeVisual = vi.fn<DesktopBridge["composeVisual"]>(async () => ({
+      plan: {
+        sourceRevisionHash: visualContentHash,
+        targetCount: 1,
+        settings: { generation_batch_size: "1" },
+        needsConfirmation: true,
+        placements: [{
+          id: "illustration-reopen",
+          blockId: null,
+          anchorExcerpt: null,
+          afterHeading: null,
+          purpose: "解释当前文章核心内容。",
+          visualContent: "与当前正文一致的结构图。",
+          visualType: "infographic",
+          source: "generate",
+          assetId: null,
+          candidates: [],
+          selectionReason: "使用 AI 生图。",
+          alt: "正文结构图",
+          generationPrompt: "Create a restrained article diagram.",
+          promptFile: "prompts/01-reopen.md",
+        }],
+      },
+      provider: "test-provider",
+      model: "test-model",
+      mocked: false,
+    }));
+    const getPiArticle = vi.fn<DesktopBridge["getPiArticle"]>(async (articleId) => {
+      const article = (await testOnlyMockDesktopBridge.listArticles()).find(
+        (candidate) => candidate.articleId === articleId,
+      );
+      if (!article) throw new Error("测试文章不存在");
+      return {
+        schemaVersion: "2",
+        articleId,
+        title: article.title,
+        relativePath: "article.md",
+        currentRevisionId: article.revisionId,
+        contentHash: visualContentHash,
+        updatedAt: article.updatedAt,
+        markdown: article.markdown,
+      };
+    });
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      composeVisual,
+      getPiArticle,
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+    setImagePlan("fixed", 1);
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "可恢复的配图方案" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+
+    await screen.findByRole("heading", { name: "确认后再开始生成" });
+    fireEvent.click(screen.getAllByRole("button", { name: "暂不配图" }).at(-1)!);
+    const editor = await screen.findByLabelText("Markdown 正文");
+    const planButton = await screen.findByRole("button", { name: "配图方案" });
+    fireEvent.click(planButton);
+    expect(await screen.findByRole("heading", { name: "确认后再开始生成" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "确认并继续" })).toBeEnabled();
+    fireEvent.click(screen.getAllByRole("button", { name: "暂不配图" }).at(-1)!);
+
+    fireEvent.change(editor, {
+      target: { value: `${(editor as HTMLTextAreaElement).value}\n\n新增一段用户修改。` },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "配图方案" }));
+    expect(await screen.findByText("当前策略已过期")).toBeVisible();
+    expect(screen.getByRole("button", { name: "确认并继续" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重新生成策略" }));
+
+    await waitFor(() => expect(composeVisual).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("当前策略已过期")).toBeNull());
+    expect(screen.getByRole("button", { name: "确认并继续" })).toBeEnabled();
   });
 
   it("uses Pi for creation and commits its completed Markdown to the canonical article store", async () => {
@@ -431,7 +592,7 @@ describe("desktop product flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
 
-    await screen.findByText(/文章已生成 · 修订/, {}, { timeout: 3_000 });
+    await screen.findByText(/文章已生成 · 修订/, {}, { timeout: 12_000 });
     expect(startPiArticleRun).toHaveBeenCalledTimes(1);
     expect(getPiArticle).toHaveBeenCalledWith(expect.any(String));
     await waitFor(() => expect(
@@ -470,6 +631,7 @@ describe("desktop product flow", () => {
       articleId: "article-1",
       templateId: "template-1",
       imageAssetIds: ["asset-1"],
+      inputImageReferences: [],
       request: {
         topic: "为项目写一篇更新文章",
         title: "",
@@ -499,6 +661,7 @@ describe("desktop product flow", () => {
           source: "uploaded",
           createdAt: "2026-08-04T00:00:00.000Z",
         }],
+        inputImages: [],
         imagePlan: { mode: "auto", targetCount: 0, materialMatchThreshold: 30 },
         webSearchMode: "auto",
         agentInstructions: [{
@@ -550,7 +713,9 @@ describe("desktop product flow", () => {
       expect(editor.value).toMatch(/!\[旧图片\]\(asset:\/\/media-/);
     });
     expect(editor.value).not.toContain("data:image/");
-    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "编辑器布局" }), {
+      target: { value: "preview" },
+    });
     expect(await screen.findByRole("img", { name: "旧图片" })).toHaveAttribute("src", image);
   });
 
@@ -578,8 +743,8 @@ describe("desktop product flow", () => {
   it("keeps templates and image assets in dedicated pages", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "模板" }));
-    expect(await screen.findByRole("heading", { name: "模板" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "用此模板创作" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "产品推广" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "用产品推广模板创作" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "素材库" }));
     expect(await screen.findByRole("heading", { name: "素材库" })).toBeVisible();
@@ -591,12 +756,43 @@ describe("desktop product flow", () => {
     expect(screen.getByRole("main")).toHaveClass("page-viewport--settings");
   });
 
+  it("migrates the template library to product promotion plus imported references", async () => {
+    window.localStorage.setItem("open-publisher-studio-templates", JSON.stringify([
+      {
+        id: "tech-explainer",
+        name: "技术解读",
+        description: "旧内置模板",
+        category: "技术文章",
+        markdown: "# {{title}}",
+        isBuiltIn: true,
+      },
+      {
+        id: "saved-reference",
+        name: "我保存的参考文章",
+        description: "本地参考",
+        category: "参考写作",
+        markdown: "# {{title}}\n\n{{lead}}",
+        mode: "reference",
+        referenceMarkdown: "# 原文\n\n需要保留的参考正文。",
+        rightsConfirmed: true,
+        isBuiltIn: false,
+      },
+    ]));
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "模板" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "产品推广" })).toBeVisible();
+    expect(screen.queryByText("技术解读")).toBeNull();
+    expect(screen.getByText("我保存的参考文章")).toBeVisible();
+  });
+
   it("extracts a reusable template from Markdown and saves it after review", async () => {
     render(<App />);
     await waitForNativeRuntime();
     fireEvent.click(screen.getByRole("button", { name: "模板" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "创建参考模板" }));
+    fireEvent.click(await screen.findByRole("button", { name: "导入参考文章" }));
     const source = await screen.findByLabelText("原始 Markdown");
     fireEvent.change(source, {
       target: {
@@ -604,14 +800,14 @@ describe("desktop product flow", () => {
       },
     });
     fireEvent.click(screen.getByRole("checkbox", { name: /我确认拥有这篇文章的使用授权/ }));
-    fireEvent.click(screen.getByRole("button", { name: "分析参考模板" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成仿写参考" }));
 
-    expect(await screen.findByRole("heading", { name: "审核并保存参考模板" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "审核并保存仿写参考" })).toBeVisible();
     expect(screen.getByText("完整参考原文")).toBeVisible();
     expect(screen.getByText(/Wandao 体积下降 42%/)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "保存模板" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存仿写参考" }));
 
-    expect(await screen.findByRole("heading", { name: "高保真参考模板" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Wandao 体积下降 42% · 仿写参考" })).toBeVisible();
   });
 
   it("configures and tests the model from settings without rendering the secret", async () => {

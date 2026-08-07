@@ -46,19 +46,22 @@ describe("TemplatesPage", () => {
         <TemplatesPage
           onChange={vi.fn()}
           onExtractTemplate={() => new Promise<MarkdownTemplate>(() => undefined)}
+          onRefreshOfficialTemplate={vi.fn()}
           onSelect={vi.fn()}
           onStartCreating={vi.fn()}
+          officialTemplateError={null}
+          officialTemplateSource="bundled"
           selectedTemplateId={template.id}
           templates={[template]}
         />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: "创建参考模板" }));
+      fireEvent.click(screen.getByRole("button", { name: "导入参考文章" }));
       fireEvent.change(screen.getByLabelText("原始 Markdown"), {
         target: { value: "# 一篇参考文章\n\n正文" },
       });
       fireEvent.click(screen.getByRole("checkbox", { name: /我确认拥有这篇文章的使用授权/ }));
-      fireEvent.click(screen.getByRole("button", { name: "分析参考模板" }));
+      fireEvent.click(screen.getByRole("button", { name: "生成仿写参考" }));
 
       expect(screen.getByRole("button", { name: "停止等待" })).toBeEnabled();
       await act(async () => {

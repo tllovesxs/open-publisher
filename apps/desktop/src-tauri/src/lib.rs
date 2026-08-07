@@ -11,16 +11,18 @@ use std::{
 
 use desktop_services::DesktopIntegrationService;
 use pi_supervisor::{
-    PiAgentRun, PiArticle, PiModelDiscoverySummary, PiRunEvent, PiRuntimeSnapshot,
-    PiRuntimeSupervisor, PiRuntimeVersion, StartPiArticleRunRequest,
+    PiAgentRun, PiArticle, PiArticleRevisionDetail, PiArticleRevisionSummary,
+    PiModelDiscoverySummary, PiRunEvent, PiRuntimeSnapshot, PiRuntimeSupervisor, PiRuntimeVersion,
+    StartPiArticleRunRequest,
 };
 
 use supervisor::{
-    ComposeVisualRequest, ComposeVisualSummary, ConfigureModelRequest, CreatePublishPlanRequest,
-    ExtractTemplateRequest, GenerateImageRequest, GenerateImageSummary, GitHubApplicationInfo,
-    ModelConfigurationSource, ModelConfigurationStore, ModelConfigurationSummary,
-    ModelConnectionTestSummary, ModelProfileSummary, ModelSecretKind, ProcessPublishJobRequest,
-    ProcessPublishJobSummary, PublishPlanRequest, PublishPlanSummary,
+    ComposeVisualRequest, ComposeVisualSummary, ConfigureModelRequest,
+    ConfigurePublisherBridgeRequest, CreatePublishPlanRequest, ExtractTemplateRequest,
+    GenerateImageRequest, GenerateImageSummary, GitHubApplicationInfo, ModelConfigurationSource,
+    ModelConfigurationStore, ModelConfigurationSummary, ModelConnectionTestSummary,
+    ModelProfileSummary, ModelSecretKind, ProcessPublishJobRequest, ProcessPublishJobSummary,
+    PublishPlanRequest, PublishPlanSummary, PublisherBridgeConfigurationSummary,
     ResolveUnknownPublishJobRequest, RewriteArticleRequest, RewriteArticleSummary,
     SaveDraftReceipt, SaveDraftRequest, StoredArticleSummary, TemplateExtractionSummary,
     WechatSyncBridgeStatus,
@@ -237,6 +239,45 @@ async fn get_pi_article(
     tauri::async_runtime::spawn_blocking(move || supervisor.article(&article_id))
         .await
         .map_err(|_| "Pi 文章读取任务已取消。".to_owned())?
+}
+
+#[tauri::command]
+async fn list_article_revisions(
+    article_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<PiArticleRevisionSummary>, String> {
+    let supervisor = Arc::clone(&state.pi_supervisor);
+    tauri::async_runtime::spawn_blocking(move || supervisor.list_article_revisions(&article_id))
+        .await
+        .map_err(|_| "文章历史读取任务已取消。".to_owned())?
+}
+
+#[tauri::command]
+async fn get_article_revision(
+    article_id: String,
+    revision_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<PiArticleRevisionDetail, String> {
+    let supervisor = Arc::clone(&state.pi_supervisor);
+    tauri::async_runtime::spawn_blocking(move || {
+        supervisor.article_revision(&article_id, &revision_id)
+    })
+    .await
+    .map_err(|_| "文章修订读取任务已取消。".to_owned())?
+}
+
+#[tauri::command]
+async fn restore_article_revision(
+    article_id: String,
+    revision_id: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<PiArticleRevisionDetail, String> {
+    let supervisor = Arc::clone(&state.pi_supervisor);
+    tauri::async_runtime::spawn_blocking(move || {
+        supervisor.restore_article_revision(&article_id, &revision_id)
+    })
+    .await
+    .map_err(|_| "文章修订恢复任务已取消。".to_owned())?
 }
 
 #[tauri::command]
@@ -480,11 +521,74 @@ async fn wechat_sync_status(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<WechatSyncBridgeStatus, String> {
     let service = Arc::clone(&state.desktop_services);
+    let model_store = Arc::clone(&state.model_store);
+    let pi_supervisor = Arc::clone(&state.pi_supervisor);
     tauri::async_runtime::spawn_blocking(move || {
-        service.wechat_sync_status(force_refresh.unwrap_or(false))
+        let configuration = model_store.load_publisher_bridge_runtime_configuration()?;
+        if configuration.token.is_empty() {
+            return Ok(WechatSyncBridgeStatus {
+                available: false,
+                connected: false,
+                state: "token_required".to_owned(),
+                detail: "请先在设置的“平台账号”中填写 WechatSync Token。".to_owned(),
+                platforms: Vec::new(),
+            });
+        }
+        if let Err(detail) = pi_supervisor.ensure_started() {
+            return Ok(WechatSyncBridgeStatus {
+                available: false,
+                connected: false,
+                state: "service_unreachable".to_owned(),
+                detail: format!("WechatSync 本地桥启动失败：{detail}"),
+                platforms: Vec::new(),
+            });
+        }
+        Ok(service.wechat_sync_status(
+            force_refresh.unwrap_or(false),
+            &format!("http://127.0.0.1:{}", configuration.http_port),
+        ))
     })
     .await
-    .map_err(|_| "WechatSync status lookup was cancelled".to_owned())
+    .map_err(|_| "WechatSync status lookup was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn publisher_bridge_configuration(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<PublisherBridgeConfigurationSummary, String> {
+    let model_store = Arc::clone(&state.model_store);
+    tauri::async_runtime::spawn_blocking(move || model_store.publisher_bridge_configuration())
+        .await
+        .map_err(|_| "publisher bridge configuration lookup was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn configure_publisher_bridge(
+    request: ConfigurePublisherBridgeRequest,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<PublisherBridgeConfigurationSummary, String> {
+    let model_store = Arc::clone(&state.model_store);
+    let pi_supervisor = Arc::clone(&state.pi_supervisor);
+    tauri::async_runtime::spawn_blocking(move || {
+        let summary = model_store.configure_publisher_bridge(request)?;
+        // The bridge reads its token and port only at process startup. Stop the
+        // runtime after persistence; the following status probe restarts it
+        // with the new private environment without exposing the token to React.
+        pi_supervisor.stop()?;
+        Ok(summary)
+    })
+    .await
+    .map_err(|_| "publisher bridge configuration update was cancelled".to_owned())?
+}
+
+#[tauri::command]
+async fn reveal_publisher_bridge_token(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    let model_store = Arc::clone(&state.model_store);
+    tauri::async_runtime::spawn_blocking(move || model_store.reveal_publisher_bridge_token())
+        .await
+        .map_err(|_| "publisher bridge token reveal was cancelled".to_owned())?
 }
 
 /// Keeps native titlebar and DWM material in step with the user's in-app
@@ -546,6 +650,9 @@ pub fn run() {
             stop_pi_run,
             stop_pi_operation,
             get_pi_article,
+            list_article_revisions,
+            get_article_revision,
+            restore_article_revision,
             list_articles,
             save_draft,
             create_publish_plan,
@@ -566,6 +673,9 @@ pub fn run() {
             reveal_model_secret,
             test_model_connection,
             github_application_info,
+            publisher_bridge_configuration,
+            configure_publisher_bridge,
+            reveal_publisher_bridge_token,
             wechat_sync_status,
             sync_window_theme
         ])

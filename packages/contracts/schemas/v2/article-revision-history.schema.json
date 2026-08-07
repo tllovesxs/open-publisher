@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openpublisher.dev/v2/article-revision-history.schema.json",
+  "title": "ArticleRevisionHistoryV2",
+  "$defs": {
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "articleId", "revisionId", "revisionNumber", "parentRevisionId", "title", "contentHash", "createdAt", "reason", "isCurrent"],
+      "properties": {
+        "schemaVersion": { "type": "string", "const": "2" },
+        "articleId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+        "revisionId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+        "revisionNumber": { "type": "integer", "minimum": 1 },
+        "parentRevisionId": {
+          "oneOf": [
+            { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+            { "type": "null" }
+          ]
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "contentHash": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Sha256" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "isCurrent": { "type": "boolean" }
+      }
+    },
+    "Detail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "articleId", "revisionId", "revisionNumber", "parentRevisionId", "title", "contentHash", "createdAt", "reason", "isCurrent", "markdown"],
+      "properties": {
+        "schemaVersion": { "type": "string", "const": "2" },
+        "articleId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+        "revisionId": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+        "revisionNumber": { "type": "integer", "minimum": 1 },
+        "parentRevisionId": {
+          "oneOf": [
+            { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Identifier" },
+            { "type": "null" }
+          ]
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "contentHash": { "$ref": "https://schemas.openpublisher.dev/v2/common.schema.json#/$defs/Sha256" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "isCurrent": { "type": "boolean" },
+        "markdown": { "type": "string", "maxLength": 2000000 }
+      }
+    },
+    "ListResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revisions"],
+      "properties": {
+        "revisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Summary" }
+        }
+      }
+    }
+  }
+}

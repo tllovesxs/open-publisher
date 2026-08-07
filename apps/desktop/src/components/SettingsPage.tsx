@@ -16,6 +16,7 @@ import {
 import { useEffect, useState } from "react";
 import type {
   ConfigureModelRequest,
+  ConfigurePublisherBridgeRequest,
   DisabledOptionalNodeId,
   GitHubApplicationInfo,
   ModelSecretKind,
@@ -23,6 +24,7 @@ import type {
   ModelConnectionTestSummary,
   ModelProfileSummary,
   PiModelDiscoverySummary,
+  PublisherBridgeConfigurationSummary,
   RuntimeSnapshot,
   WechatSyncBridgeStatus,
 } from "../lib/desktopBridge";
@@ -31,7 +33,9 @@ import type { PlatformDefinition } from "../types";
 type SettingsTab = "models" | "accounts" | "writing" | "data";
 
 interface SettingsPageProps {
+  initialTab?: SettingsTab;
   configuring: boolean;
+  configuringPublisherBridge: boolean;
   modelConfiguration: ModelConfigurationSummary | null;
   modelProfiles: ModelProfileSummary[];
   modelTest: ModelConnectionTestSummary | null;
@@ -45,13 +49,17 @@ interface SettingsPageProps {
   disabledNodes: Set<DisabledOptionalNodeId>;
   platforms: PlatformDefinition[];
   runtime: RuntimeSnapshot | null;
+  publisherBridgeConfiguration: PublisherBridgeConfigurationSummary | null;
+  publisherBridgeError: string | null;
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
   onConfigureModel: (request: ConfigureModelRequest) => void;
+  onConfigurePublisherBridge: (request: ConfigurePublisherBridgeRequest) => void;
   onDiscoverModels: () => void;
   onActivateModelProfile: (profileId: string) => void;
   onCheckGitHubApplicationInfo: () => void;
   onRevealSecret: (kind: ModelSecretKind) => Promise<string | null>;
+  onRevealPublisherBridgeToken: () => Promise<string | null>;
   onRefreshWechatSync: () => void;
   onToggleNode: (nodeId: DisabledOptionalNodeId) => void;
 }
@@ -138,7 +146,9 @@ function splitHosts(value: string) {
 }
 
 export function SettingsPage({
+  initialTab = "models",
   configuring,
+  configuringPublisherBridge,
   modelConfiguration,
   modelProfiles,
   modelTest,
@@ -152,17 +162,21 @@ export function SettingsPage({
   disabledNodes,
   platforms,
   runtime,
+  publisherBridgeConfiguration,
+  publisherBridgeError,
   wechatSyncStatus,
   wechatSyncRefreshing,
   onConfigureModel,
+  onConfigurePublisherBridge,
   onDiscoverModels,
   onActivateModelProfile,
   onCheckGitHubApplicationInfo,
   onRevealSecret,
+  onRevealPublisherBridgeToken,
   onRefreshWechatSync,
   onToggleNode,
 }: SettingsPageProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("models");
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [initialModelDraft] = useState(loadModelDraft);
   const [name, setName] = useState(initialModelDraft.name);
   const [profileId, setProfileId] = useState(initialModelDraft.profileId);
@@ -187,8 +201,33 @@ export function SettingsPage({
   const [showImageKey, setShowImageKey] = useState(false);
   const [showTavilyKey, setShowTavilyKey] = useState(false);
   const [showGithubToken, setShowGithubToken] = useState(false);
+  const [publisherServerUrl, setPublisherServerUrl] = useState("ws://localhost:9527");
+  const [publisherToken, setPublisherToken] = useState("");
+  const [showPublisherToken, setShowPublisherToken] = useState(false);
+  const [publisherValidation, setPublisherValidation] = useState<string | null>(null);
   const [validation, setValidation] = useState<string | null>(null);
   const connectedPlatforms = platforms.filter((platform) => platform.status === "connected");
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (!publisherBridgeConfiguration) return;
+    setPublisherServerUrl(publisherBridgeConfiguration.serverUrl);
+    setPublisherToken("");
+    setShowPublisherToken(false);
+  }, [publisherBridgeConfiguration]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "accounts"
+      || !publisherBridgeConfiguration?.tokenConfigured
+      || wechatSyncStatus?.state === "connected"
+    ) return;
+    const interval = window.setInterval(() => onRefreshWechatSync(), 5_000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, onRefreshWechatSync, publisherBridgeConfiguration?.tokenConfigured, wechatSyncStatus?.state]);
 
   const clearSecretInputs = () => {
     setTextApiKey("");
@@ -334,6 +373,45 @@ export function SettingsPage({
       tavilyApiKey: tavilyApiKey.trim(),
       githubToken: githubToken.trim(),
       timeoutSeconds,
+    });
+  };
+
+  const revealPublisherToken = async () => {
+    if (publisherToken) {
+      setShowPublisherToken((current) => !current);
+      return;
+    }
+    if (!publisherBridgeConfiguration?.tokenConfigured) {
+      setPublisherValidation("请先填写浏览器扩展中显示的 Token。");
+      return;
+    }
+    try {
+      const value = await onRevealPublisherBridgeToken();
+      if (!value) {
+        setPublisherValidation("没有可显示的已保存 Token，请重新输入。");
+        return;
+      }
+      setPublisherToken(value);
+      setShowPublisherToken(true);
+      setPublisherValidation(null);
+    } catch {
+      setPublisherValidation("无法读取本机加密保存的 Token。");
+    }
+  };
+
+  const submitPublisherBridge = () => {
+    if (!publisherServerUrl.trim()) {
+      setPublisherValidation("请填写插件中使用的 WebSocket 服务器地址。");
+      return;
+    }
+    if (!publisherToken.trim() && !publisherBridgeConfiguration?.tokenConfigured) {
+      setPublisherValidation("请填写浏览器扩展中显示的 Token。");
+      return;
+    }
+    setPublisherValidation(null);
+    onConfigurePublisherBridge({
+      serverUrl: publisherServerUrl.trim(),
+      token: publisherToken.trim(),
     });
   };
 
@@ -827,7 +905,7 @@ export function SettingsPage({
                   <Server aria-hidden="true" size={19} />
                   <div>
                     <h2 id="account-settings-title">平台账号</h2>
-                    <p>通过 WechatSync 只读检查浏览器扩展中的平台登录状态。</p>
+                    <p>配置本地桥后，读取浏览器扩展中的平台登录状态。</p>
                   </div>
                 </div>
                 <button
@@ -839,6 +917,72 @@ export function SettingsPage({
                   {wechatSyncRefreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
                   刷新状态
                 </button>
+              </div>
+              <div className="publisher-bridge-settings">
+                <div className="publisher-bridge-settings__heading">
+                  <div>
+                    <strong>发布连接</strong>
+                    <small>插件的“服务器地址”和 Token 必须与这里完全一致。</small>
+                  </div>
+                  <span className={`connection-result${wechatSyncStatus?.state === "connected" ? " is-success" : ""}`}>
+                    {wechatSyncStatus?.state === "connected" ? <CheckCircle2 size={15} /> : <CircleAlert size={15} />}
+                    {wechatSyncStatus?.state === "connected"
+                      ? "已连接"
+                      : wechatSyncStatus?.state === "token_rejected"
+                        ? "Token 不一致"
+                        : wechatSyncStatus?.state === "extension_waiting"
+                          ? "等待插件"
+                          : wechatSyncStatus?.state === "token_required"
+                            ? "待配置"
+                            : "未连接"}
+                  </span>
+                </div>
+                <div className="form-grid publisher-bridge-settings__fields">
+                  <label className="field field--wide">
+                    <span>服务器地址</span>
+                    <input
+                      autoComplete="off"
+                      onChange={(event) => setPublisherServerUrl(event.target.value)}
+                      placeholder="ws://localhost:9527"
+                      spellCheck={false}
+                      value={publisherServerUrl}
+                    />
+                    <small>请把同一地址填入 WechatSync 插件的 CLI / MCP 设置。</small>
+                  </label>
+                  <label className="field field--wide">
+                    <span>Token {publisherBridgeConfiguration?.tokenConfigured && <small>已加密保存</small>}</span>
+                    <span className="secret-input">
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => setPublisherToken(event.target.value)}
+                        placeholder={publisherBridgeConfiguration?.tokenMasked ?? "粘贴插件中显示的 Token"}
+                        spellCheck={false}
+                        type={showPublisherToken ? "text" : "password"}
+                        value={publisherToken}
+                      />
+                      <button
+                        aria-label={showPublisherToken ? "隐藏 WechatSync Token" : "显示 WechatSync Token"}
+                        onClick={() => void revealPublisherToken()}
+                        type="button"
+                      >
+                        {showPublisherToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </span>
+                  </label>
+                </div>
+                <div className="settings-actions settings-actions--compact">
+                  <button
+                    className="button button--primary"
+                    disabled={configuringPublisherBridge}
+                    onClick={submitPublisherBridge}
+                    type="button"
+                  >
+                    {configuringPublisherBridge ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
+                    {configuringPublisherBridge ? "正在重启本地桥" : "保存并测试"}
+                  </button>
+                </div>
+                {publisherValidation && <p className="form-error" role="alert">{publisherValidation}</p>}
+                {publisherBridgeError && <p className="form-error" role="alert">保存失败：{publisherBridgeError}</p>}
               </div>
               <p className="session-note" role="status">
                 {wechatSyncStatus?.detail ?? "尚未读取 WechatSync 状态。"}

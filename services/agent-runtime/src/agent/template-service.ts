@@ -4,7 +4,10 @@ import {
   throwIfOperationCancelled,
 } from "../operations/operation-registry.js";
 
-const MAX_SOURCE_CHARS = 32_768;
+// Keep a generous transport guard, but do not truncate normal long-form
+// reference articles. Template extraction needs the complete source to retain
+// voice, layout, and structural details.
+const MAX_SOURCE_CHARS = 2_000_000;
 const PLACEHOLDER = /\{\{([a-z][a-z0-9_]*)\}\}/g;
 const RAW_URL = /(?:https?:\/\/|www\.)/i;
 const HEADING = /^(#{1,6})\s+(.+?)\s*$/;
@@ -84,7 +87,7 @@ const record = (value: unknown): UnknownRecord =>
   value && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : {};
 
 const profileText = (value: UnknownRecord, camel: string, snake: string): string =>
-  text(value[camel] ?? value[snake], 4_000);
+  text(value[camel] ?? value[snake], 20_000);
 
 const normalizeSource = (source: string): string => {
   const normalized = source.replace(/\r\n?/g, "\n").trim();
@@ -229,7 +232,7 @@ export class TemplateService {
     throwIfOperationCancelled(signal);
     let generated: Awaited<ReturnType<TemplateTextModel["generate"]>> | null = null;
     try {
-      generated = await this.model.generate({ prompt: promptFor(source), maxOutputTokens: 3_600 }, signal);
+      generated = await this.model.generate({ prompt: promptFor(source), maxOutputTokens: 12_000 }, signal);
       throwIfOperationCancelled(signal);
       const candidate = parseJsonObject(generated.text);
       const name = text(candidate.name, 80);
@@ -247,7 +250,7 @@ export class TemplateService {
         styleProfile: { tone: profileText(style, "tone", "tone"), audience: profileText(style, "audience", "audience"), perspective: profileText(style, "perspective", "perspective"), sentenceStyle: profileText(style, "sentenceStyle", "sentence_style"), pacing: profileText(style, "pacing", "pacing"), density: profileText(style, "density", "density") },
         structureProfile: { openingPattern: profileText(structure, "openingPattern", "opening_pattern"), sectionPattern: profileText(structure, "sectionPattern", "section_pattern"), conclusionPattern: profileText(structure, "conclusionPattern", "conclusion_pattern"), headingDepth: profileText(structure, "headingDepth", "heading_depth"), paragraphPattern: profileText(structure, "paragraphPattern", "paragraph_pattern") },
         layoutProfile: { useLists: typeof layout.useLists === "boolean" ? layout.useLists : typeof layout.use_lists === "boolean" ? layout.use_lists : true, useTables: typeof layout.useTables === "boolean" ? layout.useTables : typeof layout.use_tables === "boolean" ? layout.use_tables : false, useBlockquotes: typeof layout.useBlockquotes === "boolean" ? layout.useBlockquotes : typeof layout.use_blockquotes === "boolean" ? layout.use_blockquotes : false, useCodeBlocks: typeof layout.useCodeBlocks === "boolean" ? layout.useCodeBlocks : typeof layout.use_code_blocks === "boolean" ? layout.use_code_blocks : false, imagePlacement: profileText(layout, "imagePlacement", "image_placement"), emphasisRules: profileText(layout, "emphasisRules", "emphasis_rules") },
-        fixedBlocks: [], variables: variablesIn(markdown), usageInstructions: text(candidate.usageInstructions ?? candidate.usage_instructions, 4_000), analysisVersion: "reference-template.v2", sourceFingerprint: fingerprint(source), provider: generated.provider, model: generated.model, mocked: generated.mocked ?? false,
+        fixedBlocks: [], variables: variablesIn(markdown), usageInstructions: text(candidate.usageInstructions ?? candidate.usage_instructions, 20_000), analysisVersion: "reference-template.v2", sourceFingerprint: fingerprint(source), provider: generated.provider, model: generated.model, mocked: generated.mocked ?? false,
       };
     } catch (error: unknown) {
       if (isOperationCancelled(error)) throw error;

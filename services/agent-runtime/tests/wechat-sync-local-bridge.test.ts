@@ -1,0 +1,88 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { WechatSyncLocalBridge } from "../src/publishing/wechat-sync-local-bridge.js";
+
+const bridges: WechatSyncLocalBridge[] = [];
+const sockets: WebSocket[] = [];
+
+afterEach(() => {
+  for (const socket of sockets.splice(0)) socket.close();
+  for (const bridge of bridges.splice(0)) bridge.stop();
+});
+
+const connectExtension = async (
+  bridge: WechatSyncLocalBridge,
+  respond: (request: Record<string, unknown>) => Record<string, unknown>,
+) => {
+  const port = bridge.websocketPort;
+  if (!port) throw new Error("bridge websocket did not start");
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  sockets.push(socket);
+  socket.addEventListener("message", (event) => {
+    const request = JSON.parse(String(event.data)) as Record<string, unknown>;
+    socket.send(JSON.stringify(respond(request)));
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener("open", () => resolve(), { once: true });
+    socket.addEventListener("error", () => reject(new Error("extension websocket failed")), { once: true });
+  });
+};
+
+describe("WechatSyncLocalBridge", () => {
+  it("hosts the extension socket and places the configured token in every request", async () => {
+    const bridge = new WechatSyncLocalBridge({
+      token: "extension-token",
+      websocketPort: 0,
+      httpPort: 0,
+      requestTimeoutMs: 2_000,
+    });
+    bridges.push(bridge);
+    bridge.start();
+    let receivedToken: unknown;
+    await connectExtension(bridge, (request) => {
+      receivedToken = request.token;
+      return {
+        id: request.id,
+        result: [{ id: "zhihu", isAuthenticated: true, username: "writer" }],
+      };
+    });
+
+    const port = bridge.httpPort;
+    if (!port) throw new Error("bridge HTTP API did not start");
+    const status = await fetch(`http://127.0.0.1:${port}/status`);
+    await expect(status.json()).resolves.toMatchObject({ connected: true, tokenConfigured: true });
+
+    const response = await fetch(`http://127.0.0.1:${port}/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "listPlatforms", params: { forceRefresh: true } }),
+    });
+    expect(response.status).toBe(200);
+    expect(receivedToken).toBe("extension-token");
+    await expect(response.json()).resolves.toEqual({
+      result: [{ id: "zhihu", isAuthenticated: true, username: "writer" }],
+    });
+  });
+
+  it("preserves the extension's token rejection as an actionable HTTP status", async () => {
+    const bridge = new WechatSyncLocalBridge({
+      token: "wrong-token",
+      websocketPort: 0,
+      httpPort: 0,
+      requestTimeoutMs: 2_000,
+    });
+    bridges.push(bridge);
+    bridge.start();
+    await connectExtension(bridge, (request) => ({
+      id: request.id,
+      error: { code: 403, message: "Invalid or missing token" },
+    }));
+
+    const response = await fetch(`http://127.0.0.1:${bridge.httpPort}/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "listPlatforms", params: {} }),
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid or missing token" });
+  });
+});

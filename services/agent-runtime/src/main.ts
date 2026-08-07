@@ -16,9 +16,12 @@ import { ArticleStore } from "./storage/article-store.js";
 import { openRuntimeDatabase, type RuntimeDatabase } from "./storage/database.js";
 import { importLegacyPythonArticlesOnce } from "./storage/legacy-python-import.js";
 import {
+  DryRunDelivery,
   PublishDeliveryRouter,
   PublishOutboxService,
+  WechatSyncDraftDelivery,
 } from "./publishing/publish-outbox-service.js";
+import { WechatSyncLocalBridge } from "./publishing/wechat-sync-local-bridge.js";
 import { ImageService } from "./services/image-service.js";
 
 const config = loadRuntimeConfig(process.env);
@@ -69,6 +72,7 @@ const initialize = async (): Promise<RuntimeDatabase> => {
 };
 
 const shutdown = (): void => {
+  wechatSyncBridge?.stop();
   database.close();
   server.stop(true);
   process.exit(0);
@@ -105,7 +109,13 @@ const imageService = new ImageService(
 );
 const publishOutboxService = new PublishOutboxService(
   database.sqlite,
-  new PublishDeliveryRouter(),
+  new PublishDeliveryRouter(
+    new DryRunDelivery(),
+    new WechatSyncDraftDelivery(
+      fetch,
+      `http://127.0.0.1:${config.wechatSyncHttpPort}/request`,
+    ),
+  ),
 );
 const app = createRuntimeApp({
   config,
@@ -125,6 +135,28 @@ const server = Bun.serve({
   port: config.port,
   fetch: app.fetch,
 });
+
+const wechatSyncBridge = new WechatSyncLocalBridge({
+  token: config.wechatSyncToken,
+  websocketPort: config.wechatSyncWebsocketPort,
+  httpPort: config.wechatSyncHttpPort,
+});
+try {
+  wechatSyncBridge.start();
+  console.log(JSON.stringify({
+    level: "info",
+    event: "wechat_sync_bridge.listening",
+    websocketPort: config.wechatSyncWebsocketPort,
+    httpPort: config.wechatSyncHttpPort,
+    tokenConfigured: config.wechatSyncToken.length > 0,
+  }));
+} catch (error: unknown) {
+  console.error(JSON.stringify({
+    level: "error",
+    event: "wechat_sync_bridge.start_failed",
+    message: error instanceof Error ? error.message : String(error),
+  }));
+}
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

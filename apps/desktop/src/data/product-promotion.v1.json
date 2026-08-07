@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "version": "2026-08-07",
+  "updatedAt": "2026-08-07",
+  "template": {
+    "id": "product-promotion",
+    "name": "产品推广",
+    "description": "从真实用户问题切入，用可核实的产品能力建立信任，并给出自然的下一步行动。",
+    "category": "产品推广",
+    "markdown": "# {{title}}\n\n{{user_scene_and_problem}}\n\n{{product_definition}}\n\n## 为什么原来的做法不够用\n\n{{current_workflow_and_cost}}\n\n## {{product_name}}是怎么解决的\n\n{{solution_mapped_to_pain_points}}\n\n## 实际能做什么\n\n{{verified_features_and_evidence}}\n\n## 适合哪些人\n\n{{target_users_and_scenarios}}\n\n## 从这里开始\n\n{{honest_limits_and_call_to_action}}",
+    "styleProfile": {
+      "tone": "像真正使用过产品的人进行介绍：自然、具体、克制，有判断但不喊口号。",
+      "audience": "由用户资料确定目标用户；始终回答读者现在怎么做、哪里麻烦、产品具体省掉了什么。",
+      "perspective": "以用户任务和使用场景为中心，产品是解决问题的手段，不从宏大行业背景讲起。",
+      "sentenceStyle": "口语化的完整句，长短句交替；少用排比、定义句和连续形容词，不写说明书腔。",
+      "pacing": "具体场景 -> 摩擦与代价 -> 产品介入 -> 能力证据 -> 适用边界 -> 行动引导。",
+      "density": "每段至少提供一个新事实、真实场景或明确判断；删除同义反复和空泛价值判断。"
+    },
+    "structureProfile": {
+      "openingPattern": "从目标用户熟悉的工作瞬间、失败经历或直接问题切入，尽快点出产品，不用‘在某某时代’铺垫。",
+      "sectionPattern": "先写现有流程和痛点，再把每项产品能力对应到具体痛点，并用资料中的界面、流程、命令、模块或公开信息作证。",
+      "conclusionPattern": "诚实说明适用对象、当前边界和开始方式；行动引导必须来自资料中的真实入口或链接。",
+      "headingDepth": "通常使用一个 H1 和 3-5 个 H2；标题应表达读者问题或使用结果，不机械照抄模板字段名。",
+      "paragraphPattern": "每段完成一个动作：描述场景、解释成本、展示解决方法或给出证据；段落长短随内容变化。"
+    },
+    "layoutProfile": {
+      "useLists": true,
+      "useTables": false,
+      "useBlockquotes": false,
+      "useCodeBlocks": false,
+      "imagePlacement": "优先展示真实产品界面、关键工作流和使用结果；图片紧跟它所证明的段落，不用纯装饰图代替证据。",
+      "emphasisRules": "只强调用户收益、关键操作或限制；避免整段加粗、连续感叹号和营销口号。"
+    },
+    "fixedBlocks": [],
+    "variables": [
+      "title",
+      "user_scene_and_problem",
+      "product_definition",
+      "current_workflow_and_cost",
+      "product_name",
+      "solution_mapped_to_pain_points",
+      "verified_features_and_evidence",
+      "target_users_and_scenarios",
+      "honest_limits_and_call_to_action"
+    ],
+    "usageInstructions": "写作前先建立产品事实表：产品是什么、目标用户、用户当前流程、痛点与代价、产品如何解决、可核实功能与证据、差异点、限制、行动入口。每一项只能来自用户提示、用户选择的项目文件、官方仓库或联网工具结果；缺失就省略或明确待确认。标题和开头优先写用户能感知的具体问题，不写‘重塑行业’‘开启新范式’‘赋能’等空泛套话。若同时选择仿写参考文章，只复刻其开篇动作、章节顺序、段落长度、叙述视角、转折节奏和排版频率；参考文章中的产品名、人物、数字、案例、链接、功能和观点都不是新产品事实，禁止迁移。",
+    "isBuiltIn": true,
+    "mode": "scaffold"
+  }
+}

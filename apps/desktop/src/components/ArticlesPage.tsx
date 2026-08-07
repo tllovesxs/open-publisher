@@ -4,6 +4,7 @@ import {
   ChevronRight,
   FileText,
   GripVertical,
+  History,
   ImagePlus,
   LoaderCircle,
   Plus,
@@ -20,7 +21,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { CreationLogEntry } from "./CreatePage";
+import type { CreationLogEntry, PromptImageInput } from "./CreatePage";
 import {
   ArticleAssistant,
   type AppliedRewrite,
@@ -33,8 +34,15 @@ import { ImageInsertDialog } from "./ImageInsertDialog";
 import { MarkdownWorkbench, type EditorMode, type ImageInsertion } from "./MarkdownWorkbench";
 import { PublishDialog } from "./PublishDialog";
 import type { WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
-import type { RewriteConversationMessage, WechatSyncBridgeStatus } from "../lib/desktopBridge";
+import type {
+  ArticleRevisionDetail,
+  ArticleRevisionSummary,
+  ModelProfileSummary,
+  RewriteConversationMessage,
+  WechatSyncBridgeStatus,
+} from "../lib/desktopBridge";
 import type { AssistantActivity } from "./ArticleAssistant";
+import { RevisionHistoryDrawer } from "./RevisionHistoryDrawer";
 
 interface WorkflowProgress {
   articleId: string;
@@ -51,6 +59,9 @@ interface WorkflowFailure {
 
 interface ArticlesPageProps {
   articles: Article[];
+  modelProfiles: ModelProfileSummary[];
+  activeModelProfileId: string | null;
+  switchingModel: boolean;
   selectedArticle: Article | null;
   markdown: string;
   dirty: boolean;
@@ -58,16 +69,21 @@ interface ArticlesPageProps {
   workflowRunning: boolean;
   generatingImage: boolean;
   generatedImageCount: number;
+  visualPlanAvailable: boolean;
   editorMode: EditorMode;
   selectedPlatform: PlatformId;
   platforms: PlatformDefinition[];
   mediaAssets: MediaAsset[];
   onCreate: () => void;
+  onActivateModelProfile: (profileId: string) => void;
   onSelect: (articleId: string) => void;
   onMarkdownChange: (markdown: string) => void;
   onSave: () => void;
   onRunWorkflow: () => void;
   onGenerateImage: () => void;
+  onListRevisions: (articleId: string) => Promise<ArticleRevisionSummary[]>;
+  onReadRevision: (articleId: string, revisionId: string) => Promise<ArticleRevisionDetail>;
+  onRestoreRevision: (articleId: string, revisionId: string) => Promise<void>;
   onEditorModeChange: (mode: EditorMode) => void;
   onPlatformChange: (platform: PlatformId) => void;
   onImageFileDrop?: (file: File) => Promise<ImageInsertion>;
@@ -83,12 +99,14 @@ interface ArticlesPageProps {
   wechatSyncRefreshing: boolean;
   publishing: boolean;
   onRefreshWechatSync: (forceRefresh?: boolean) => Promise<void>;
+  onOpenPublisherSettings: () => void;
   onPublishToPlatforms: (platforms: PlatformId[]) => Promise<void>;
   onRewriteArticle: (
     instruction: string,
     selections: MarkdownSelection[],
     conversation: Array<{ role: "user" | "assistant"; text: string }>,
     requestId: string,
+    attachments?: PromptImageInput[],
   ) => Promise<RewriteArticleOutcome>;
   onRewriteRunStarted: (articleId: string, requestId: string, runId: string) => void;
   onComposeVisual: (
@@ -99,7 +117,9 @@ interface ArticlesPageProps {
     baseRevisionId?: string,
     replaceExistingImages?: boolean,
     targetSelections?: MarkdownSelection[],
+    attachments?: PromptImageInput[],
   ) => Promise<{ summary: string }>;
+  onImportPromptImages?: (files: File[]) => Promise<MediaAsset[]>;
   onApplyRewriteCandidate: (candidate: RewriteCandidate) => Promise<AppliedRewrite>;
   canUndoRewrite: boolean;
   onUndoRewrite: () => Promise<void>;
@@ -144,6 +164,9 @@ function loadArticleBrowserPreference(): ArticleBrowserPreference {
 
 export function ArticlesPage({
   articles,
+  modelProfiles,
+  activeModelProfileId,
+  switchingModel,
   selectedArticle,
   markdown,
   dirty,
@@ -151,16 +174,21 @@ export function ArticlesPage({
   workflowRunning,
   generatingImage,
   generatedImageCount,
+  visualPlanAvailable,
   editorMode,
   selectedPlatform,
   platforms,
   mediaAssets,
   onCreate,
+  onActivateModelProfile,
   onSelect,
   onMarkdownChange,
   onSave,
   onRunWorkflow,
   onGenerateImage,
+  onListRevisions,
+  onReadRevision,
+  onRestoreRevision,
   onEditorModeChange,
   onPlatformChange,
   onImageFileDrop,
@@ -176,10 +204,12 @@ export function ArticlesPage({
   wechatSyncRefreshing,
   publishing,
   onRefreshWechatSync,
+  onOpenPublisherSettings,
   onPublishToPlatforms,
   onRewriteArticle,
   onRewriteRunStarted,
   onComposeVisual,
+  onImportPromptImages,
   onApplyRewriteCandidate,
   canUndoRewrite,
   onUndoRewrite,
@@ -191,6 +221,7 @@ export function ArticlesPage({
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [pendingImageInsertion, setPendingImageInsertion] = useState<ImageInsertion | null>(null);
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [selections, setSelections] = useState<MarkdownSelection[]>([]);
   const layoutRef = useRef<HTMLElement | null>(null);
 
@@ -205,6 +236,7 @@ export function ArticlesPage({
   useEffect(() => {
     if (!selectedArticle?.id) return;
     setSelections([]);
+    setHistoryOpen(false);
   }, [selectedArticle?.id]);
   const filteredArticles = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -368,6 +400,15 @@ export function ArticlesPage({
           </div>
           <div className="article-editor__actions">
             <button
+              aria-label="查看文章版本记录"
+              className="button button--quiet"
+              onClick={() => setHistoryOpen(true)}
+              type="button"
+            >
+              <History size={16} />
+              版本
+            </button>
+            <button
               className="button button--quiet"
               disabled={generatingImage}
               onClick={onGenerateImage}
@@ -378,7 +419,11 @@ export function ArticlesPage({
               ) : (
                 <ImagePlus size={16} />
               )}
-              {generatedImageCount > 0 ? `配图 ${generatedImageCount}` : "生成配图"}
+              {visualPlanAvailable
+                ? "配图方案"
+                : generatedImageCount > 0
+                  ? `配图 ${generatedImageCount}`
+                  : "生成配图"}
             </button>
             <button
               className="button button--quiet"
@@ -453,6 +498,9 @@ export function ArticlesPage({
           />
           <ArticleAssistant
             articleId={selectedArticle.id}
+            activeModelProfileId={activeModelProfileId}
+            modelProfiles={modelProfiles}
+            onActivateModelProfile={onActivateModelProfile}
             onApplyCandidate={onApplyRewriteCandidate}
             canUndo={canUndoRewrite}
             onClearSelections={() => setSelections([])}
@@ -467,7 +515,10 @@ export function ArticlesPage({
             onRewrite={onRewriteArticle}
             onRewriteRunStarted={onRewriteRunStarted}
             onComposeVisual={onComposeVisual}
+            onImportPromptImages={onImportPromptImages}
+            mediaAssets={mediaAssets}
             onUndoLastRewrite={onUndoRewrite}
+            switchingModel={switchingModel}
             selections={selections}
             workflowRunning={workflowRunning}
             workflowFailure={workflowFailure}
@@ -496,11 +547,22 @@ export function ArticlesPage({
           bridge={wechatSyncStatus}
           onClose={() => setPublishDialogOpen(false)}
           onRefresh={onRefreshWechatSync}
+          onOpenSettings={onOpenPublisherSettings}
           onSubmit={onPublishToPlatforms}
           open={publishDialogOpen}
           platforms={platforms}
           publishing={publishing}
           refreshing={wechatSyncRefreshing}
+        />
+        <RevisionHistoryDrawer
+          articleId={selectedArticle.id}
+          currentMarkdown={markdown}
+          currentRevisionId={selectedArticle.revisionId ?? null}
+          onClose={() => setHistoryOpen(false)}
+          onList={onListRevisions}
+          onRead={onReadRevision}
+          onRestore={onRestoreRevision}
+          open={historyOpen}
         />
       </div>
     </section>

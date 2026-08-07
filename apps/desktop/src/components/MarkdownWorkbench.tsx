@@ -1,8 +1,5 @@
 import {
   Bold,
-  Code2,
-  Columns2,
-  Eye,
   Heading2,
   ImagePlus,
   Italic,
@@ -51,12 +48,30 @@ interface MarkdownWorkbenchProps {
 const editorModes: Array<{
   id: EditorMode;
   label: string;
-  icon: typeof Eye;
 }> = [
-  { id: "edit", label: "编辑", icon: Code2 },
-  { id: "split", label: "分栏", icon: Columns2 },
-  { id: "preview", label: "预览", icon: Eye },
+  { id: "edit", label: "仅编辑" },
+  { id: "split", label: "编辑与预览" },
+  { id: "preview", label: "仅预览" },
 ];
+
+type ScrollablePane = HTMLTextAreaElement | HTMLDivElement;
+
+function syncScrollPosition(source: ScrollablePane, target: ScrollablePane): number | null {
+  const sourceMaximum = Math.max(0, source.scrollHeight - source.clientHeight);
+  const targetMaximum = Math.max(0, target.scrollHeight - target.clientHeight);
+  const progress = sourceMaximum > 0
+    ? Math.min(1, Math.max(0, source.scrollTop / sourceMaximum))
+    : 0;
+  const nextScrollTop = progress * targetMaximum;
+
+  // Assign only when needed so the paired scroll handler does not keep
+  // bouncing between the two rounded browser scroll positions.
+  if (Math.abs(target.scrollTop - nextScrollTop) > 0.5) {
+    target.scrollTop = nextScrollTop;
+    return nextScrollTop;
+  }
+  return null;
+}
 
 function positionSelectionAction(editor: HTMLTextAreaElement): SelectionActionPosition {
   const selectionEnd = editor.selectionEnd;
@@ -130,7 +145,16 @@ export function MarkdownWorkbench({
   onRequestSelectionRewrite,
 }: MarkdownWorkbenchProps) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const selectionRef = useRef({ start: 0, end: 0 });
+  const scrollSourceRef = useRef<"editor" | "preview">("editor");
+  // A programmatic scroll dispatches the same event as a user gesture in
+  // Chromium. Keep its expected position so it cannot steal the source role
+  // before a resize or image load recalculates the proportional position.
+  const synchronizedScrollTopsRef = useRef<Record<"editor" | "preview", number | null>>({
+    editor: null,
+    preview: null,
+  });
   const [isDroppingImage, setIsDroppingImage] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [imageDropError, setImageDropError] = useState<string | null>(null);
@@ -244,6 +268,93 @@ export function MarkdownWorkbench({
     setSelectionActionPosition(positionSelectionAction(editor));
   };
 
+  const syncPaneScroll = (
+    source: ScrollablePane,
+    target: ScrollablePane,
+    targetKey: "editor" | "preview",
+  ) => {
+    const synchronizedTop = syncScrollPosition(source, target);
+    if (synchronizedTop !== null) {
+      synchronizedScrollTopsRef.current[targetKey] = synchronizedTop;
+    }
+  };
+
+  const consumesSynchronizedScroll = (
+    pane: "editor" | "preview",
+    element: ScrollablePane,
+  ) => {
+    const expectedTop = synchronizedScrollTopsRef.current[pane];
+    if (expectedTop === null) return false;
+    synchronizedScrollTopsRef.current[pane] = null;
+    return Math.abs(element.scrollTop - expectedTop) <= 0.5;
+  };
+
+  const syncPreviewToEditorScroll = (editor: HTMLTextAreaElement) => {
+    const preview = previewRef.current;
+    if (editorMode === "split" && preview) {
+      if (consumesSynchronizedScroll("editor", editor)) return;
+      scrollSourceRef.current = "editor";
+      syncPaneScroll(editor, preview, "preview");
+    }
+  };
+
+  const syncEditorToPreviewScroll = (preview: HTMLDivElement) => {
+    const editor = editorRef.current;
+    if (editorMode === "split" && editor) {
+      if (consumesSynchronizedScroll("preview", preview)) return;
+      scrollSourceRef.current = "preview";
+      syncPaneScroll(preview, editor, "editor");
+    }
+  };
+
+  useEffect(() => {
+    if (editorMode !== "split") return;
+    let frame: number | null = null;
+    const syncFromActivePane = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        const editor = editorRef.current;
+        const preview = previewRef.current;
+        if (!editor || !preview) return;
+        if (scrollSourceRef.current === "preview") {
+          syncPaneScroll(preview, editor, "editor");
+          return;
+        }
+        syncPaneScroll(editor, preview, "preview");
+      });
+    };
+
+    syncFromActivePane();
+    window.addEventListener("resize", syncFromActivePane);
+
+    // The two panes do not have the same line height or content height. Keep
+    // the last-scrolled pane as the source when a resize or lazy-loaded image
+    // changes either scroll range.
+    const preview = previewRef.current;
+    const editor = editorRef.current;
+    const ResizeObserverConstructor = typeof ResizeObserver === "undefined"
+      ? null
+      : ResizeObserver;
+    const observer = ResizeObserverConstructor
+      ? new ResizeObserverConstructor(syncFromActivePane)
+      : null;
+    if (observer && editor && preview) {
+      observer.observe(editor);
+      observer.observe(preview);
+      const previewContent = preview.querySelector(".markdown-preview");
+      if (previewContent) observer.observe(previewContent);
+    }
+
+    return () => {
+      window.removeEventListener("resize", syncFromActivePane);
+      observer?.disconnect();
+      synchronizedScrollTopsRef.current.editor = null;
+      synchronizedScrollTopsRef.current.preview = null;
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [editorMode, markdown]);
+
   return (
     <section className={`markdown-workbench${contentReplacing ? " is-content-replacing" : ""}`} aria-label="Markdown 编辑器">
       <div className="editor-toolbar">
@@ -323,19 +434,16 @@ export function MarkdownWorkbench({
             </div>
           )}
           <div className="mode-switch" aria-label="编辑器布局">
-            {editorModes.map(({ id, label, icon: Icon }) => (
-              <button
-                aria-label={label}
-                aria-pressed={editorMode === id}
-                className={editorMode === id ? "is-active" : ""}
-                key={id}
-                onClick={() => onEditorModeChange(id)}
-                title={label}
-                type="button"
-              >
-                <Icon size={15} />
-              </button>
-            ))}
+            <select
+              aria-label="编辑器布局"
+              className="mode-switch__select"
+              onChange={(event) => onEditorModeChange(event.target.value as EditorMode)}
+              value={editorMode}
+            >
+              {editorModes.map(({ id, label }) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
           </div>
         </div>
       </div>
@@ -365,7 +473,10 @@ export function MarkdownWorkbench({
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleDrop}
               onPaste={handlePaste}
-              onScroll={(event) => updateSelectionActionPosition(event.currentTarget)}
+              onScroll={(event) => {
+                syncPreviewToEditorScroll(event.currentTarget);
+                updateSelectionActionPosition(event.currentTarget);
+              }}
               onSelect={(event) => {
                 captureSelection(event.currentTarget);
               }}
@@ -397,7 +508,11 @@ export function MarkdownWorkbench({
           </div>
         )}
         {editorMode !== "edit" && (
-          <div className="preview-pane">
+          <div
+            className="preview-pane"
+            onScroll={(event) => syncEditorToPreviewScroll(event.currentTarget)}
+            ref={previewRef}
+          >
             <div className="preview-pane__meta">
               <span>平台预览</span>
               <strong>

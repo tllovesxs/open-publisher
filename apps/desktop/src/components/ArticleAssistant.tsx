@@ -6,6 +6,7 @@ import {
   ChevronRight,
   FileText,
   Image,
+  ImagePlus,
   LoaderCircle,
   RotateCcw,
   Search,
@@ -17,10 +18,18 @@ import {
 import { useEffect, useRef, useState } from "react";
 import {
   subscribeToRewriteEvents,
+  type ModelProfileSummary,
   type RewriteArticleSummary,
   type RewriteConversationMessage,
 } from "../lib/desktopBridge";
 import type { WorkflowWorkspaceSnapshot } from "./WorkflowWorkspace";
+import type { PromptImageInput } from "./CreatePage";
+import {
+  MAX_PROMPT_IMAGE_ATTACHMENTS,
+  type PromptImageIntent,
+} from "../lib/imageAttachments";
+import { mediaAssetIdFromReference } from "../lib/mediaReferences";
+import type { MediaAsset } from "../types";
 
 export interface MarkdownSelection {
   start: number;
@@ -47,6 +56,7 @@ export interface RewriteCandidate {
 export interface RewriteArticleOutcome extends RewriteArticleSummary {
   source: RewriteSourceSnapshot;
   visualRefreshRecommended?: boolean;
+  visualMatchScore?: number;
 }
 
 export interface AppliedRewrite {
@@ -65,8 +75,19 @@ interface Message extends RewriteConversationMessage {
   createdAt: number;
 }
 
+interface VisualRefreshSuggestion {
+  matchScore: number;
+  markdown: string;
+  revisionId: string;
+}
+
 interface ArticleAssistantProps {
   articleId: string;
+  /** The same saved model profiles used by the creation composer. */
+  modelProfiles?: readonly ModelProfileSummary[];
+  activeModelProfileId?: string | null;
+  switchingModel?: boolean;
+  onActivateModelProfile?: (profileId: string) => void;
   selections: MarkdownSelection[];
   canUndo: boolean;
   onClearSelections: () => void;
@@ -76,6 +97,7 @@ interface ArticleAssistantProps {
     selections: MarkdownSelection[],
     conversation: RewriteConversationMessage[],
     requestId: string,
+    attachments?: PromptImageInput[],
   ) => Promise<RewriteArticleOutcome>;
   onRewriteRunStarted?: (articleId: string, requestId: string, runId: string) => void;
   onComposeVisual: (
@@ -86,7 +108,12 @@ interface ArticleAssistantProps {
     baseRevisionId?: string,
     replaceExistingImages?: boolean,
     targetSelections?: MarkdownSelection[],
+    attachments?: PromptImageInput[],
   ) => Promise<{ summary: string }>;
+  /** Adds pasted/dropped files to the shared local media library. */
+  onImportPromptImages?: (files: File[]) => Promise<MediaAsset[]>;
+  /** Existing assets can be dragged into the assistant without copying image bytes. */
+  mediaAssets?: readonly MediaAsset[];
   onApplyCandidate: (candidate: RewriteCandidate) => Promise<AppliedRewrite>;
   onUndoLastRewrite: () => Promise<void>;
   workflowSnapshot?: WorkflowWorkspaceSnapshot | null;
@@ -258,7 +285,7 @@ function loadSession(articleId: string): Message[] {
       return [{
         id: typeof candidate.id === "string" ? candidate.id : `restored-${index}`,
         role: candidate.role,
-        text: candidate.text.slice(0, 8_000),
+        text: candidate.text.slice(0, 100_000),
         createdAt: typeof candidate.createdAt === "number" ? candidate.createdAt : 0,
       }];
     }).slice(-24);
@@ -308,6 +335,13 @@ function hasTextRewriteRequest(instruction: string) {
   );
 }
 
+function requestsWholeArticleScope(instruction: string) {
+  if (/(?:不要|不需要|无需|别)(?:再)?[^，。；;\n]{0,8}(?:整篇文章|整篇正文|全文|通篇)/u.test(instruction)) {
+    return false;
+  }
+  return /(?:整篇文章|整篇正文|全文|通篇|全部正文|所有正文|从头(?:到尾)?(?:重写|改写|修改))/u.test(instruction);
+}
+
 function requestsImageReplacement(instruction: string) {
   const actionable = withoutNegatedVisualClauses(instruction);
   return (
@@ -316,8 +350,35 @@ function requestsImageReplacement(instruction: string) {
   );
 }
 
+function defaultInstructionForAttachments(attachments: readonly PromptImageInput[]) {
+  if (attachments.some((attachment) => attachment.intent === "insert")) {
+    return "请将附加图片按文章结构插入最合适的正文位置。";
+  }
+  if (attachments.some((attachment) => attachment.intent === "analyze")) {
+    return "请识别附加图片的内容，并结合当前文章给出合适的修改建议。";
+  }
+  if (attachments.some((attachment) => attachment.intent === "material")) {
+    return "请将附加图片作为本次文章修改的素材参考。";
+  }
+  return "请根据附加图片和当前文章判断最合适的处理方式。";
+}
+
+function imageFilesFromClipboard(clipboard: DataTransfer) {
+  const directFiles = Array.from(clipboard.files).filter((file) => file.type.startsWith("image/"));
+  if (directFiles.length > 0) return directFiles;
+  return Array.from(clipboard.items ?? []).flatMap((item) => {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) return [];
+    const file = item.getAsFile();
+    return file ? [file] : [];
+  });
+}
+
 export function ArticleAssistant({
   articleId,
+  modelProfiles = [],
+  activeModelProfileId = null,
+  switchingModel = false,
+  onActivateModelProfile,
   selections,
   canUndo,
   onClearSelections,
@@ -325,6 +386,8 @@ export function ArticleAssistant({
   onRewrite,
   onRewriteRunStarted,
   onComposeVisual,
+  onImportPromptImages,
+  mediaAssets = [],
   onApplyCandidate,
   onUndoLastRewrite,
   workflowSnapshot = null,
@@ -344,6 +407,12 @@ export function ArticleAssistant({
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [liveNote, setLiveNote] = useState("");
   const [liveProgress, setLiveProgress] = useState<number | null>(null);
+  const [attachments, setAttachments] = useState<PromptImageInput[]>([]);
+  const [attachmentImporting, setAttachmentImporting] = useState(false);
+  const [attachmentDropActive, setAttachmentDropActive] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [visualRefreshSuggestion, setVisualRefreshSuggestion] =
+    useState<VisualRefreshSuggestion | null>(null);
   const activeRequestRef = useRef<string | null>(null);
   const activeRewriteRunIdRef = useRef<string | null>(null);
   const cancellationRequestedRef = useRef(false);
@@ -353,6 +422,7 @@ export function ArticleAssistant({
   const streamedNoteRef = useRef("");
   const typewriterQueueRef = useRef("");
   const typewriterFrameRef = useRef<number | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const scheduleTypewriter = () => {
     if (typewriterFrameRef.current !== null) return;
@@ -386,6 +456,10 @@ export function ArticleAssistant({
     streamedMarkupRef.current = "";
     streamedNoteRef.current = "";
     typewriterQueueRef.current = "";
+    setAttachments([]);
+    setAttachmentError(null);
+    setAttachmentDropActive(false);
+    setVisualRefreshSuggestion(null);
   }, [articleId]);
 
   useEffect(() => {
@@ -452,6 +526,9 @@ export function ArticleAssistant({
   };
 
   const activeSelections = selections;
+  const activeModelProfile = modelProfiles.find((profile) => profile.id === activeModelProfileId)
+    ?? modelProfiles.find((profile) => profile.active)
+    ?? null;
   const scopeLabel = activeSelections.length
     ? `${activeSelections.length} 个选中文本片段`
     : "整篇文章";
@@ -478,11 +555,67 @@ export function ArticleAssistant({
   const workflowCompleted = !workflowActive && activeWorkflowSnapshot?.status === "completed";
   const showWorkflow = workflowActive || workflowCompleted || Boolean(workflowFailure);
 
+  const addAttachmentAssets = (assets: readonly MediaAsset[]) => {
+    const currentIds = new Set(attachments.map((attachment) => attachment.assetId));
+    const incoming = assets.filter((asset) => !currentIds.has(asset.id));
+    if (attachments.length + incoming.length > MAX_PROMPT_IMAGE_ATTACHMENTS) {
+      setAttachmentError(`一次最多附加 ${MAX_PROMPT_IMAGE_ATTACHMENTS} 张图片，已保留最先添加的图片。`);
+    }
+    setAttachments((current) => {
+      const known = new Set(current.map((attachment) => attachment.assetId));
+      return [
+        ...current,
+        ...assets
+          .filter((asset) => !known.has(asset.id))
+          .slice(0, Math.max(0, MAX_PROMPT_IMAGE_ATTACHMENTS - current.length))
+          .map((asset) => ({ assetId: asset.id, intent: "auto" as const, asset })),
+      ].slice(0, MAX_PROMPT_IMAGE_ATTACHMENTS);
+    });
+  };
+
+  const importAttachments = async (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (images.length === 0) {
+      setAttachmentError("只能粘贴、拖入或选择图片文件。");
+      return;
+    }
+    if (!onImportPromptImages) {
+      setAttachmentError("图片导入服务尚未连接。");
+      return;
+    }
+    setAttachmentImporting(true);
+    setAttachmentError(null);
+    try {
+      const assets = await onImportPromptImages(images);
+      addAttachmentAssets(assets);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "导入图片失败，请重试。");
+    } finally {
+      setAttachmentImporting(false);
+    }
+  };
+
+  const updateAttachmentIntent = (assetId: string, intent: PromptImageIntent) => {
+    setAttachments((current) => current.map((attachment) => (
+      attachment.assetId === assetId ? { ...attachment, intent } : attachment
+    )));
+  };
+
   const submit = async (nextInstruction = instruction) => {
-    const normalized = nextInstruction.trim();
-    if (!normalized || working || undoing) return;
-    const visualRequested = hasExplicitVisualRequest(normalized);
+    const userInstruction = nextInstruction.trim();
+    const normalized = userInstruction || (attachments.length > 0 ? defaultInstructionForAttachments(attachments) : "");
+    if (!normalized || working || undoing || attachmentImporting || workflowActive || cancellingWorkflow) return;
+    // A material/analyze attachment is input to the text model, not an
+    // instruction to insert a picture. Only an explicit user visual command
+    // or the dedicated "insert" attachment intent starts the visual Agent.
+    const visualRequested = attachments.some((attachment) => attachment.intent === "insert") ||
+      Boolean(userInstruction) && hasExplicitVisualRequest(normalized);
     const visualOnly = visualRequested && !hasTextRewriteRequest(normalized);
+    const wholeArticleRequested = requestsWholeArticleScope(normalized);
+    const effectiveSelections = wholeArticleRequested ? [] : activeSelections;
+    const effectiveScopeLabel = effectiveSelections.length
+      ? `${effectiveSelections.length} 个选中文本片段`
+      : "整篇文章";
     const requestId = `rewrite-${crypto.randomUUID?.() ?? Date.now()}`;
     activeRequestRef.current = requestId;
     activeRewriteRunIdRef.current = null;
@@ -492,51 +625,85 @@ export function ArticleAssistant({
     typewriterQueueRef.current = "";
     setLiveNote("");
     setLiveProgress(null);
-    setLiveStatus(visualOnly ? "视觉 Agent 正在读取文章结构" : "AI 正在读取文章与已选片段");
+    setVisualRefreshSuggestion(null);
+    setLiveStatus(visualOnly
+      ? "视觉 Agent 正在读取文章结构"
+      : wholeArticleRequested ? "AI 正在读取整篇文章" : "AI 正在读取文章与已选片段");
     setWorking(true);
-    addMessage("user", `${scopeLabel}：${normalized}`);
+    addMessage("user", `${effectiveScopeLabel}：${normalized}${attachments.length ? `\n已附 ${attachments.length} 张图片` : ""}`);
     try {
       if (visualOnly) {
         const conversation = messages.slice(-12).map(({ role, text }) => ({ role, text }));
-        const targetSelections = activeSelections.length > 0 ? activeSelections : undefined;
+        const targetSelections = effectiveSelections.length > 0 ? effectiveSelections : undefined;
         const onVisualActivity = (activity: AssistantActivity) => {
           setLiveStatus(activity.detail || activity.title);
           setLiveProgress(activity.value);
         };
         const result = requestsImageReplacement(normalized)
-          ? await onComposeVisual(
-              normalized,
-              conversation,
-              onVisualActivity,
-              undefined,
-              undefined,
-              true,
-            )
-          : await onComposeVisual(
-              normalized,
-              conversation,
-              onVisualActivity,
-              undefined,
-              undefined,
-              false,
-              targetSelections,
-            );
+          ? attachments.length > 0
+            ? await onComposeVisual(
+                normalized,
+                conversation,
+                onVisualActivity,
+                undefined,
+                undefined,
+                true,
+                undefined,
+                attachments,
+              )
+            : await onComposeVisual(
+                normalized,
+                conversation,
+                onVisualActivity,
+                undefined,
+                undefined,
+                true,
+              )
+          : attachments.length > 0
+            ? await onComposeVisual(
+                normalized,
+                conversation,
+                onVisualActivity,
+                undefined,
+                undefined,
+                false,
+                targetSelections,
+                attachments,
+              )
+            : await onComposeVisual(
+                normalized,
+                conversation,
+                onVisualActivity,
+                undefined,
+                undefined,
+                false,
+                targetSelections,
+              );
         addMessage("assistant", result.summary);
         setInstruction("");
+        setAttachments([]);
         // Selection ranges are anchored to the revision that was just replaced.
         // Keeping them would make a subsequent operation target stale text.
         targetSelections?.forEach((selection) => onRemoveSelection(selection));
         return;
       }
-      const result = await onRewrite(
-        normalized,
-        activeSelections,
-        messages.slice(-12).map(({ role, text }) => ({ role, text })),
-        requestId,
-      );
+      const result = attachments.length > 0
+        ? await onRewrite(
+            normalized,
+            effectiveSelections,
+            messages.slice(-12).map(({ role, text }) => ({ role, text })),
+            requestId,
+            attachments,
+          )
+        : await onRewrite(
+            normalized,
+            effectiveSelections,
+            messages.slice(-12).map(({ role, text }) => ({ role, text })),
+            requestId,
+          );
       const candidate: RewriteCandidate = {
         replacements: result.replacements,
-        selections: activeSelections,
+        selections: effectiveSelections,
         model: result.model,
         summary: result.summary,
         source: result.source,
@@ -546,21 +713,32 @@ export function ArticleAssistant({
         "assistant",
         `${result.summary}\n\n已同步修改正文，可使用“撤销上次 AI 修改”恢复。`,
       );
-      if (visualRequested || result.visualRefreshRecommended) {
+      if (visualRequested) {
         try {
-          const visualResult = await onComposeVisual(
-            visualRequested
-              ? normalized
-              : "全文变化较大，请根据修改后的文章重新规划并更新现有正文配图。",
-            messages.slice(-12).map(({ role, text }) => ({ role, text })),
-            (activity) => {
-              setLiveStatus(activity.detail || activity.title);
-              setLiveProgress(activity.value);
-            },
-            applied.markdown,
-            applied.revisionId,
-            true,
-          );
+          const visualConversation = messages.slice(-12).map(({ role, text }) => ({ role, text }));
+          const onVisualActivity = (activity: AssistantActivity) => {
+            setLiveStatus(activity.detail || activity.title);
+            setLiveProgress(activity.value);
+          };
+          const visualResult = attachments.length > 0
+            ? await onComposeVisual(
+                normalized,
+                visualConversation,
+                onVisualActivity,
+                applied.markdown,
+                applied.revisionId,
+                true,
+                undefined,
+                attachments,
+              )
+            : await onComposeVisual(
+                normalized,
+                visualConversation,
+                onVisualActivity,
+                applied.markdown,
+                applied.revisionId,
+                true,
+              );
           addMessage("assistant", visualResult.summary);
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
@@ -569,8 +747,23 @@ export function ArticleAssistant({
             `正文修改已经保存，但同步更新配图失败：${detail.slice(0, 180)}。可以稍后单独重试配图。`,
           );
         }
+      } else if (
+        result.visualRefreshRecommended &&
+        typeof result.visualMatchScore === "number"
+      ) {
+        const matchScore = Math.max(0, Math.min(100, Math.round(result.visualMatchScore)));
+        setVisualRefreshSuggestion({
+          matchScore,
+          markdown: applied.markdown,
+          revisionId: applied.revisionId,
+        });
+        addMessage(
+          "assistant",
+          `正文改动较大，现有配图与新正文的估算匹配度为 ${matchScore}%。是否根据新内容重新配图？`,
+        );
       }
       setInstruction("");
+      setAttachments([]);
       activeSelections.forEach(onRemoveSelection);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -585,11 +778,56 @@ export function ArticleAssistant({
     }
   };
 
+  const acceptVisualRefresh = async () => {
+    const suggestion = visualRefreshSuggestion;
+    if (!suggestion || working || undoing || workflowActive || cancellingWorkflow) return;
+    setVisualRefreshSuggestion(null);
+    setWorking(true);
+    setLiveStatus("视觉 Agent 正在根据新正文重新规划配图");
+    setLiveProgress(null);
+    addMessage("user", "重新配图");
+    try {
+      const visualConversation: RewriteConversationMessage[] = [
+        ...messages.slice(-11).map(({ role, text }) => ({ role, text })),
+        { role: "user", text: "确认根据新正文重新配图" },
+      ];
+      const visualResult = await onComposeVisual(
+        "正文已经大幅修改，请根据新内容重新规划并更新现有正文配图。",
+        visualConversation,
+        (activity) => {
+          setLiveStatus(activity.detail || activity.title);
+          setLiveProgress(activity.value);
+        },
+        suggestion.markdown,
+        suggestion.revisionId,
+        true,
+      );
+      addMessage("assistant", visualResult.summary);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setVisualRefreshSuggestion(suggestion);
+      addMessage("assistant", `重新配图失败：${detail.slice(0, 180)}。可以重试或保留现有配图。`);
+    } finally {
+      setWorking(false);
+      setLiveStatus(null);
+      setLiveProgress(null);
+    }
+  };
+
+  const keepCurrentVisuals = () => {
+    if (!visualRefreshSuggestion || working) return;
+    const matchScore = visualRefreshSuggestion.matchScore;
+    setVisualRefreshSuggestion(null);
+    addMessage("user", "保留现有配图");
+    addMessage("assistant", `已保留现有配图。本次估算匹配度为 ${matchScore}%，之后仍可随时让我重新配图。`);
+  };
+
   const undo = async () => {
     if (!canUndo || undoing || working) return;
     setUndoing(true);
     try {
       await onUndoLastRewrite();
+      setVisualRefreshSuggestion(null);
       addMessage("assistant", "已撤销上一次 AI 修改，并保存为新的文章修订。");
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -666,6 +904,19 @@ export function ArticleAssistant({
                 {message.text}
               </p>
             ))}
+            {visualRefreshSuggestion && (
+              <section className="article-assistant__visual-suggestion" aria-label="配图匹配度确认">
+                <div>
+                  <Image aria-hidden="true" size={15} />
+                  <strong>配图匹配度 {visualRefreshSuggestion.matchScore}%</strong>
+                </div>
+                <p>正文变化较大，是否让视觉 Agent 根据新内容重新规划配图？</p>
+                <div className="article-assistant__visual-suggestion-actions">
+                  <button disabled={working} onClick={keepCurrentVisuals} type="button">保留原图</button>
+                  <button disabled={working} onClick={() => void acceptVisualRefresh()} type="button">重新配图</button>
+                </div>
+              </section>
+            )}
             {showWorkflow && (
               <section
                 className="article-assistant__workflow"
@@ -759,24 +1010,132 @@ export function ArticleAssistant({
 
           <div className="article-assistant__composer">
             <div className="article-assistant__composer-box">
+              {attachments.length > 0 && (
+                <div aria-label="已附加提示图片" className="prompt-image-attachments prompt-image-attachments--assistant">
+                  {attachments.map((attachment) => (
+                    <div className="prompt-image-attachment" key={attachment.assetId}>
+                      <img alt="" src={attachment.asset.src} />
+                      <strong title={attachment.asset.name}>{attachment.asset.name}</strong>
+                      <select
+                        aria-label={`${attachment.asset.name}的处理方式`}
+                        disabled={working || undoing || workflowActive}
+                        onChange={(event) => updateAttachmentIntent(attachment.assetId, event.target.value as PromptImageIntent)}
+                        value={attachment.intent}
+                      >
+                        <option value="auto">AI 自动判断</option>
+                        <option value="material">作为素材</option>
+                        <option value="insert">插入正文</option>
+                        <option value="analyze">识别图片</option>
+                      </select>
+                      <button
+                        aria-label={`移除图片 ${attachment.asset.name}`}
+                        disabled={working || undoing || workflowActive}
+                        onClick={() => setAttachments((current) => current.filter((item) => item.assetId !== attachment.assetId))}
+                        title="移除图片"
+                        type="button"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <label>
                 <span className="visually-hidden">对文章的修改要求</span>
                 <textarea
                   disabled={working || undoing || workflowActive}
+                  className={attachmentDropActive ? "is-drop-target" : undefined}
                   onChange={(event) => setInstruction(event.target.value)}
+                  onDragEnter={(event) => {
+                    if (
+                      event.dataTransfer.types.includes("Files") ||
+                      event.dataTransfer.types.includes("application/x-open-publisher-markdown-image")
+                    ) {
+                      event.preventDefault();
+                      setAttachmentDropActive(true);
+                    }
+                  }}
+                  onDragLeave={(event) => {
+                    if (event.currentTarget === event.target) setAttachmentDropActive(false);
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setAttachmentDropActive(false);
+                    const markdownImage = event.dataTransfer.getData("application/x-open-publisher-markdown-image");
+                    const reference = markdownImage.match(/\]\((asset:\/\/[^)\s]+)\)/)?.[1];
+                    const assetId = reference ? mediaAssetIdFromReference(reference) : null;
+                    const asset = assetId ? mediaAssets.find((candidate) => candidate.id === assetId) : null;
+                    if (asset) {
+                      setAttachmentError(null);
+                      addAttachmentAssets([asset]);
+                      return;
+                    }
+                    void importAttachments(Array.from(event.dataTransfer.files));
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
                       void submit();
                     }
                   }}
+                  onPaste={(event) => {
+                    const images = imageFilesFromClipboard(event.clipboardData);
+                    if (images.length === 0) return;
+                    event.preventDefault();
+                    void importAttachments(images);
+                  }}
                   placeholder={activeSelections.length ? "说明如何修改这些片段" : "说说你想怎么改"}
                   value={instruction}
                 />
               </label>
               <div className="article-assistant__composer-tools">
-                <span>{scopeLabel}</span>
+                <div className="article-assistant__composer-context">
+                  <span>{scopeLabel}</span>
+                  {modelProfiles.length > 0 && onActivateModelProfile && (
+                    <label className="article-assistant__model-select">
+                      <span className="visually-hidden">AI 修改模型</span>
+                      <select
+                        aria-label="AI 修改模型"
+                        disabled={working || undoing || workflowActive || switchingModel}
+                        onChange={(event) => onActivateModelProfile(event.target.value)}
+                        title="切换 AI 修改模型"
+                        value={activeModelProfile?.id ?? ""}
+                      >
+                        {modelProfiles.map((profile) => (
+                          <option disabled={!profile.secretConfigured} key={profile.id} value={profile.id}>
+                            {profile.name} · {profile.textModel}{profile.secretConfigured ? "" : "（缺少密钥）"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
                 <div>
+                  <button
+                    aria-label="添加提示图片"
+                    className="article-assistant__attachment"
+                    disabled={attachmentImporting || working || undoing || workflowActive}
+                    onClick={() => attachmentInputRef.current?.click()}
+                    title="粘贴、拖入或选择图片"
+                    type="button"
+                  >
+                    <ImagePlus size={15} />
+                  </button>
+                  <input
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+                    aria-label="选择 AI 提示图片"
+                    className="visually-hidden"
+                    disabled={attachmentImporting || working || undoing || workflowActive}
+                    multiple
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      event.currentTarget.value = "";
+                      void importAttachments(files);
+                    }}
+                    ref={attachmentInputRef}
+                    type="file"
+                  />
                   <button
                     aria-label="撤销上次 AI 修改"
                     className="article-assistant__undo"
@@ -790,7 +1149,9 @@ export function ArticleAssistant({
                   <button
                     aria-label={workflowActive || working ? "停止生成" : "应用 AI 修改"}
                     className="article-assistant__send"
-                    disabled={workflowActive || working ? cancellingWorkflow : !instruction.trim() || undoing}
+                    disabled={workflowActive || working
+                      ? cancellingWorkflow
+                      : attachmentImporting || (!instruction.trim() && attachments.length === 0) || undoing}
                     onClick={() => {
                       if (workflowActive || working) stopCurrentRequest();
                       else void submit();
@@ -804,6 +1165,8 @@ export function ArticleAssistant({
                   </button>
                 </div>
               </div>
+              {attachmentImporting && <p className="prompt-image-importing" role="status">正在导入图片</p>}
+              {attachmentError && <p className="prompt-image-error" role="alert">{attachmentError}</p>}
             </div>
           </div>
         </div>

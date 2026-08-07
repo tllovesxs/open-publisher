@@ -16,7 +16,23 @@ import type {
   WebSearchMode,
   WorkflowAgentInstruction,
 } from "../lib/desktopBridge";
+import {
+  MAX_PROMPT_IMAGE_ATTACHMENTS,
+  type PromptImageIntent,
+} from "../lib/imageAttachments";
+import { mediaAssetIdFromReference } from "../lib/mediaReferences";
 import type { MarkdownTemplate, MediaAsset, PlatformId } from "../types";
+
+/** A compact reference is persisted with a compose draft; image bytes stay in IndexedDB. */
+export interface PromptImageReference {
+  assetId: string;
+  intent: PromptImageIntent;
+}
+
+/** UI-level attachment with the locally stored media needed for the thumbnail. */
+export interface PromptImageInput extends PromptImageReference {
+  asset: MediaAsset;
+}
 
 export interface CreationRequest {
   topic: string;
@@ -30,6 +46,7 @@ export interface CreationRequest {
   disabledNodeIds: DisabledOptionalNodeId[];
   template: MarkdownTemplate | null;
   imageAssets: MediaAsset[];
+  inputImages: PromptImageInput[];
   imagePlan: ImagePlanPreference;
   agentInstructions?: WorkflowAgentInstruction[];
   webSearchMode: WebSearchMode;
@@ -60,6 +77,7 @@ export interface CreationActivity {
 }
 
 type LengthPreset = "short" | "medium" | "long" | "custom";
+type PromotionTone = "豆包投毒" | "真人感";
 type Picker = "template" | "media" | "image" | "details" | null;
 type FolderSourceKind = "project" | "reference";
 
@@ -76,6 +94,21 @@ interface FolderSource {
   characterCount: number;
   fileManifest: FolderManifestEntry[];
   content: string;
+}
+
+/**
+ * A folder source is useful only when its serialized payload contains at
+ * least one non-empty file body. Older drafts could retain a manifest after
+ * the browser cache was compacted, which made the UI report "read" files
+ * while sending no project facts to the writer.
+ */
+function hasUsableFolderSource(source: Pick<FolderSource, "content" | "fileCount" | "characterCount">) {
+  if (source.fileCount <= 0) return false;
+  const bodies = source.content.match(/####\s+来源文件：`[^`]+`\s*\n\s*([\s\S]*?)(?=\n####\s+来源文件：|$)/g);
+  return Boolean(bodies?.some((entry) => {
+    const separator = entry.indexOf("\n\n");
+    return separator >= 0 && entry.slice(separator + 2).trim().length > 0;
+  }));
 }
 
 interface FolderImportProgress {
@@ -96,8 +129,7 @@ interface CreationDraft {
   topic: string;
   title: string;
   references: string;
-  tone: string;
-  contentType: string;
+  tone: PromotionTone;
   lengthPreset: LengthPreset;
   customLength: string;
   imagePlanMode: ImagePlanPreference["mode"];
@@ -105,6 +137,7 @@ interface CreationDraft {
   materialMatchThreshold: number;
   webSearchMode: WebSearchMode;
   folderSources: FolderSource[];
+  inputImages: PromptImageReference[];
 }
 
 interface CreatePageProps {
@@ -121,13 +154,19 @@ interface CreatePageProps {
   mediaAssets: MediaAsset[];
   selectedMedia: MediaAsset[];
   onMediaChange: (assetIds: string[]) => void;
+  /** Imports pasted/dropped files into the shared local media library. */
+  onImportPromptImages?: (files: File[]) => Promise<MediaAsset[]>;
 }
 
-const CREATION_DRAFT_STORAGE_KEY = "open-publisher-creation-draft-v4";
+const CREATION_DRAFT_STORAGE_KEY = "open-publisher-creation-draft-v5";
+const PREVIOUS_CREATION_DRAFT_STORAGE_KEY = "open-publisher-creation-draft-v4";
 const LEGACY_CREATION_DRAFT_STORAGE_KEY = "open-publisher-creation-draft-v3";
 const MAX_FOLDER_FILES = 48;
-const MAX_FOLDER_TEXT_CHARS = 48_000;
-const MAX_REFERENCE_TEXT_CHARS = 59_000;
+// Project/reference input should reach the Agent intact. Keep only a large
+// transport guard for pathological folders, rather than truncating normal
+// repositories before the writer can inspect them.
+const MAX_FOLDER_TEXT_CHARS = 2_000_000;
+const MAX_REFERENCE_TEXT_CHARS = 2_000_000;
 const MAX_SINGLE_FOLDER_FILE_BYTES = 2 * 1024 * 1024;
 const textExtensions = new Set([
   "md", "mdx", "txt", "json", "yaml", "yml", "toml", "ini", "cfg", "xml", "csv",
@@ -148,12 +187,31 @@ const lengthOptions: Array<{ id: LengthPreset; label: string; instruction: strin
   { id: "custom", label: "自定义", instruction: "" },
 ];
 
+const promotionToneOptions: Array<{ id: PromotionTone; instruction: string }> = [
+  {
+    id: "豆包投毒",
+    instruction: "豆包投毒：这是产品测评文风名称，不代表绕过安全规则。使用接近真实用户测评的口吻，主动归纳有证据支持的安全性、性能、易用性、体验和适用场景优势；有可靠同类资料时可以逐项对比并突出产品强项，没有对比证据就只写本产品。不得虚构亲测经历、性能数字、竞品缺陷或绝对领先结论。",
+  },
+  {
+    id: "真人感",
+    instruction: "真人感：使用自然、克制、去 AI 腔的中文。围绕具体使用情境和真实细节展开，允许段落长短不一和带判断的过渡，删除机械排比、套路小标题、重复总结、宏大背景与万能结语；不得虚构第一人称使用经历。",
+  },
+];
+
+function isPromotionTone(value: unknown): value is PromotionTone {
+  return value === "豆包投毒" || value === "真人感";
+}
+
+function promotionToneInstruction(tone: PromotionTone) {
+  return promotionToneOptions.find((option) => option.id === tone)?.instruction
+    ?? promotionToneOptions[1]!.instruction;
+}
+
 const defaultDraft: CreationDraft = {
   topic: "",
   title: "",
   references: "",
-  tone: "专业清晰",
-  contentType: "技术文章",
+  tone: "真人感",
   lengthPreset: "medium",
   customLength: "3000",
   imagePlanMode: "auto",
@@ -161,7 +219,25 @@ const defaultDraft: CreationDraft = {
   materialMatchThreshold: 30,
   webSearchMode: "auto",
   folderSources: [],
+  inputImages: [],
 };
+
+function isPromptImageIntent(value: unknown): value is PromptImageIntent {
+  return value === "auto" || value === "material" || value === "insert" || value === "analyze";
+}
+
+function normalizePromptImageReferences(value: unknown): PromptImageReference[] {
+  if (!Array.isArray(value)) return [];
+  const ids = new Set<string>();
+  return value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const image = candidate as Partial<PromptImageReference>;
+    const assetId = typeof image.assetId === "string" ? image.assetId.trim().slice(0, 256) : "";
+    if (!assetId || ids.has(assetId)) return [];
+    ids.add(assetId);
+    return [{ assetId, intent: isPromptImageIntent(image.intent) ? image.intent : "auto" }];
+  }).slice(0, MAX_PROMPT_IMAGE_ATTACHMENTS);
+}
 
 function normalizeFolderSources(value: unknown): FolderSource[] {
   if (!Array.isArray(value)) return [];
@@ -187,7 +263,7 @@ function normalizeFolderSources(value: unknown): FolderSource[] {
       }).slice(0, MAX_FOLDER_FILES)
       : [];
     const characterCount = Number(source.characterCount);
-    return [{
+    const normalized = {
       kind: source.kind,
       name: source.name.slice(0, 160),
       content: source.content.slice(0, MAX_FOLDER_TEXT_CHARS),
@@ -195,13 +271,15 @@ function normalizeFolderSources(value: unknown): FolderSource[] {
       skippedCount: Math.max(0, Math.floor(source.skippedCount)),
       characterCount: Number.isFinite(characterCount) ? Math.max(0, Math.floor(characterCount)) : 0,
       fileManifest,
-    }];
+    } satisfies FolderSource;
+    return hasUsableFolderSource(normalized) ? [normalized] : [];
   });
 }
 
 function loadDraft(): CreationDraft {
   try {
     const raw = window.localStorage.getItem(CREATION_DRAFT_STORAGE_KEY)
+      ?? window.localStorage.getItem(PREVIOUS_CREATION_DRAFT_STORAGE_KEY)
       ?? window.localStorage.getItem(LEGACY_CREATION_DRAFT_STORAGE_KEY);
     if (!raw) return defaultDraft;
     const value = JSON.parse(raw) as Partial<CreationDraft>;
@@ -209,7 +287,9 @@ function loadDraft(): CreationDraft {
     return {
       ...defaultDraft,
       ...value,
+      tone: isPromotionTone(value.tone) ? value.tone : defaultDraft.tone,
       folderSources: normalizeFolderSources(value.folderSources),
+      inputImages: normalizePromptImageReferences(value.inputImages),
       materialMatchThreshold: Number.isFinite(threshold)
         ? Math.max(0, Math.min(100, Math.round(threshold)))
         : defaultDraft.materialMatchThreshold,
@@ -270,13 +350,22 @@ function sourceLabel(kind: FolderSourceKind) {
   return kind === "project" ? "项目文件夹" : "资料文件夹";
 }
 
+function imageFilesFromClipboard(clipboard: DataTransfer) {
+  const directFiles = Array.from(clipboard.files).filter((file) => file.type.startsWith("image/"));
+  if (directFiles.length > 0) return directFiles;
+  return Array.from(clipboard.items ?? []).flatMap((item) => {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) return [];
+    const file = item.getAsFile();
+    return file ? [file] : [];
+  });
+}
+
 export function CreatePage(props: CreatePageProps) {
   const initial = useRef(loadDraft()).current;
   const [topic, setTopic] = useState(initial.topic);
   const [title, setTitle] = useState(initial.title);
   const [references, setReferences] = useState(initial.references);
   const [tone, setTone] = useState(initial.tone);
-  const [contentType, setContentType] = useState(initial.contentType);
   const [lengthPreset, setLengthPreset] = useState<LengthPreset>(initial.lengthPreset);
   const [customLength, setCustomLength] = useState(initial.customLength);
   const [imagePlanMode, setImagePlanMode] = useState<ImagePlanPreference["mode"]>(initial.imagePlanMode);
@@ -284,10 +373,18 @@ export function CreatePage(props: CreatePageProps) {
   const [materialMatchThreshold, setMaterialMatchThreshold] = useState(initial.materialMatchThreshold);
   const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>(initial.webSearchMode);
   const [folderSources, setFolderSources] = useState<FolderSource[]>(initial.folderSources);
+  const [inputImages, setInputImages] = useState<PromptImageInput[]>(() => initial.inputImages.flatMap((reference) => {
+    const asset = props.mediaAssets.find((candidate) => candidate.id === reference.assetId);
+    return asset ? [{ ...reference, asset }] : [];
+  }));
   const [folderImportProgress, setFolderImportProgress] = useState<FolderImportProgress | null>(null);
   const [picker, setPicker] = useState<Picker>(null);
   const [validation, setValidation] = useState<string | null>(null);
+  const [promptImageImporting, setPromptImageImporting] = useState(false);
+  const [promptImageDropActive, setPromptImageDropActive] = useState(false);
+  const [promptImageError, setPromptImageError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const promptImageInputRef = useRef<HTMLInputElement>(null);
   const projectFolderInputRef = useRef<HTMLInputElement>(null);
   const referenceFolderInputRef = useRef<HTMLInputElement>(null);
   const promptId = useId();
@@ -303,11 +400,28 @@ export function CreatePage(props: CreatePageProps) {
   }, []);
 
   useEffect(() => {
-    saveDraft({
-      topic, title, references, tone, contentType, lengthPreset, customLength,
-      imagePlanMode, imageCount, materialMatchThreshold, webSearchMode, folderSources,
+    // Drafts retain compact media IDs. Resolve them after IndexedDB hydration
+    // and merge instead of replacing so a newly pasted image cannot hide a
+    // previously saved draft attachment while the library is still loading.
+    if (initial.inputImages.length === 0) return;
+    setInputImages((current) => {
+      const known = new Set(current.map((attachment) => attachment.assetId));
+      const restored = initial.inputImages.flatMap((reference) => {
+        if (known.has(reference.assetId)) return [];
+        const asset = props.mediaAssets.find((candidate) => candidate.id === reference.assetId);
+        return asset ? [{ ...reference, asset }] : [];
+      });
+      return restored.length > 0 ? [...current, ...restored] : current;
     });
-  }, [contentType, customLength, folderSources, imageCount, imagePlanMode, lengthPreset, materialMatchThreshold, references, title, tone, topic, webSearchMode]);
+  }, [initial.inputImages, props.mediaAssets]);
+
+  useEffect(() => {
+    saveDraft({
+      topic, title, references, tone, lengthPreset, customLength,
+      imagePlanMode, imageCount, materialMatchThreshold, webSearchMode, folderSources,
+      inputImages: inputImages.map(({ assetId, intent }) => ({ assetId, intent })),
+    });
+  }, [customLength, folderSources, imageCount, imagePlanMode, inputImages, lengthPreset, materialMatchThreshold, references, title, tone, topic, webSearchMode]);
 
   const allReferences = () => [
     references.trim(),
@@ -327,6 +441,11 @@ export function CreatePage(props: CreatePageProps) {
       return null;
     }
     const sourceText = allReferences();
+    const unusableFolder = folderSources.find((source) => !hasUsableFolderSource(source));
+    if (unusableFolder) {
+      setValidation(`${sourceLabel(unusableFolder.kind)}“${unusableFolder.name}”没有可读取的正文，请重新选择文件夹后再创作。`);
+      return null;
+    }
     if (sourceText.length > MAX_REFERENCE_TEXT_CHARS) {
       setValidation("参考资料过长，请移除不需要的文件或缩短手动资料后再创作。");
       return null;
@@ -336,14 +455,15 @@ export function CreatePage(props: CreatePageProps) {
       topic: normalizedTopic,
       title: title.trim(),
       references: sourceText,
-      contentType,
-      tone: props.selectedTemplate ? `跟随模板「${props.selectedTemplate.name}」的文风` : tone,
+      contentType: "产品推广",
+      tone: promotionToneInstruction(tone),
       length,
       platforms: [],
       preset: "standard",
       disabledNodeIds: ["research", "outline", "natural-style", "review"],
       template: props.selectedTemplate,
       imageAssets: props.selectedMedia,
+      inputImages: inputImages.map((attachment) => ({ ...attachment })),
       imagePlan: {
         mode: imagePlanMode,
         targetCount: imagePlanMode === "fixed" ? imageCount : 0,
@@ -367,6 +487,52 @@ export function CreatePage(props: CreatePageProps) {
     } catch {
       setValidation("读取参考文件失败，请重新选择文件后重试。");
     }
+  };
+
+  const importPromptImages = async (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (images.length === 0) {
+      setPromptImageError("只能粘贴、拖入或选择图片文件。");
+      return;
+    }
+    if (!props.onImportPromptImages) {
+      setPromptImageError("图片导入服务尚未连接。");
+      return;
+    }
+    setPromptImageImporting(true);
+    setPromptImageError(null);
+    try {
+      const assets = await props.onImportPromptImages(images);
+      addPromptImageAssets(assets);
+    } catch (error) {
+      setPromptImageError(error instanceof Error ? error.message : "导入图片失败，请重试。");
+    } finally {
+      setPromptImageImporting(false);
+    }
+  };
+
+  const addPromptImageAssets = (assets: MediaAsset[]) => {
+    const currentIds = new Set(inputImages.map((attachment) => attachment.assetId));
+    const incoming = assets.filter((asset) => !currentIds.has(asset.id));
+    if (inputImages.length + incoming.length > MAX_PROMPT_IMAGE_ATTACHMENTS) {
+      setPromptImageError(`一次最多附加 ${MAX_PROMPT_IMAGE_ATTACHMENTS} 张图片，已保留最先添加的图片。`);
+    }
+    setInputImages((current) => {
+      const existing = new Set(current.map((attachment) => attachment.assetId));
+      return [
+        ...current,
+        ...assets
+          .filter((asset) => !existing.has(asset.id))
+          .slice(0, Math.max(0, MAX_PROMPT_IMAGE_ATTACHMENTS - current.length))
+          .map((asset) => ({ assetId: asset.id, intent: "auto" as const, asset })),
+      ].slice(0, MAX_PROMPT_IMAGE_ATTACHMENTS);
+    });
+  };
+
+  const updatePromptImageIntent = (assetId: string, intent: PromptImageIntent) => {
+    setInputImages((current) => current.map((attachment) => (
+      attachment.assetId === assetId ? { ...attachment, intent } : attachment
+    )));
   };
 
   const importFolder = async (kind: FolderSourceKind, input: FileList | File[] | null) => {
@@ -542,32 +708,22 @@ export function CreatePage(props: CreatePageProps) {
         <button className="creation-toolbar__choice creation-toolbar__button" onClick={() => setPicker("template")} type="button">
           <span>模板</span><strong>{templateLabel}</strong><ChevronDown aria-hidden="true" size={14} />
         </button>
-        {props.selectedTemplate ? (
-          <span className="creation-toolbar__choice creation-toolbar__static"><span>文风</span><strong>跟随模板</strong></span>
-        ) : (
-          <label className="creation-toolbar__choice">
-            <span>文风</span>
-            <select aria-label="文风" onChange={(event) => setTone(event.target.value)} value={tone}>
-              <option>专业清晰</option><option>自然亲切</option><option>简洁直接</option><option>深入严谨</option>
-            </select>
-          </label>
-        )}
         <label className="creation-toolbar__choice">
-          <span>类型</span>
-          <select aria-label="内容类型" onChange={(event) => setContentType(event.target.value)} value={contentType}>
-            <option>技术文章</option><option>产品介绍</option><option>项目更新</option><option>经验复盘</option><option>观点文章</option>
+          <span>文风</span>
+          <select aria-label="文风" className="creation-select" onChange={(event) => setTone(event.target.value as PromotionTone)} value={tone}>
+            {promotionToneOptions.map((option) => <option key={option.id} value={option.id}>{option.id}</option>)}
           </select>
         </label>
         <label className="creation-toolbar__choice">
           <span>篇幅</span>
-          <select aria-label="篇幅" onChange={(event) => setLengthPreset(event.target.value as LengthPreset)} value={lengthPreset}>
+          <select aria-label="篇幅" className="creation-select" onChange={(event) => setLengthPreset(event.target.value as LengthPreset)} value={lengthPreset}>
             {lengthOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
           </select>
         </label>
         {lengthPreset === "custom" && <label className="creation-toolbar__choice creation-toolbar__length"><span>字数</span><input aria-label="目标字数" min={1} onChange={(event) => setCustomLength(event.target.value)} type="number" value={customLength} /></label>}
         <label className="creation-toolbar__choice">
           <span>联网</span>
-          <select aria-label="联网检索" onChange={(event) => setWebSearchMode(event.target.value as WebSearchMode)} value={webSearchMode}>
+          <select aria-label="联网检索" className="creation-select" onChange={(event) => setWebSearchMode(event.target.value as WebSearchMode)} value={webSearchMode}>
             <option value="auto">自动</option><option value="off">关闭</option>
           </select>
         </label>
@@ -580,13 +736,73 @@ export function CreatePage(props: CreatePageProps) {
         <label className="visually-hidden" htmlFor={promptId}>文章主题</label>
         <textarea
           aria-invalid={validation ? "true" : undefined}
+          aria-busy={promptImageImporting || undefined}
           autoFocus
+          className={promptImageDropActive ? "is-drop-target" : undefined}
           id={promptId}
           onChange={(event) => setTopic(event.target.value)}
+          onDragEnter={(event) => {
+            if (event.dataTransfer.types.includes("Files") || event.dataTransfer.types.includes("application/x-open-publisher-markdown-image")) {
+              event.preventDefault();
+              setPromptImageDropActive(true);
+            }
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget === event.target) setPromptImageDropActive(false);
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            setPromptImageDropActive(false);
+            const markdownImage = event.dataTransfer.getData("application/x-open-publisher-markdown-image");
+            const reference = markdownImage.match(/\]\((asset:\/\/[^)\s]+)\)/)?.[1];
+            const assetId = reference ? mediaAssetIdFromReference(reference) : null;
+            const asset = assetId ? props.mediaAssets.find((candidate) => candidate.id === assetId) : null;
+            if (asset) {
+              setPromptImageError(null);
+              addPromptImageAssets([asset]);
+              return;
+            }
+            void importPromptImages(Array.from(event.dataTransfer.files));
+          }}
+          onPaste={(event) => {
+            const images = imageFilesFromClipboard(event.clipboardData);
+            if (images.length === 0) return;
+            event.preventDefault();
+            void importPromptImages(images);
+          }}
           placeholder="写下主题、读者、目标或希望文章回答的问题"
           rows={8}
           value={topic}
         />
+        {inputImages.length > 0 && (
+          <div aria-label="已附加提示图片" className="prompt-image-attachments">
+            {inputImages.map((attachment) => (
+              <div className="prompt-image-attachment" key={attachment.assetId}>
+                <img alt="" src={attachment.asset.src} />
+                <strong title={attachment.asset.name}>{attachment.asset.name}</strong>
+                <select
+                  aria-label={`${attachment.asset.name}的处理方式`}
+                  onChange={(event) => updatePromptImageIntent(attachment.assetId, event.target.value as PromptImageIntent)}
+                  value={attachment.intent}
+                >
+                  <option value="auto">AI 自动判断</option>
+                  <option value="material">作为素材</option>
+                  <option value="insert">插入正文</option>
+                  <option value="analyze">识别图片</option>
+                </select>
+                <button
+                  aria-label={`移除图片 ${attachment.asset.name}`}
+                  onClick={() => setInputImages((current) => current.filter((item) => item.assetId !== attachment.assetId))}
+                  title="移除图片"
+                  type="button"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="creation-composer__footer">
           <div className="creation-composer__tools">
             <button className="text-button" onClick={() => setPicker("details")} type="button"><SlidersHorizontal size={15} />资料</button>
@@ -594,7 +810,9 @@ export function CreatePage(props: CreatePageProps) {
             <button className="text-button" disabled={isImportingFolder} onClick={() => projectFolderInputRef.current?.click()} type="button"><FolderOpen size={15} />项目文件夹</button>
             <button className="text-button" disabled={isImportingFolder} onClick={() => referenceFolderInputRef.current?.click()} type="button"><FolderOpen size={15} />资料文件夹</button>
             <button className="text-button" onClick={() => setPicker("media")} type="button"><ImagePlus size={15} />{props.selectedMedia.length ? `素材 ${props.selectedMedia.length}` : "选择素材"}</button>
+            <button className="text-button" disabled={promptImageImporting} onClick={() => promptImageInputRef.current?.click()} title="也可以直接粘贴或拖入图片" type="button"><ImagePlus size={15} />{promptImageImporting ? "导入图片" : "添加图片"}</button>
             <input accept=".md,.markdown,.txt,text/plain,text/markdown" aria-label="选择参考文件" className="visually-hidden" disabled={isImportingFolder} onChange={(event) => { void importReference(event.target.files?.[0]); event.currentTarget.value = ""; }} ref={fileInputRef} type="file" />
+            <input accept="image/png,image/jpeg,image/webp,image/gif,image/avif" aria-label="选择提示图片" className="visually-hidden" disabled={promptImageImporting} multiple onChange={(event) => { const files = Array.from(event.target.files ?? []); event.currentTarget.value = ""; void importPromptImages(files); }} ref={promptImageInputRef} type="file" />
             <input aria-label="选择项目文件夹" className="visually-hidden" disabled={isImportingFolder} multiple onChange={(event) => { const files = event.target.files ? Array.from(event.target.files) : null; event.currentTarget.value = ""; void importFolder("project", files); }} ref={projectFolderInputRef} type="file" />
             <input aria-label="选择资料文件夹" className="visually-hidden" disabled={isImportingFolder} multiple onChange={(event) => { const files = event.target.files ? Array.from(event.target.files) : null; event.currentTarget.value = ""; void importFolder("reference", files); }} ref={referenceFolderInputRef} type="file" />
           </div>
@@ -603,6 +821,7 @@ export function CreatePage(props: CreatePageProps) {
             <span className="model-chip__dot" />
             <select
               aria-label="写作模型"
+              className="creation-select"
               disabled={props.switchingModel}
               onChange={(event) => {
                 if (event.target.value === "__settings__") props.onOpenSettings();
@@ -615,12 +834,13 @@ export function CreatePage(props: CreatePageProps) {
               <option value="__settings__">添加模型...</option>
             </select>
           </label>
-          <button className="button button--primary" disabled={props.generating} onClick={() => {
+          <button className="button button--primary" disabled={props.generating || promptImageImporting} onClick={() => {
+            if (promptImageImporting) return;
             const request = creationRequest();
             if (request) props.onCreate(request);
           }} type="button">
             {props.generating ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
-            {props.generating ? "正在创作" : "开始创作"}
+            {props.generating ? "正在创作" : promptImageImporting ? "正在导入图片" : "开始创作"}
           </button>
         </div>
       </div>
@@ -659,6 +879,7 @@ export function CreatePage(props: CreatePageProps) {
         {folderSources.map((source) => <span key={source.kind} title={`${sourceLabel(source.kind)}：${source.name} · 已读 ${source.fileCount} 个文件 · ${source.characterCount.toLocaleString("zh-CN")} 字 · 跳过 ${source.skippedCount} 个`}><FolderOpen aria-hidden="true" size={14} /><span>{sourceLabel(source.kind)} · {source.name} · {source.fileCount} 个文件 · {source.characterCount.toLocaleString("zh-CN")} 字{source.skippedCount > 0 ? ` · 跳过 ${source.skippedCount}` : ""}</span><button aria-label={`移除${sourceLabel(source.kind)}`} onClick={() => setFolderSources((current) => current.filter((item) => item.kind !== source.kind))} type="button"><X size={13} /></button></span>)}
       </div>}
       {validation && <p className="form-error" role="alert">{validation}</p>}
+      {promptImageError && <p className="form-error" role="alert">{promptImageError}</p>}
     </div>
 
     {picker && <div className="studio-modal" role="presentation">

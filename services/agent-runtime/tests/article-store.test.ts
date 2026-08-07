@@ -2,10 +2,47 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { ArticleConflictError, ArticleStore } from "../src/storage/article-store.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  ArticleConflictError,
+  ArticleStore,
+  replaceFileWithRetry,
+} from "../src/storage/article-store.js";
 
 describe("ArticleStore", () => {
+  it("retries transient Windows replacement failures without changing the source path", async () => {
+    const attempts: Array<[string, string]> = [];
+    const waits: number[] = [];
+    const rename = async (source: string, destination: string): Promise<void> => {
+      attempts.push([source, destination]);
+      if (attempts.length < 3) {
+        throw Object.assign(new Error("temporarily locked"), { code: "EPERM" });
+      }
+    };
+
+    await replaceFileWithRetry("draft.tmp", "draft.md", rename, async (milliseconds) => {
+      waits.push(milliseconds);
+    });
+
+    expect(attempts).toEqual([
+      ["draft.tmp", "draft.md"],
+      ["draft.tmp", "draft.md"],
+      ["draft.tmp", "draft.md"],
+    ]);
+    expect(waits).toEqual([25, 50]);
+  });
+
+  it("does not retry non-transient replacement failures", async () => {
+    const rename = vi.fn(async () => {
+      throw Object.assign(new Error("invalid path"), { code: "EINVAL" });
+    });
+
+    await expect(
+      replaceFileWithRetry("draft.tmp", "draft.md", rename, async () => undefined),
+    ).rejects.toMatchObject({ code: "EINVAL" });
+    expect(rename).toHaveBeenCalledTimes(1);
+  });
+
   it("checkpoints without replacing canonical Markdown", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-publisher-articles-"));
     const store = new ArticleStore(root);
@@ -242,5 +279,50 @@ describe("ArticleStore", () => {
     });
 
     expect(patched.markdown).toBe("# Patch\n\nNew alpha.\n\nKeep this.\n\nNew omega.");
+  });
+
+  it("lists immutable history and restores an old revision by appending a new head", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-history-"));
+    const store = new ArticleStore(root);
+    await store.initialize();
+    const first = await store.commit({
+      schemaVersion: "2",
+      articleId: "article:history",
+      baseRevisionId: null,
+      baseContentHash: null,
+      title: "First",
+      markdown: "# First\n\nOriginal body.",
+      reason: "writer-create",
+    });
+    const second = await store.commit({
+      schemaVersion: "2",
+      articleId: first.articleId,
+      baseRevisionId: first.currentRevisionId,
+      baseContentHash: first.contentHash,
+      title: "Second",
+      markdown: "# Second\n\nEdited body.",
+      reason: "ai-rewrite",
+    });
+
+    expect(await store.listRevisions(first.articleId)).toMatchObject([
+      { revisionId: second.currentRevisionId, revisionNumber: 2, reason: "ai-rewrite", isCurrent: true },
+      { revisionId: first.currentRevisionId, revisionNumber: 1, reason: "writer-create", isCurrent: false },
+    ]);
+    await expect(store.readRevision(first.articleId, first.currentRevisionId)).resolves.toMatchObject({
+      markdown: first.markdown,
+      revisionNumber: 1,
+    });
+
+    const restored = await store.restoreRevision(first.articleId, first.currentRevisionId);
+
+    expect(restored).toMatchObject({
+      markdown: first.markdown,
+      revisionNumber: 3,
+      reason: `restore:${first.currentRevisionId}`,
+      isCurrent: true,
+    });
+    expect(restored?.revisionId).not.toBe(first.currentRevisionId);
+    await expect(store.listRevisions(first.articleId)).resolves.toHaveLength(3);
+    await expect(store.read(first.articleId)).resolves.toMatchObject({ markdown: first.markdown });
   });
 });

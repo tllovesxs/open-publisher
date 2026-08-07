@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Local-first intelligent writing and publishing desktop host"
 authors = ["Open Publisher contributors"]
 license = "AGPL-3.0-only"
-repository = "https://github.com/open-publisher/open-publisher"
+repository = "https://github.com/tllovesxs/open-publisher"
 edition = "2021"
 rust-version = "1.77.2"
 

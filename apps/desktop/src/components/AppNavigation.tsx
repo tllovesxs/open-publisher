@@ -50,7 +50,7 @@ export function AppNavigation({
       <aside className={`app-navigation${mobileOpen ? " is-open" : ""}`}>
         <div className="app-navigation__brand">
           <span className="brand-mark" aria-hidden="true">
-            OP
+            <img alt="" src="/gaoliu-mark.svg" />
           </span>
           <div>
             <strong>稿流</strong>

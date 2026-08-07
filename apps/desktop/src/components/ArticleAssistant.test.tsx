@@ -1,8 +1,18 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ArticleAssistant, type MarkdownSelection } from "./ArticleAssistant";
+import type { MediaAsset } from "../types";
 
 const selected: MarkdownSelection = { start: 4, end: 9, text: "原始段落。" };
+const attachmentAsset = {
+  id: "media-assistant-image",
+  name: "产品截图.png",
+  alt: "产品主界面截图",
+  description: "用于解释当前产品界面。",
+  src: "data:image/png;base64,c2NyZWVuc2hvdA==",
+  source: "uploaded",
+  createdAt: "刚刚",
+} satisfies MediaAsset;
 
 function renderAssistant(overrides: Partial<React.ComponentProps<typeof ArticleAssistant>> = {}) {
   const onRewrite = vi.fn().mockResolvedValue({
@@ -71,6 +81,24 @@ describe("ArticleAssistant", () => {
     expect(window.localStorage.getItem("open-publisher.article-assistant.article-test")).toContain("表达更简洁");
   });
 
+  it("honors an explicit whole-article request even when an old selection is still attached", async () => {
+    const { onRewrite, onApplyCandidate } = renderAssistant();
+
+    fireEvent.change(screen.getByPlaceholderText("说明如何修改这些片段"), {
+      target: { value: "整篇文章重新写一遍，表达自然一些" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用 AI 修改" }));
+
+    await waitFor(() => expect(onApplyCandidate).toHaveBeenCalledTimes(1));
+    expect(onRewrite).toHaveBeenCalledWith(
+      "整篇文章重新写一遍，表达自然一些",
+      [],
+      [],
+      expect.stringMatching(/^rewrite-/),
+    );
+    expect(onApplyCandidate).toHaveBeenCalledWith(expect.objectContaining({ selections: [] }));
+  });
+
   it("shows selected fragments with a removable chip", () => {
     const { onRemoveSelection } = renderAssistant({
       selections: [selected, { start: 12, end: 16, text: "第二段内容" }],
@@ -83,6 +111,54 @@ describe("ArticleAssistant", () => {
       end: 16,
       text: "第二段内容",
     });
+  });
+
+  it("switches the active model profile from the article-side assistant", () => {
+    const onActivateModelProfile = vi.fn();
+    renderAssistant({
+      activeModelProfileId: "fast",
+      modelProfiles: [
+        {
+          id: "fast",
+          name: "快速模型",
+          baseUrl: "https://example.test/v1",
+          textProtocol: "openai-completions",
+          textModel: "fast-model",
+          textSupportsVision: false,
+          textReasoning: false,
+          textThinkingLevel: "off",
+          textContextWindow: 32_768,
+          textMaxTokens: 8_192,
+          nativeWebSearch: "disabled",
+          timeoutSeconds: 120,
+          secretConfigured: true,
+          textKeyMasked: "tes••••key",
+          active: true,
+        },
+        {
+          id: "deep",
+          name: "深度模型",
+          baseUrl: "https://example.test/v1",
+          textProtocol: "openai-responses",
+          textModel: "deep-model",
+          textSupportsVision: true,
+          textReasoning: true,
+          textThinkingLevel: "high",
+          textContextWindow: 128_000,
+          textMaxTokens: 16_384,
+          nativeWebSearch: "disabled",
+          timeoutSeconds: 300,
+          secretConfigured: true,
+          textKeyMasked: "tes••••key",
+          active: false,
+        },
+      ],
+      onActivateModelProfile,
+    });
+
+    fireEvent.change(screen.getByLabelText("AI 修改模型"), { target: { value: "deep" } });
+
+    expect(onActivateModelProfile).toHaveBeenCalledWith("deep");
   });
 
   it("does not move focus away from an editor when text fragments become active", () => {
@@ -299,6 +375,108 @@ describe("ArticleAssistant", () => {
     expect(onRemoveSelection).toHaveBeenCalledWith(selected);
   });
 
+  it("accepts a pasted image in the AI assistant and uses it when the user chooses insert", async () => {
+    const onImportPromptImages = vi.fn().mockResolvedValue([attachmentAsset]);
+    const { onComposeVisual, onRewrite } = renderAssistant({ onImportPromptImages });
+    const screenshot = new File(["image"], "clipboard.png", { type: "image/png" });
+
+    fireEvent.paste(screen.getByPlaceholderText("说明如何修改这些片段"), {
+      clipboardData: { files: [screenshot] },
+    });
+
+    await waitFor(() => expect(onImportPromptImages).toHaveBeenCalledWith([screenshot]));
+    expect(screen.getByLabelText("已附加提示图片")).toHaveTextContent("产品截图.png");
+    fireEvent.change(screen.getByRole("combobox", { name: "产品截图.png的处理方式" }), {
+      target: { value: "insert" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用 AI 修改" }));
+
+    await waitFor(() => expect(onComposeVisual).toHaveBeenCalledOnce());
+    expect(onComposeVisual).toHaveBeenCalledWith(
+      "请将附加图片按文章结构插入最合适的正文位置。",
+      [],
+      expect.any(Function),
+      undefined,
+      undefined,
+      false,
+      [selected],
+      [expect.objectContaining({ assetId: attachmentAsset.id, intent: "insert", asset: attachmentAsset })],
+    );
+    expect(onRewrite).not.toHaveBeenCalled();
+  });
+
+  it("does not submit a text instruction until its pasted image is imported", async () => {
+    let resolveImport!: (assets: MediaAsset[]) => void;
+    const onImportPromptImages = vi.fn(() => new Promise<MediaAsset[]>((resolve) => {
+      resolveImport = resolve;
+    }));
+    const { onRewrite } = renderAssistant({ onImportPromptImages });
+    const input = screen.getByPlaceholderText("说明如何修改这些片段");
+    fireEvent.change(input, { target: { value: "解释这张图与本段内容的关系" } });
+    fireEvent.paste(input, {
+      clipboardData: { files: [new File(["image"], "clipboard.png", { type: "image/png" })] },
+    });
+
+    expect(screen.getByRole("button", { name: "应用 AI 修改" })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onRewrite).not.toHaveBeenCalled();
+
+    resolveImport([attachmentAsset]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "应用 AI 修改" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "应用 AI 修改" }));
+    await waitFor(() => expect(onRewrite).toHaveBeenCalledOnce());
+    expect(onRewrite).toHaveBeenCalledWith(
+      "解释这张图与本段内容的关系",
+      [selected],
+      [],
+      expect.stringMatching(/^rewrite-/),
+      [expect.objectContaining({ assetId: attachmentAsset.id })],
+    );
+  });
+
+  it("keeps a material attachment in the text rewrite path when no visual instruction was entered", async () => {
+    const onImportPromptImages = vi.fn().mockResolvedValue([attachmentAsset]);
+    const { onComposeVisual, onRewrite } = renderAssistant({ onImportPromptImages });
+    const screenshot = new File(["image"], "clipboard.png", { type: "image/png" });
+
+    fireEvent.paste(screen.getByPlaceholderText("说明如何修改这些片段"), {
+      clipboardData: { files: [screenshot] },
+    });
+    await waitFor(() => expect(onImportPromptImages).toHaveBeenCalledWith([screenshot]));
+    fireEvent.change(screen.getByRole("combobox", { name: "产品截图.png的处理方式" }), {
+      target: { value: "material" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用 AI 修改" }));
+
+    await waitFor(() => expect(onRewrite).toHaveBeenCalledOnce());
+    expect(onRewrite).toHaveBeenCalledWith(
+      "请将附加图片作为本次文章修改的素材参考。",
+      [selected],
+      [],
+      expect.stringMatching(/^rewrite-/),
+      [expect.objectContaining({ assetId: attachmentAsset.id, intent: "material" })],
+    );
+    expect(onComposeVisual).not.toHaveBeenCalled();
+  });
+
+  it("attaches a material-library image dropped into the AI assistant without importing it again", async () => {
+    const onImportPromptImages = vi.fn().mockResolvedValue([]);
+    renderAssistant({ mediaAssets: [attachmentAsset], onImportPromptImages });
+    const input = screen.getByPlaceholderText("说明如何修改这些片段");
+
+    fireEvent.drop(input, {
+      dataTransfer: {
+        files: [],
+        getData: (type: string) => type === "application/x-open-publisher-markdown-image"
+          ? "![产品主界面截图](asset://media-assistant-image)"
+          : "",
+      },
+    });
+
+    expect(screen.getByLabelText("已附加提示图片")).toHaveTextContent("产品截图.png");
+    expect(onImportPromptImages).not.toHaveBeenCalled();
+  });
+
   it("treats an instruction that protects images as a text rewrite", async () => {
     const { onComposeVisual, onRewrite } = renderAssistant();
 
@@ -335,6 +513,62 @@ describe("ArticleAssistant", () => {
       "revision-rewrite-2",
       true,
     );
+  });
+
+  it("asks before refreshing images and shows the estimated match score", async () => {
+    const onRewrite = vi.fn().mockResolvedValue({
+      replacements: ["# 全新正文\n\n内容已经发生较大变化。"],
+      summary: "已完成整篇重写。",
+      provider: "mock",
+      model: "deep-model",
+      mocked: false,
+      visualRefreshRecommended: true,
+      visualMatchScore: 34,
+    });
+    const { onComposeVisual } = renderAssistant({ selections: [], onRewrite });
+
+    fireEvent.change(screen.getByPlaceholderText("说说你想怎么改"), {
+      target: { value: "重写整篇文章" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用 AI 修改" }));
+
+    expect(await screen.findByText("配图匹配度 34%")).toBeVisible();
+    expect(screen.getByText(/是否让视觉 Agent/)).toBeVisible();
+    expect(onComposeVisual).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新配图" }));
+    await waitFor(() => expect(onComposeVisual).toHaveBeenCalledOnce());
+    expect(onComposeVisual).toHaveBeenCalledWith(
+      "正文已经大幅修改，请根据新内容重新规划并更新现有正文配图。",
+      expect.arrayContaining([{ role: "user", text: "确认根据新正文重新配图" }]),
+      expect.any(Function),
+      "改写后的段落。",
+      "revision-rewrite-1",
+      true,
+    );
+  });
+
+  it("lets the user keep current images after a low match warning", async () => {
+    const onRewrite = vi.fn().mockResolvedValue({
+      replacements: ["# 全新正文"],
+      summary: "正文已更新。",
+      provider: "mock",
+      model: "deep-model",
+      mocked: false,
+      visualRefreshRecommended: true,
+      visualMatchScore: 51,
+    });
+    const { onComposeVisual } = renderAssistant({ selections: [], onRewrite });
+
+    fireEvent.change(screen.getByPlaceholderText("说说你想怎么改"), {
+      target: { value: "全文改写" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用 AI 修改" }));
+    await screen.findByText("配图匹配度 51%");
+    fireEvent.click(screen.getByRole("button", { name: "保留原图" }));
+
+    expect(await screen.findByText(/已保留现有配图/)).toBeVisible();
+    expect(onComposeVisual).not.toHaveBeenCalled();
   });
 
   it("renders a failed workflow as an inline activity card with retry details", () => {

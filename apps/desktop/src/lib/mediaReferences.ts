@@ -1,6 +1,9 @@
 import type { MediaAsset } from "../types";
 
-const ASSET_REFERENCE_PATTERN = /^asset:\/\/([a-z0-9_-]{1,256})$/i;
+// Older generated assets used an `asset:<uuid>` runtime ID. Keep accepting
+// those persisted references while all new generated IDs use the safer form
+// created by generatedMediaAssetId().
+const ASSET_REFERENCE_PATTERN = /^asset:\/\/([a-z0-9:_-]{1,256})$/i;
 const DATA_IMAGE_PATTERN =
   /^data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i;
 
@@ -8,6 +11,16 @@ type MediaSource = Pick<MediaAsset, "id" | "src">;
 
 export function mediaMarkdownReference(asset: Pick<MediaAsset, "id">) {
   return `asset://${asset.id}`;
+}
+
+/** Converts an image-runtime identifier into a compact Markdown-safe asset ID. */
+export function generatedMediaAssetId(imageId: string): string {
+  const safeImageId = imageId
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 246);
+  return `generated-${safeImageId || "image"}`;
 }
 
 export function mediaAssetIdFromReference(value: string): string | null {

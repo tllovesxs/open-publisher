@@ -85,3 +85,20 @@ export interface ArticlePatchRequestV2 {
   operations: ArticlePatchOperationV2[];
   reason: string;
 }
+
+export interface ArticleRevisionSummaryV2 {
+  schemaVersion: "2";
+  articleId: string;
+  revisionId: string;
+  revisionNumber: number;
+  parentRevisionId: string | null;
+  title: string;
+  contentHash: `sha256:${string}`;
+  createdAt: string;
+  reason: string;
+  isCurrent: boolean;
+}
+
+export interface ArticleRevisionDetailV2 extends ArticleRevisionSummaryV2 {
+  markdown: string;
+}

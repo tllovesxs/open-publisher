@@ -183,8 +183,8 @@ Full template: [references/workflow.md](references/workflow.md#step-4-generate-o
 
 1. For each illustration, create a prompt file per [references/prompt-construction.md](references/prompt-construction.md)
 2. Save to `prompts/NN-{type}-{slug}.md` with YAML frontmatter
-3. Prompts **MUST** use type-specific templates with structured sections (ZONES / LABELS / COLORS / STYLE / ASPECT)
-4. LABELS **MUST** include article-specific data: actual numbers, terms, metrics, quotes
+3. Prompts **MUST** use type-specific templates with structured sections (ZONES / COLORS / STYLE / ASPECT). Add `LABELS` only when a short label is necessary for the requested visual.
+4. For正文配图, default to **zero readable text**. Never pass a paragraph, title, table, UI copy, metrics, or quotation to the image model as text to render. If the user explicitly requests labels, use at most three short terms from the article and keep them secondary to the visual.
 5. **DO NOT** pass ad-hoc inline prompts to `--prompt` without saving prompt files first
 6. Select the backend via the `## Image Generation Tools` rule at the top: use whatever is available; if multiple, ask the user once. Do this once per session before any generation.
    - **`codex-imagegen` invocation**: when the rule resolves to `codex-imagegen`, see [references/codex-imagegen.md](references/codex-imagegen.md) for the invocation contract (preferred `baoyu-image-gen --provider codex-cli` path, runtime wrapper discovery, parameter notes, stdout schema, batch semantics).

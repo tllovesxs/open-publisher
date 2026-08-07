@@ -46,10 +46,73 @@ describe("ImageService", () => {
     await expect(readFile(join(root, result.images[0]!.relativePath))).resolves.toBeInstanceOf(Buffer);
   });
 
-  it("rejects provider URLs unless the exact HTTPS host is configured", async () => {
+  it("downloads a provider-issued HTTPS CDN URL and stores it as a local image", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ images: [{ url: "https://cdn.example.test/image.png" }] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(Buffer.from(PNG, "base64"), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      }));
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const result = await service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    expect(result).toMatchObject({
+      artifactCount: 1,
+      remoteUrlsIgnored: 0,
+      images: [{ mediaType: "image/png" }],
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    await expect(readFile(join(root, result.images[0]!.relativePath))).resolves.toEqual(Buffer.from(PNG, "base64"));
+  });
+
+  it("accepts provider data URLs and normalizes them into an image artifact", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ data: [{ url: "https://cdn.example.test/image.png" }] }), { status: 200 }),
+      new Response(JSON.stringify({
+        data: [{ data: `data:image/png;base64,${PNG}` }],
+      }), { status: 200 }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const result = await service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    expect(result.images[0]?.dataUrl).toBe(`data:image/png;base64,${PNG}`);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts unpadded URL-safe base64 image output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const urlSafePng = PNG.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ b64_json: urlSafePng }] }), { status: 200 }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const result = await service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    expect(result.images[0]?.mediaType).toBe("image/png");
+  });
+
+  it("rejects non-public remote image URLs instead of leaving a stuck operation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: "http://127.0.0.1/image.png" }] }), { status: 200 }),
     );
     const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
 
@@ -57,7 +120,7 @@ describe("ImageService", () => {
       prompt: "a precise product diagram",
       size: "1024x1024",
       modelProfile: profile,
-    })).rejects.toThrow("no trusted image output");
+    })).rejects.toThrow("no usable image output: Image provider returned a non-public image URL");
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
   });
 });

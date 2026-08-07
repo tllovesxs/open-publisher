@@ -96,11 +96,13 @@ When depicting people:
 
 ## Text in Illustrations
 
+正文配图默认不渲染文字。文章正文只用于确定视觉主题，不得原样复制到 `ZONES`、`LABELS` 或图片标题中。只有用户明确要求标注时，才允许最多三个极短关键词；复杂说明应回到文章正文，而不是塞进图片。
+
 | Element | Guideline |
 |---------|-----------|
-| **Size** | Large, prominent, immediately readable |
+| **Size** | If explicitly requested, short and secondary; otherwise no readable text |
 | **Style** | Handwritten fonts preferred for warmth |
-| **Content** | Concise keywords and core concepts only |
+| **Content** | At most three short keywords when explicitly requested; never paragraphs, tables, metrics, or quotes |
 | **Language** | Match article language |
 
 **Add to prompts with text**:
@@ -113,7 +115,7 @@ When depicting people:
 Good prompts must include:
 
 1. **Layout Structure First**: Describe composition, zones, flow direction
-2. **Specific Data/Labels**: Use actual numbers, terms from article
+2. **Specific visual subject**: Use one concrete subject or relationship from the article; include labels only when explicitly requested
 3. **Visual Relationships**: How elements connect
 4. **Semantic Colors**: Meaning-based color choices (red=warning, green=efficient)
 5. **Style Characteristics**: Line treatment, texture, mood
@@ -129,22 +131,24 @@ Good prompts must include:
 Layout: [grid/radial/hierarchical]
 
 ZONES:
-- Zone 1: [data point with specific values]
-- Zone 2: [comparison with metrics]
-- Zone 3: [summary/conclusion]
+- One focal subject: [single concept or relationship from the article]
+- Supporting element 1: [optional simple visual cue]
+- Supporting element 2: [optional simple visual cue]
 
-LABELS: [specific numbers, percentages, terms from article]
+LABELS: [omit by default; at most three short terms only when explicitly requested]
 COLORS: [semantic color mapping]
 STYLE: [style characteristics]
 ASPECT: 16:9
 ```
 
-**Infographic + sketch-notes + macaron palette** (default / `hand-drawn-edu` preset):
+**Infographic + sketch-notes + macaron palette** (legacy preset;正文配图默认使用单主体规则):
 ```
-Single-page hand-drawn educational infographic in a clean presentation style.
-Warm cream paper background, black hand-drawn lines with slight wobble, soft
-pastel color blocks. Feels simple, friendly, and easy to understand at a glance.
-Diagram-style visuals ONLY — no realistic or photographic images.
+Single-subject hand-drawn editorial illustration in a clean, airy style.
+Warm cream paper background, black hand-drawn lines with slight wobble, and at
+most three soft pastel visual accents. Keep the image easy to understand at a
+glance without turning the article into a presentation slide.
+Diagram-style visuals ONLY — no realistic or photographic images. Do not render
+readable text unless the user explicitly asks for up to three short labels.
 
 PALETTE: macaron — soft pastel blocks on warm cream
 COLORS: Warm Cream background (#F5F0E8); Black (#1A1A1A) for ALL lines, text,
@@ -152,24 +156,20 @@ COLORS: Warm Cream background (#F5F0E8); Black (#1A1A1A) for ALL lines, text,
         (#B5E5CF), Lavender (#D5C6E0), Peach (#FFD5C2); Coral Red (#E8655A)
         sparingly for one or two emphasis points only.
 
-LAYOUT (top → bottom):
-- TOP: Bold hand-lettered title, oversized, slightly wobbly, with an optional
-       decorative underline or small doodle.
-- MIDDLE: 2–6 rounded-rectangle info boxes arranged in a clean grid, row, or
-          radial pattern. Each box = one section, one pastel fill color, one
-          simple icon or sketchy cartoon element, one short keyword/phrase.
-          Hand-drawn arrows connect related zones.
-- BOTTOM: One short hand-lettered takeaway sentence summarizing the main idea.
+LAYOUT:
+- CENTER: One clear focal subject representing one article concept.
+- SUPPORT: At most two simple visual cues or connectors that clarify the subject.
+- SPACE: Generous empty space; no grids, dashboards, card walls, or poster-like
+         title and takeaway areas.
 
-ELEMENTS: Rounded info boxes with clear sectioning, wavy/straight hand-drawn
-          arrows with small inline labels, simple icons and sketchy cartoon
-          elements (stick figures, tools, objects), small doodle decorations
-          (stars, sparkles, underlines, dots, asterisks) used sparingly.
+ELEMENTS: One simple icon or sketchy cartoon element (stick figure, tool, or
+          object) plus at most two quiet supporting marks. Avoid labels, dense
+          arrows, repeated boxes, and decorative text.
 
 STYLE: Minimal, well-organized, airy. Color fills don't completely fill
-       outlines (slight "hand-painted" overshoot). ALL text hand-lettered —
-       no computer fonts. Short labels and keywords only, never long
-       paragraphs. Generous white space between sections.
+       outlines (slight "hand-painted" overshoot). If labels are explicitly
+       requested, use hand-lettered short keywords only; never long paragraphs.
+       Generous white space around the focal subject.
 ```
 
 **Infographic + vector-illustration**:

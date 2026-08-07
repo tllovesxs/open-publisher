@@ -7,6 +7,7 @@ import type {
   JsonValue,
 } from "@open-publisher/contracts";
 import type { TextModelProfile } from "./model-profile.js";
+import { promptImageContents, promptImageInstructions, type PromptImageAttachment } from "./image-attachments.js";
 import { PiAgentAdapter, type WriterAgentFactory } from "./pi-adapter.js";
 import { ModelDeadlineExceededError, runWithModelDeadline } from "./model-deadline.js";
 import type { RunJournalPort } from "../runs/run-journal.js";
@@ -24,6 +25,7 @@ export interface RewriteCandidateRequest {
   readonly instruction: string;
   readonly selectedTexts: readonly string[];
   readonly conversation: readonly { role: "user" | "assistant"; text: string }[];
+  readonly images?: readonly PromptImageAttachment[];
   readonly modelProfile: TextModelProfile;
 }
 
@@ -53,11 +55,20 @@ const isTerminal = (status: AgentRunV2["status"]): boolean =>
 const bounded = (value: string, limit: number): string =>
   Array.from(value).slice(0, limit).join("");
 
+/**
+ * Replacing an entire article is not comparable to a paragraph edit. Give a
+ * long document enough time to produce a complete tool response instead of
+ * aborting at a short provider-default timeout. The desktop host mirrors this
+ * calculation so it keeps polling the run for the same budget.
+ */
+const wholeArticleRewriteMinimumTimeoutSeconds = (markdown: string): number =>
+  Math.min(480, Math.max(240, Math.ceil(Array.from(markdown).length / 160)));
+
 const conversationPrompt = (
   conversation: RewriteCandidateRequest["conversation"],
 ): string => conversation
   .slice(-16)
-  .map((message) => `${message.role === "assistant" ? "编辑" : "用户"}：${bounded(message.text, 8_000)}`)
+  .map((message) => `${message.role === "assistant" ? "编辑" : "用户"}：${bounded(message.text, 100_000)}`)
   .join("\n\n");
 
 export class RewriteService {
@@ -184,12 +195,17 @@ export class RewriteService {
     if (!active) { agent.abort(); return; }
     active.agent = agent;
     const targets = request.selectedTexts.length ? request.selectedTexts : [request.markdown];
+    const images = request.images ?? [];
+    const minimumTimeoutSeconds = request.selectedTexts.length === 0
+      ? wholeArticleRewriteMinimumTimeoutSeconds(request.markdown)
+      : 0;
     await runWithModelDeadline(agent, request.modelProfile, "Article rewrite", () => agent.prompt([
       `修改要求：\n${request.instruction.trim()}`,
       request.conversation.length ? `既有对话（仅作上下文）：\n${conversationPrompt(request.conversation)}` : "",
       `完整文章（只用于理解上下文）：\n---\n${bounded(request.markdown, 2_000_000)}\n---`,
       `待替换目标（共 ${targets.length} 段，按顺序逐一给出完整替换文本）：\n${targets.map((text, index) => `目标 ${index + 1}：\n---\n${text}\n---`).join("\n\n")}`,
-    ].filter(Boolean).join("\n\n")));
+      promptImageInstructions(images),
+    ].filter(Boolean).join("\n\n"), promptImageContents(images, request.modelProfile.supportsVision)), undefined, minimumTimeoutSeconds);
     const latest = this.journal.getRun(run.id);
     if (latest?.status === "stopping" || agent.state.errorMessage === "Aborted") {
       if (latest && !isTerminal(latest.status)) this.journal.transition(run.id, "stopped");

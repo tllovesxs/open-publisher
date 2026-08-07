@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { PromptImageAttachment } from "./imageAttachments";
+
+export type { PromptImageAttachment, PromptImageIntent } from "./imageAttachments";
 
 export type RuntimeState = "standby" | "starting" | "ready" | "stopped" | "faulted";
 
@@ -102,6 +105,8 @@ export interface PiModelDiscoverySummary {
 export interface StartPiArticleRunRequest {
   articleId: string;
   prompt: string;
+  images?: PromptImageAttachment[];
+  webSearchMode?: WebSearchMode;
   protocol?: "openai-responses" | "openai-completions";
   supportsVision?: boolean;
   reasoning?: boolean;
@@ -112,6 +117,24 @@ export interface StartPiArticleRunRequest {
 export interface SaveDraftRequest {
   articleId: string;
   baseRevision: string | null;
+  markdown: string;
+  reason?: string;
+}
+
+export interface ArticleRevisionSummary {
+  schemaVersion: "2";
+  articleId: string;
+  revisionId: string;
+  revisionNumber: number;
+  parentRevisionId: string | null;
+  title: string;
+  contentHash: `sha256:${string}`;
+  createdAt: string;
+  reason: string;
+  isCurrent: boolean;
+}
+
+export interface ArticleRevisionDetail extends ArticleRevisionSummary {
   markdown: string;
 }
 
@@ -180,6 +203,8 @@ export interface VisualCompositionRequest {
   mode: VisualImageMode;
   targetCount: number;
   assets: VisualAssetInstruction[];
+  /** Asset ids the user explicitly asked to place in the article. */
+  requiredAssetIds: string[];
   assetScope: VisualAssetScope;
   preferredType: "infographic" | "scene" | "flowchart" | "comparison" | "framework" | "timeline";
   density: VisualDensity;
@@ -251,6 +276,8 @@ export interface ComposeVisualRequest {
   articleId: string;
   markdown: string;
   instruction: string;
+  /** Locally retained prompt attachments; never remote image URLs. */
+  images?: PromptImageAttachment[];
   visualComposition: VisualCompositionRequest;
 }
 
@@ -270,7 +297,7 @@ export interface WorkflowActivityEvent {
   /** Bounded text chunk emitted only by the writing Agent. */
   draftDelta?: string;
   /** Present only when the writer called a reviewed workflow tool. */
-  toolName?: "web_search" | "github_repository";
+  toolName?: "web_search" | "github_repository" | "local_project";
   toolQuery?: string;
   sources?: WorkflowSourceSummary[];
 }
@@ -380,6 +407,7 @@ export interface RewriteArticleRequest {
   instruction: string;
   selectedTexts: string[];
   conversation: RewriteConversationMessage[];
+  images?: PromptImageAttachment[];
 }
 
 export interface RewriteConversationMessage {
@@ -582,6 +610,7 @@ export interface GitHubApplicationInfo {
 export interface WechatSyncBridgeStatus {
   available: boolean;
   connected: boolean;
+  state: "connected" | "token_required" | "token_rejected" | "extension_waiting" | "service_unreachable" | "bridge_error";
   /** A last-known snapshot retained only while a fresh bridge probe recovers. */
   stale?: boolean;
   detail: string;
@@ -590,6 +619,18 @@ export interface WechatSyncBridgeStatus {
     authenticated: boolean;
     accountLabel: string | null;
   }>;
+}
+
+export interface ConfigurePublisherBridgeRequest {
+  serverUrl: string;
+  token: string;
+}
+
+export interface PublisherBridgeConfigurationSummary {
+  serverUrl: string;
+  tokenConfigured: boolean;
+  tokenMasked: string | null;
+  persistence: "encrypted_local_database";
 }
 
 export interface DesktopBridge {
@@ -605,6 +646,9 @@ export interface DesktopBridge {
   stopPiOperation(operationId: string): Promise<void>;
   getPiArticle(articleId: string): Promise<PiArticle>;
   listArticles(): Promise<StoredArticleSummary[]>;
+  listArticleRevisions(articleId: string): Promise<ArticleRevisionSummary[]>;
+  getArticleRevision(articleId: string, revisionId: string): Promise<ArticleRevisionDetail>;
+  restoreArticleRevision(articleId: string, revisionId: string): Promise<ArticleRevisionDetail>;
   saveDraft(request: SaveDraftRequest): Promise<SaveDraftReceipt>;
   createPublishPlan(request: CreatePublishPlanRequest): Promise<PublishPlanSummary>;
   getPublishPlan(request: PublishPlanRequest): Promise<PublishPlanSummary>;
@@ -624,6 +668,9 @@ export interface DesktopBridge {
   revealModelSecret(kind: ModelSecretKind): Promise<string | null>;
   testModelConnection(): Promise<ModelConnectionTestSummary>;
   githubApplicationInfo(): Promise<GitHubApplicationInfo>;
+  publisherBridgeConfiguration(): Promise<PublisherBridgeConfigurationSummary>;
+  configurePublisherBridge(request: ConfigurePublisherBridgeRequest): Promise<PublisherBridgeConfigurationSummary>;
+  revealPublisherBridgeToken(): Promise<string | null>;
   wechatSyncStatus(request?: { forceRefresh?: boolean }): Promise<WechatSyncBridgeStatus>;
 }
 
@@ -642,9 +689,16 @@ interface MockArticleState {
 }
 
 const mockArticles = new Map<string, MockArticleState>();
+const mockArticleRevisions = new Map<string, ArticleRevisionDetail[]>();
 const mockPublishPlans = new Map<string, PublishPlanSummary>();
 const mockPublishReceipts = new Map<string, PublishReceiptSummary>();
 let mockModelConfiguration: ModelConfigurationSummary | null = null;
+let mockPublisherBridgeConfiguration: PublisherBridgeConfigurationSummary = {
+  serverUrl: "ws://localhost:9527",
+  tokenConfigured: false,
+  tokenMasked: null,
+  persistence: "encrypted_local_database",
+};
 const mockModelProfiles = new Map<string, ModelProfileSummary>();
 
 const nextMockId = (prefix: string) => `${prefix}-${++mockSequence}`;
@@ -832,6 +886,54 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       };
     });
   },
+  async listArticleRevisions(articleId) {
+    await pause(25);
+    const current = mockArticles.get(articleId);
+    return (mockArticleRevisions.get(articleId) ?? []).map(({ markdown: _markdown, ...revision }) => ({
+      ...revision,
+      isCurrent: revision.revisionId === current?.revisionId,
+    }));
+  },
+  async getArticleRevision(articleId, revisionId) {
+    await pause(20);
+    const revision = (mockArticleRevisions.get(articleId) ?? []).find(
+      (candidate) => candidate.revisionId === revisionId,
+    );
+    if (!revision) throw new Error("文章修订不存在");
+    return { ...revision, isCurrent: mockArticles.get(articleId)?.revisionId === revisionId };
+  },
+  async restoreArticleRevision(articleId, revisionId) {
+    const target = await this.getArticleRevision(articleId, revisionId);
+    const current = mockArticles.get(articleId);
+    if (!current) throw new Error("文章不存在");
+    const restoredRevisionId = nextMockId(`${articleId}-restore`);
+    const createdAt = new Date().toISOString();
+    const revisionNumber = current.revisionNumber + 1;
+    const restored: ArticleRevisionDetail = {
+      ...target,
+      revisionId: restoredRevisionId,
+      revisionNumber,
+      parentRevisionId: current.revisionId,
+      contentHash: `sha256:${mockHash(target.markdown)}`,
+      createdAt,
+      reason: `restore:${revisionId}`,
+      isCurrent: true,
+    };
+    mockArticles.set(articleId, {
+      revisionId: restoredRevisionId,
+      markdown: target.markdown,
+      revisionNumber,
+      updatedAt: createdAt,
+    });
+    mockArticleRevisions.set(articleId, [
+      restored,
+      ...(mockArticleRevisions.get(articleId) ?? []).map((revision) => ({
+        ...revision,
+        isCurrent: false,
+      })),
+    ]);
+    return restored;
+  },
   async saveDraft(request) {
     await pause(80);
     const current = mockArticles.get(request.articleId);
@@ -843,12 +945,35 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       throw new Error("该稿件的基础修订已过期");
     }
     const revisionId = nextMockId(`${request.articleId}-local`);
+    const updatedAt = new Date().toISOString();
+    const revisionNumber = (current?.revisionNumber ?? 0) + 1;
     mockArticles.set(request.articleId, {
       revisionId,
       markdown: request.markdown,
-      revisionNumber: (current?.revisionNumber ?? 0) + 1,
-      updatedAt: new Date().toISOString(),
+      revisionNumber,
+      updatedAt,
     });
+    const heading = request.markdown.split("\n").find((line) => line.trim().startsWith("# "));
+    const revision: ArticleRevisionDetail = {
+      schemaVersion: "2",
+      articleId: request.articleId,
+      revisionId,
+      revisionNumber,
+      parentRevisionId: current?.revisionId ?? null,
+      title: heading?.replace(/^\s*#\s+/, "").trim() || "未命名文章",
+      contentHash: `sha256:${mockHash(request.markdown)}`,
+      createdAt: updatedAt,
+      reason: request.reason ?? "editor-save",
+      isCurrent: true,
+      markdown: request.markdown,
+    };
+    mockArticleRevisions.set(request.articleId, [
+      revision,
+      ...(mockArticleRevisions.get(request.articleId) ?? []).map((candidate) => ({
+        ...candidate,
+        isCurrent: false,
+      })),
+    ]);
     return {
       revisionId,
       savedAtEpochMs: Date.now(),
@@ -1187,10 +1312,26 @@ export const testOnlyMockDesktopBridge: DesktopBridge = {
       detail: "浏览器预览不会检查 GitHub 更新。",
     };
   },
+  async publisherBridgeConfiguration() {
+    return { ...mockPublisherBridgeConfiguration };
+  },
+  async configurePublisherBridge(request) {
+    mockPublisherBridgeConfiguration = {
+      serverUrl: request.serverUrl,
+      tokenConfigured: Boolean(request.token.trim()) || mockPublisherBridgeConfiguration.tokenConfigured,
+      tokenMasked: request.token.trim() ? "****" : mockPublisherBridgeConfiguration.tokenMasked,
+      persistence: "encrypted_local_database",
+    };
+    return { ...mockPublisherBridgeConfiguration };
+  },
+  async revealPublisherBridgeToken() {
+    return null;
+  },
   async wechatSyncStatus() {
     return {
       available: false,
       connected: false,
+      state: "service_unreachable",
       detail: "浏览器预览不会连接 WechatSync。",
       platforms: [],
     };
@@ -1212,6 +1353,12 @@ const tauriBridge: DesktopBridge = {
   stopPiOperation: (operationId) => invoke<void>("stop_pi_operation", { operationId }),
   getPiArticle: (articleId) => invoke<PiArticle>("get_pi_article", { articleId }),
   listArticles: () => invoke<StoredArticleSummary[]>("list_articles"),
+  listArticleRevisions: (articleId) =>
+    invoke<ArticleRevisionSummary[]>("list_article_revisions", { articleId }),
+  getArticleRevision: (articleId, revisionId) =>
+    invoke<ArticleRevisionDetail>("get_article_revision", { articleId, revisionId }),
+  restoreArticleRevision: (articleId, revisionId) =>
+    invoke<ArticleRevisionDetail>("restore_article_revision", { articleId, revisionId }),
   saveDraft: (request) => invoke<SaveDraftReceipt>("save_draft", { request }),
   createPublishPlan: (request) =>
     invoke<PublishPlanSummary>("create_publish_plan", { request }),
@@ -1248,6 +1395,12 @@ const tauriBridge: DesktopBridge = {
     invoke<ModelConnectionTestSummary>("test_model_connection"),
   githubApplicationInfo: () =>
     invoke<GitHubApplicationInfo>("github_application_info"),
+  publisherBridgeConfiguration: () =>
+    invoke<PublisherBridgeConfigurationSummary>("publisher_bridge_configuration"),
+  configurePublisherBridge: (request) =>
+    invoke<PublisherBridgeConfigurationSummary>("configure_publisher_bridge", { request }),
+  revealPublisherBridgeToken: () =>
+    invoke<string | null>("reveal_publisher_bridge_token"),
   wechatSyncStatus: (request) => invoke<WechatSyncBridgeStatus>("wechat_sync_status", {
     forceRefresh: request?.forceRefresh ?? false,
   }),
@@ -1278,6 +1431,9 @@ const browserPreviewBridge: DesktopBridge = {
   stopPiOperation: desktopHostRequired,
   getPiArticle: desktopHostRequired,
   listArticles: async () => [],
+  listArticleRevisions: desktopHostRequired,
+  getArticleRevision: desktopHostRequired,
+  restoreArticleRevision: desktopHostRequired,
   saveDraft: desktopHostRequired,
   createPublishPlan: desktopHostRequired,
   getPublishPlan: desktopHostRequired,
@@ -1297,6 +1453,14 @@ const browserPreviewBridge: DesktopBridge = {
   revealModelSecret: desktopHostRequired,
   testModelConnection: desktopHostRequired,
   githubApplicationInfo: desktopHostRequired,
+  publisherBridgeConfiguration: async () => ({
+    serverUrl: "ws://localhost:9527",
+    tokenConfigured: false,
+    tokenMasked: null,
+    persistence: "encrypted_local_database",
+  }),
+  configurePublisherBridge: desktopHostRequired,
+  revealPublisherBridgeToken: desktopHostRequired,
   wechatSyncStatus: desktopHostRequired,
 };
 
@@ -1352,6 +1516,11 @@ export const desktopBridge: DesktopBridge = {
   stopPiOperation: (operationId) => activeBridge().stopPiOperation(operationId),
   getPiArticle: (articleId) => activeBridge().getPiArticle(articleId),
   listArticles: () => activeBridge().listArticles(),
+  listArticleRevisions: (articleId) => activeBridge().listArticleRevisions(articleId),
+  getArticleRevision: (articleId, revisionId) =>
+    activeBridge().getArticleRevision(articleId, revisionId),
+  restoreArticleRevision: (articleId, revisionId) =>
+    activeBridge().restoreArticleRevision(articleId, revisionId),
   saveDraft: (request) => activeBridge().saveDraft(request),
   createPublishPlan: (request) => activeBridge().createPublishPlan(request),
   getPublishPlan: (request) => activeBridge().getPublishPlan(request),
@@ -1371,5 +1540,8 @@ export const desktopBridge: DesktopBridge = {
   revealModelSecret: (kind) => activeBridge().revealModelSecret(kind),
   testModelConnection: () => activeBridge().testModelConnection(),
   githubApplicationInfo: () => activeBridge().githubApplicationInfo(),
+  publisherBridgeConfiguration: () => activeBridge().publisherBridgeConfiguration(),
+  configurePublisherBridge: (request) => activeBridge().configurePublisherBridge(request),
+  revealPublisherBridgeToken: () => activeBridge().revealPublisherBridgeToken(),
   wechatSyncStatus: (request) => activeBridge().wechatSyncStatus(request),
 };

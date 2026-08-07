@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { MarkdownWorkbench } from "./MarkdownWorkbench";
 import { ImageInsertDialog } from "./ImageInsertDialog";
+import { generatedMediaAssetId } from "../lib/mediaReferences";
 
 const platforms = [
   { id: "csdn" as const, name: "CSDN", shortName: "CSDN", limit: "", status: "connected" as const },
@@ -20,6 +21,11 @@ function WorkbenchHarness({ onImageFileDrop = vi.fn() }: { onImageFileDrop?: (fi
 }
 
 describe("Markdown media support", () => {
+  it("converts generated runtime IDs into Markdown-safe media IDs", () => {
+    expect(generatedMediaAssetId("asset:8676efc7-42ff-493a-9606-c52b1cb35689"))
+      .toBe("generated-asset-8676efc7-42ff-493a-9606-c52b1cb35689");
+  });
+
   it("renders only safe Markdown image sources", () => {
     const { rerender } = render(<MarkdownPreview markdown="![封面](https://cdn.example.com/cover.png)" />);
     expect(screen.getByRole("img", { name: "封面" })).toHaveAttribute("src", "https://cdn.example.com/cover.png");
@@ -33,6 +39,22 @@ describe("Markdown media support", () => {
       />,
     );
     expect(screen.getByRole("img", { name: "本机素材" })).toHaveAttribute("src", localSource);
+
+    rerender(
+      <MarkdownPreview
+        markdown="![旧版生图](asset://generated-asset:8676efc7-42ff-493a-9606-c52b1cb35689)"
+        mediaAssets={[{ id: "generated-asset:8676efc7-42ff-493a-9606-c52b1cb35689", src: localSource }]}
+      />,
+    );
+    expect(screen.getByRole("img", { name: "旧版生图" })).toHaveAttribute("src", localSource);
+
+    rerender(
+      <MarkdownPreview
+        markdown="![新版生图](asset://generated-asset-8676efc7-42ff-493a-9606-c52b1cb35689)"
+        mediaAssets={[{ id: "generated-asset-8676efc7-42ff-493a-9606-c52b1cb35689", src: localSource }]}
+      />,
+    );
+    expect(screen.getByRole("img", { name: "新版生图" })).toHaveAttribute("src", localSource);
 
     rerender(<MarkdownPreview markdown="![不安全](javascript:alert(1))" />);
     expect(screen.queryByRole("img", { name: "不安全" })).toBeNull();
@@ -103,6 +125,142 @@ describe("Markdown media support", () => {
       end: 11,
       text: "选中这段文字",
     });
+  });
+
+  it("uses one display-mode selector for editing and preview", () => {
+    const onEditorModeChange = vi.fn();
+    render(
+      <MarkdownWorkbench
+        dirty
+        editorMode="split"
+        markdown="同步内容"
+        onEditorModeChange={onEditorModeChange}
+        onMarkdownChange={() => undefined}
+        onPlatformChange={() => undefined}
+        platforms={platforms}
+        selectedPlatform="csdn"
+      />,
+    );
+
+    const selector = screen.getByRole("combobox", { name: "编辑器布局" });
+    expect(selector).toHaveValue("split");
+    fireEvent.change(selector, { target: { value: "preview" } });
+    expect(onEditorModeChange).toHaveBeenCalledWith("preview");
+  });
+
+  it("syncs source and preview scroll positions by their own scroll ranges", () => {
+    render(
+      <MarkdownWorkbench
+        dirty
+        editorMode="split"
+        markdown="很长的内容"
+        onEditorModeChange={() => undefined}
+        onMarkdownChange={() => undefined}
+        onPlatformChange={() => undefined}
+        platforms={platforms}
+        selectedPlatform="csdn"
+      />,
+    );
+
+    const editor = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
+    const preview = document.querySelector(".preview-pane") as HTMLDivElement;
+    Object.defineProperties(editor, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1_000 },
+    });
+    Object.defineProperties(preview, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 2_200 },
+    });
+
+    editor.scrollTop = 400;
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(1_000);
+
+    preview.scrollTop = 1_500;
+    fireEvent.scroll(preview);
+    expect(editor.scrollTop).toBe(600);
+  });
+
+  it("keeps the last-scrolled pane as the proportional source after a resize", async () => {
+    render(
+      <MarkdownWorkbench
+        dirty
+        editorMode="split"
+        markdown="很长的内容"
+        onEditorModeChange={() => undefined}
+        onMarkdownChange={() => undefined}
+        onPlatformChange={() => undefined}
+        platforms={platforms}
+        selectedPlatform="csdn"
+      />,
+    );
+
+    const editor = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
+    const preview = document.querySelector(".preview-pane") as HTMLDivElement;
+    Object.defineProperties(editor, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1_000 },
+    });
+    Object.defineProperties(preview, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 2_200 },
+    });
+
+    editor.scrollTop = 400;
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(1_000);
+
+    Object.defineProperty(preview, "scrollHeight", { configurable: true, value: 4_200 });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(preview.scrollTop).toBe(2_000));
+
+    preview.scrollTop = 1_500;
+    fireEvent.scroll(preview);
+    expect(editor.scrollTop).toBe(300);
+
+    Object.defineProperty(editor, "scrollHeight", { configurable: true, value: 1_800 });
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(editor.scrollTop).toBe(600));
+  });
+
+  it("does not treat a synchronized preview scroll event as a new user source", async () => {
+    render(
+      <MarkdownWorkbench
+        dirty
+        editorMode="split"
+        markdown="很长的内容"
+        onEditorModeChange={() => undefined}
+        onMarkdownChange={() => undefined}
+        onPlatformChange={() => undefined}
+        platforms={platforms}
+        selectedPlatform="csdn"
+      />,
+    );
+
+    const editor = screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement;
+    const preview = document.querySelector(".preview-pane") as HTMLDivElement;
+    Object.defineProperties(editor, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1_000 },
+    });
+    Object.defineProperties(preview, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 2_200 },
+    });
+
+    editor.scrollTop = 400;
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(1_000);
+
+    // Browsers emit this event after assigning preview.scrollTop above. It
+    // must not make preview the source just because the renderer synchronized it.
+    fireEvent.scroll(preview);
+    Object.defineProperty(preview, "scrollHeight", { configurable: true, value: 4_200 });
+    window.dispatchEvent(new Event("resize"));
+
+    await waitFor(() => expect(preview.scrollTop).toBe(2_000));
+    expect(editor.scrollTop).toBe(400);
   });
 
   it("inserts a material-library image from the image dialog", () => {

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { validateTextModelProfile } from "../agent/model-profile.js";
+import { arePromptImageAttachments, type PromptImageAttachment } from "../agent/image-attachments.js";
 import { discoverModels } from "../agent/model-discovery.js";
 import type { ModelTestService } from "../agent/model-test-service.js";
 import type { TemplateExtractor } from "../agent/pi-template-extraction-service.js";
@@ -97,6 +98,7 @@ interface RewriteRequest {
   readonly instruction: string;
   readonly selectedTexts: readonly string[];
   readonly conversation: readonly { readonly role: "user" | "assistant"; readonly text: string }[];
+  readonly images?: readonly PromptImageAttachment[];
   readonly modelProfile: TextModelProfile;
 }
 
@@ -166,7 +168,7 @@ const isRewriteRequest = (value: unknown): value is RewriteRequest => {
     typeof body.articleId === "string" && IDENTIFIER_PATTERN.test(body.articleId) &&
     typeof body.requestId === "string" && IDENTIFIER_PATTERN.test(body.requestId) &&
     typeof body.markdown === "string" && body.markdown.length > 0 && body.markdown.length <= 2_000_000 &&
-    typeof body.instruction === "string" && body.instruction.trim().length > 0 && body.instruction.length <= 4_000 &&
+    typeof body.instruction === "string" && body.instruction.trim().length > 0 && body.instruction.length <= 100_000 &&
     Array.isArray(body.selectedTexts) && body.selectedTexts.length <= 32 &&
     body.selectedTexts.every((text) => typeof text === "string" && text.trim().length > 0 && text.length <= 2_000_000) &&
     Array.isArray(body.conversation) && body.conversation.length <= 64 &&
@@ -174,8 +176,9 @@ const isRewriteRequest = (value: unknown): value is RewriteRequest => {
       if (!message || typeof message !== "object" || Array.isArray(message)) return false;
       const value = message as Record<string, unknown>;
       return (value.role === "user" || value.role === "assistant") &&
-        typeof value.text === "string" && value.text.length <= 16_000;
+        typeof value.text === "string" && value.text.length <= 100_000;
     }) &&
+    (body.images === undefined || arePromptImageAttachments(body.images)) &&
     validateTextModelProfile(body.modelProfile)
   );
 };
@@ -186,6 +189,8 @@ interface VisualPlanRequest {
   readonly markdown: string;
   readonly sourceRevisionHash?: string;
   readonly instruction?: string;
+  /** Local prompt attachments that a vision-capable planning model may inspect. */
+  readonly images?: readonly PromptImageAttachment[];
   readonly visualComposition: VisualCompositionRequest;
   readonly modelProfile?: TextModelProfile;
 }
@@ -202,7 +207,8 @@ const isVisualPlanRequest = (value: unknown): value is VisualPlanRequest => {
     typeof body.articleId === "string" && IDENTIFIER_PATTERN.test(body.articleId) &&
     typeof body.markdown === "string" && body.markdown.length > 0 && body.markdown.length <= 2_000_000 &&
     (body.sourceRevisionHash === undefined || (typeof body.sourceRevisionHash === "string" && SHA256_PATTERN.test(body.sourceRevisionHash))) &&
-    (body.instruction === undefined || (typeof body.instruction === "string" && body.instruction.length <= 4_000)) &&
+    (body.instruction === undefined || (typeof body.instruction === "string" && body.instruction.length <= 100_000)) &&
+    (body.images === undefined || arePromptImageAttachments(body.images)) &&
     (body.modelProfile === undefined || validateTextModelProfile(body.modelProfile)) &&
     ["none", "auto", "fixed"].includes(visual.mode as string) &&
     Number.isInteger(visual.targetCount) && (visual.targetCount as number) >= 0 && (visual.targetCount as number) <= 6 &&
@@ -210,15 +216,21 @@ const isVisualPlanRequest = (value: unknown): value is VisualPlanRequest => {
       if (!asset || typeof asset !== "object" || Array.isArray(asset)) return false;
       const input = asset as Record<string, unknown>;
       return typeof input.id === "string" && /^[a-z][a-z0-9_-]{0,99}$/.test(input.id) &&
-        typeof input.alt === "string" && input.alt.trim().length > 0 && input.alt.length <= 160 &&
-        typeof input.description === "string" && input.description.length <= 600;
+        typeof input.alt === "string" && input.alt.trim().length > 0 && input.alt.length <= 2_000 &&
+        typeof input.description === "string" && input.description.length <= 12_000;
     }) &&
+    Array.isArray(visual.requiredAssetIds) && visual.requiredAssetIds.length <= assets.length &&
+    visual.requiredAssetIds.every((id) => typeof id === "string" && /^[a-z][a-z0-9_-]{0,99}$/.test(id)) &&
+    new Set(visual.requiredAssetIds).size === visual.requiredAssetIds.length &&
+    visual.requiredAssetIds.every((id) => assets.some((asset) => (
+      asset && typeof asset === "object" && !Array.isArray(asset) && (asset as Record<string, unknown>).id === id
+    ))) &&
     ["selected_only", "library", "none"].includes(visual.assetScope as string) &&
     ["infographic", "scene", "flowchart", "comparison", "framework", "timeline"].includes(visual.preferredType as string) &&
     ["minimal", "balanced", "per-section", "rich"].includes(visual.density as string) &&
-    typeof visual.style === "string" && visual.style.trim().length > 0 && visual.style.length <= 80 &&
-    (visual.palette === null || (typeof visual.palette === "string" && visual.palette.length <= 80)) &&
-    typeof visual.preferredImageBackend === "string" && visual.preferredImageBackend.trim().length > 0 && visual.preferredImageBackend.length <= 80 &&
+    typeof visual.style === "string" && visual.style.trim().length > 0 && visual.style.length <= 500 &&
+    (visual.palette === null || (typeof visual.palette === "string" && visual.palette.length <= 500)) &&
+    typeof visual.preferredImageBackend === "string" && visual.preferredImageBackend.trim().length > 0 && visual.preferredImageBackend.length <= 500 &&
     Number.isInteger(visual.generationBatchSize) && (visual.generationBatchSize as number) >= 1 && (visual.generationBatchSize as number) <= 8 &&
     Number.isInteger(visual.materialMatchThreshold) && (visual.materialMatchThreshold as number) >= 0 && (visual.materialMatchThreshold as number) <= 100 &&
     typeof visual.skipConfirmation === "boolean" &&
@@ -436,6 +448,53 @@ export const createRuntimeApp = ({
   if (articleStore) {
     app.get("/v2/articles", async (context) => context.json({ articles: await articleStore.list() }));
 
+    app.get("/v2/articles/:articleId/revisions", async (context) => {
+      const articleId = context.req.param("articleId");
+      const article = await articleStore.read(articleId);
+      if (!article) {
+        return context.json({
+          error: {
+            code: "ARTICLE_NOT_FOUND",
+            message: "Article was not found",
+            retryable: false,
+          },
+        }, 404);
+      }
+      return context.json({ revisions: await articleStore.listRevisions(articleId) });
+    });
+
+    app.get("/v2/articles/:articleId/revisions/:revisionId", async (context) => {
+      const revision = await articleStore.readRevision(
+        context.req.param("articleId"),
+        context.req.param("revisionId"),
+      );
+      return revision
+        ? context.json(revision)
+        : context.json({
+            error: {
+              code: "ARTICLE_REVISION_NOT_FOUND",
+              message: "Article revision was not found",
+              retryable: false,
+            },
+          }, 404);
+    });
+
+    app.post("/v2/articles/:articleId/revisions/:revisionId/restore", async (context) => {
+      const restored = await articleStore.restoreRevision(
+        context.req.param("articleId"),
+        context.req.param("revisionId"),
+      );
+      return restored
+        ? context.json(restored, 201)
+        : context.json({
+            error: {
+              code: "ARTICLE_REVISION_NOT_FOUND",
+              message: "Article revision was not found",
+              retryable: false,
+            },
+          }, 404);
+    });
+
     app.post("/v2/articles", async (context) => {
       const body = await context.req.json().catch(() => null);
       if (!isArticleWriteRequest(body)) {
@@ -534,6 +593,7 @@ export const createRuntimeApp = ({
           markdown: article.markdown,
           sourceRevisionHash: article.contentHash,
           ...(body.instruction === undefined ? {} : { instruction: body.instruction }),
+          ...(body.images === undefined ? {} : { images: body.images }),
           visualComposition: body.visualComposition,
           ...(body.modelProfile === undefined ? {} : { modelProfile: body.modelProfile }),
         }, signal)));
@@ -770,7 +830,10 @@ export const createRuntimeApp = ({
         );
       }
       try {
-        return context.json(await rewriteService.startRewrite(body), 202);
+        return context.json(await rewriteService.startRewrite({
+          ...body,
+          images: body.images ?? [],
+        }), 202);
       } catch (error: unknown) {
         return context.json(
           {
@@ -836,14 +899,16 @@ export const createRuntimeApp = ({
   if (writerService) {
     app.post("/v2/runs/article-create", async (context) => {
       const body = (await context.req.json().catch(() => null)) as
-        | { articleId?: unknown; prompt?: unknown; modelProfile?: unknown }
+        | { articleId?: unknown; prompt?: unknown; images?: unknown; webSearchMode?: unknown; modelProfile?: unknown }
         | null;
       if (
         !body ||
         typeof body.articleId !== "string" ||
         typeof body.prompt !== "string" ||
         body.prompt.trim().length === 0 ||
-        !validateTextModelProfile(body.modelProfile)
+        !validateTextModelProfile(body.modelProfile) ||
+        (body.images !== undefined && !arePromptImageAttachments(body.images)) ||
+        (body.webSearchMode !== undefined && !["auto", "required", "off"].includes(body.webSearchMode as string))
       ) {
         return context.json(
           {
@@ -860,6 +925,10 @@ export const createRuntimeApp = ({
         const run = await writerService.startCreate({
           articleId: body.articleId,
           prompt: body.prompt,
+          images: body.images ?? [],
+          webSearchMode: body.webSearchMode === "required" || body.webSearchMode === "off"
+            ? body.webSearchMode
+            : "auto",
           modelProfile: body.modelProfile,
         });
         return context.json(run, 202);

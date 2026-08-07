@@ -36,4 +36,27 @@ describe("runWithModelDeadline", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(agent.abort).toHaveBeenCalledTimes(1);
   });
+
+  it("allows a long-document operation to reserve a larger bounded budget", async () => {
+    vi.useFakeTimers();
+    const agent = { abort: vi.fn() };
+    const pending = runWithModelDeadline(
+      agent as never,
+      { timeoutSeconds: 120 },
+      "Article rewrite",
+      () => new Promise<never>(() => undefined),
+      undefined,
+      272,
+    );
+    const expectation = expect(pending).rejects.toMatchObject({
+      name: "ModelDeadlineExceededError",
+      timeoutSeconds: 272,
+    });
+
+    await vi.advanceTimersByTimeAsync(272_000);
+
+    await expectation;
+    expect(agent.abort).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
 });

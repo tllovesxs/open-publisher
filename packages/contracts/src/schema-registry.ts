@@ -27,6 +27,8 @@ export const SCHEMA_IDS_V2 = {
   ArticleFile: "https://schemas.openpublisher.dev/v2/article-file.schema.json",
   ArticleWrite: "https://schemas.openpublisher.dev/v2/article-write.schema.json",
   ArticlePatch: "https://schemas.openpublisher.dev/v2/article-patch.schema.json",
+  ArticleRevisionHistory:
+    "https://schemas.openpublisher.dev/v2/article-revision-history.schema.json",
   VisualPlan: "https://schemas.openpublisher.dev/v2/visual-plan.schema.json",
   ReviewReport: "https://schemas.openpublisher.dev/v2/review-report.schema.json",
   ToolExecution: "https://schemas.openpublisher.dev/v2/tool-execution.schema.json",

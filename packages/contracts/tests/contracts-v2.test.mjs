@@ -51,6 +51,27 @@ test("v2 article writes bind nullable creation bases and reject unknown fields",
   assert.equal(validate({ ...request, apiKey: "plaintext" }), false);
 });
 
+test("v2 revision history identifies immutable versions and the current head", () => {
+  const validate = ajv.compile({
+    $ref: "https://schemas.openpublisher.dev/v2/article-revision-history.schema.json#/$defs/Detail",
+  });
+  const revision = {
+    schemaVersion: "2",
+    articleId: "article:1",
+    revisionId: "revision:2",
+    revisionNumber: 2,
+    parentRevisionId: "revision:1",
+    title: "Restored draft",
+    contentHash: `sha256:${"a".repeat(64)}`,
+    createdAt: "2026-08-07T00:00:00.000Z",
+    reason: "restore:revision:1",
+    isCurrent: true,
+    markdown: "# Restored draft",
+  };
+  assert.equal(validate(revision), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...revision, plaintextApiKey: "must not cross" }), false);
+});
+
 test("v2 Runtime protocol exposes the pinned engine without secrets", () => {
   const validate = ajv.getSchema(
     "https://schemas.openpublisher.dev/v2/runtime-protocol.schema.json",

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>稿流 Logo</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; }
+      body {
+        display: grid;
+        place-items: center;
+        background: #ffffff;
+        color: #20201e;
+        font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif;
+      }
+      main {
+        display: grid;
+        width: min(980px, calc(100vw - 96px));
+        grid-template-columns: minmax(0, 1fr) 260px;
+        align-items: center;
+        gap: 56px;
+      }
+      .lockup { width: 100%; }
+      .mark {
+        width: 260px;
+        height: 260px;
+        border-radius: 62px;
+        box-shadow: 0 24px 64px rgba(32, 32, 30, .12);
+      }
+      p { margin: 24px 0 0; color: #6f6b66; font-size: 18px; line-height: 1.7; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <img class="lockup" src="gaoliu-logo.svg" alt="稿流 Logo" />
+        <p>连续的稿件横线向右流动并收束成笔锋，表达从写作、配图到发布的完整内容流。</p>
+      </section>
+      <img class="mark" src="gaoliu-mark.svg" alt="稿流应用标记" />
+    </main>
+  </body>
+</html>

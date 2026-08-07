@@ -29,6 +29,7 @@ describe("PublishDialog", () => {
         bridge={{
           available: true,
           connected: true,
+          state: "connected",
           detail: "WechatSync 已连接；登录状态来自浏览器扩展。",
           platforms: [
             { id: "wechat", authenticated: true, accountLabel: null },
@@ -37,6 +38,7 @@ describe("PublishDialog", () => {
           ],
         }}
         onClose={vi.fn()}
+        onOpenSettings={vi.fn()}
         onRefresh={vi.fn().mockResolvedValue(undefined)}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         open
@@ -63,11 +65,13 @@ describe("PublishDialog", () => {
         bridge={{
           available: false,
           connected: false,
+          state: "extension_waiting",
           stale: true,
           detail: "本地桥正在恢复连接。",
           platforms: [{ id: "csdn", authenticated: true, accountLabel: "demo" }],
         }}
         onClose={vi.fn()}
+        onOpenSettings={vi.fn()}
         onRefresh={vi.fn().mockResolvedValue(undefined)}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         open

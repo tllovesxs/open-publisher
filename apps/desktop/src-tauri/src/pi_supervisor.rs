@@ -19,12 +19,12 @@ use crate::supervisor::{
     ComposeVisualRequest, ComposeVisualSummary, CreatePublishPlanRequest, ExtractTemplateRequest,
     GenerateImageRequest, GenerateImageSummary, GeneratedImageSummary, ModelConfigurationSource,
     ModelConnectionTestSummary, ModelSecretKind, ProcessPublishJobRequest,
-    ProcessPublishJobSummary, PublishJobSummary, PublishPlanRequest, PublishPlanSummary,
-    PublishReceiptSummary, PublishVariantSummary, ResolveUnknownPublishJobRequest,
-    RewriteArticleRequest, RewriteArticleSummary, RewriteStreamEvent, RuntimeState,
-    SaveDraftReceipt, SaveDraftRequest, StoredArticleSummary, TemplateExtractionSummary,
-    VisualCompositionPlanSummary, VisualCompositionRequest, VisualMaterialCandidateSummary,
-    VisualPlacementSummary,
+    ProcessPublishJobSummary, PromptImageAttachment, PublishJobSummary, PublishPlanRequest,
+    PublishPlanSummary, PublishReceiptSummary, PublishVariantSummary,
+    ResolveUnknownPublishJobRequest, RewriteArticleRequest, RewriteArticleSummary,
+    RewriteStreamEvent, RuntimeState, SaveDraftReceipt, SaveDraftRequest, StoredArticleSummary,
+    TemplateExtractionSummary, VisualCompositionPlanSummary, VisualCompositionRequest,
+    VisualMaterialCandidateSummary, VisualPlacementSummary,
 };
 
 const RUNTIME_EXECUTABLE_NAME: &str = if cfg!(windows) {
@@ -44,6 +44,9 @@ const TEMPLATE_OPERATION_MIN_TIMEOUT: Duration = Duration::from_secs(90);
 const TEMPLATE_OPERATION_MAX_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const VISUAL_OPERATION_MIN_TIMEOUT: Duration = Duration::from_secs(90);
 const VISUAL_OPERATION_MAX_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+const REWRITE_OPERATION_MIN_TIMEOUT: Duration = Duration::from_secs(120);
+const REWRITE_OPERATION_MAX_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+const REWRITE_POLLING_GRACE: Duration = Duration::from_secs(10);
 const PUBLISH_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +73,10 @@ pub struct PiRuntimeVersion {
 pub struct StartPiArticleRunRequest {
     pub article_id: String,
     pub prompt: String,
+    #[serde(default)]
+    pub images: Vec<PromptImageAttachment>,
+    #[serde(default)]
+    pub web_search_mode: Option<String>,
     #[serde(default)]
     pub protocol: Option<String>,
     #[serde(default)]
@@ -137,6 +144,43 @@ pub struct PiArticle {
     pub markdown: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiArticleRevisionSummary {
+    pub schema_version: String,
+    pub article_id: String,
+    pub revision_id: String,
+    pub revision_number: u32,
+    pub parent_revision_id: Option<String>,
+    pub title: String,
+    pub content_hash: String,
+    pub created_at: String,
+    pub reason: String,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PiArticleRevisionDetail {
+    pub schema_version: String,
+    pub article_id: String,
+    pub revision_id: String,
+    pub revision_number: u32,
+    pub parent_revision_id: Option<String>,
+    pub title: String,
+    pub content_hash: String,
+    pub created_at: String,
+    pub reason: String,
+    pub is_current: bool,
+    pub markdown: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PiArticleRevisionListResponse {
+    revisions: Vec<PiArticleRevisionSummary>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PiArticleListResponse {
@@ -163,7 +207,7 @@ struct PiArticleWriteRequest<'a> {
     base_content_hash: Option<&'a str>,
     title: String,
     markdown: &'a str,
-    reason: &'static str,
+    reason: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -529,6 +573,7 @@ impl PiRuntimeSupervisor {
         if request.context_window < 8_192 || request.max_tokens < 1_024 {
             return Err("模型上下文或最大输出配置过小。".to_owned());
         }
+        validate_prompt_image_attachments(&request.images)?;
 
         self.ensure_started()?;
         let configuration = self
@@ -598,7 +643,14 @@ impl PiRuntimeSupervisor {
             "baseUrl": configuration.base_url,
             "modelId": configuration.text_model,
             "secretRef": format!("lease://{lease_id}"),
-            "supportsVision": request.supports_vision || configuration.text_supports_vision,
+            // The persisted model profile is the capability source of truth.
+            // A legacy per-run hint must never make a text-only model receive
+            // image content: Pi would advertise image input that the provider
+            // may not actually support.
+            "supportsVision": effective_supports_vision(
+                request.supports_vision,
+                configuration.text_supports_vision,
+            ),
             "reasoning": request.reasoning || configuration.text_reasoning,
             "thinkingLevel": configuration.text_thinking_level,
             "contextWindow": if request.context_window == default_context_window() { configuration.text_context_window } else { request.context_window },
@@ -615,6 +667,8 @@ impl PiRuntimeSupervisor {
         let body = json!({
             "articleId": request.article_id,
             "prompt": prompt,
+            "images": request.images.clone(),
+            "webSearchMode": request.web_search_mode.as_deref().unwrap_or("auto"),
             "modelProfile": model_profile
         });
         self.post_json(&connection, "/v2/runs/article-create", &body)
@@ -653,6 +707,7 @@ impl PiRuntimeSupervisor {
             "instruction": request.instruction,
             "selectedTexts": request.selected_texts,
             "conversation": request.conversation,
+            "images": request.images,
             "modelProfile": {
                 "providerId": configuration.profile_id,
                 "displayName": configuration.name,
@@ -678,7 +733,13 @@ impl PiRuntimeSupervisor {
             detail: Some("改写任务已启动".to_owned()),
             delta: None,
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(5 * 60);
+        let deadline = std::time::Instant::now()
+            + rewrite_operation_timeout(
+                configuration.timeout_seconds,
+                &request.markdown,
+                request.selected_texts.is_empty(),
+            )
+            + REWRITE_POLLING_GRACE;
         let mut after_sequence = 0_u64;
         let mut candidate: Option<RewriteArticleSummary> = None;
         loop {
@@ -773,6 +834,7 @@ impl PiRuntimeSupervisor {
             "markdown": article.markdown,
             "sourceRevisionHash": article.content_hash.clone(),
             "instruction": request.instruction,
+            "images": request.images,
             "visualComposition": visual_composition_body(&request.visual_composition),
             "modelProfile": model_profile,
         });
@@ -928,6 +990,59 @@ impl PiRuntimeSupervisor {
         self.get_json(&connection, &format!("/v2/articles/{article_id}"))
     }
 
+    pub fn list_article_revisions(
+        &self,
+        article_id: &str,
+    ) -> Result<Vec<PiArticleRevisionSummary>, String> {
+        validate_identifier(article_id, "articleId")?;
+        self.ensure_started()?;
+        let connection = self.connection()?;
+        let response: PiArticleRevisionListResponse =
+            self.get_json(&connection, &format!("/v2/articles/{article_id}/revisions"))?;
+        for revision in &response.revisions {
+            validate_pi_revision_summary(revision, article_id)?;
+        }
+        Ok(response.revisions)
+    }
+
+    pub fn article_revision(
+        &self,
+        article_id: &str,
+        revision_id: &str,
+    ) -> Result<PiArticleRevisionDetail, String> {
+        validate_identifier(article_id, "articleId")?;
+        validate_identifier(revision_id, "revisionId")?;
+        self.ensure_started()?;
+        let connection = self.connection()?;
+        let revision: PiArticleRevisionDetail = self.get_json(
+            &connection,
+            &format!("/v2/articles/{article_id}/revisions/{revision_id}"),
+        )?;
+        validate_pi_revision_detail(&revision, article_id, revision_id)?;
+        Ok(revision)
+    }
+
+    pub fn restore_article_revision(
+        &self,
+        article_id: &str,
+        revision_id: &str,
+    ) -> Result<PiArticleRevisionDetail, String> {
+        validate_identifier(article_id, "articleId")?;
+        validate_identifier(revision_id, "revisionId")?;
+        self.ensure_started()?;
+        let connection = self.connection()?;
+        let restored: PiArticleRevisionDetail = self.post_json(
+            &connection,
+            &format!("/v2/articles/{article_id}/revisions/{revision_id}/restore"),
+            &json!({}),
+        )?;
+        validate_pi_revision_detail(&restored, article_id, &restored.revision_id)?;
+        if !restored.is_current || !restored.reason.starts_with("restore:") {
+            return Err("恢复接口没有返回新的当前修订。".to_owned());
+        }
+        Ok(restored)
+    }
+
     /// Exposes the Pi file-backed articles through the legacy desktop DTO while
     /// the React editor is migrated. The legacy shape deliberately stays at the
     /// Tauri boundary so callers do not need to understand Pi's content hash.
@@ -983,6 +1098,7 @@ impl PiRuntimeSupervisor {
             }
         };
 
+        let reason = request.reason.as_deref().unwrap_or("editor-save");
         let payload = PiArticleWriteRequest {
             schema_version: "2",
             article_id: &request.article_id,
@@ -990,7 +1106,7 @@ impl PiRuntimeSupervisor {
             base_content_hash: base_content_hash.as_deref(),
             title: title_from_markdown(&request.markdown, &request.article_id),
             markdown: &request.markdown,
-            reason: "editor-save",
+            reason,
         };
         let saved: PiArticle = self.post_json(&connection, "/v2/articles", &payload)?;
         validate_pi_article(&saved)?;
@@ -1500,26 +1616,6 @@ impl PiRuntimeSupervisor {
             return Err("OPEN_PUBLISHER_PI_RUNTIME 指向的文件不存在。".to_owned());
         }
 
-        if let Ok(current_executable) = env::current_exe() {
-            if let Some(directory) = current_executable.parent() {
-                let exact = directory.join(RUNTIME_EXECUTABLE_NAME);
-                if exact.is_file() {
-                    return Ok((exact, "packaged external binary"));
-                }
-                if let Ok(entries) = fs::read_dir(directory) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name.starts_with("open-publisher-agent-runtime-")
-                            && (!cfg!(windows) || name.ends_with(".exe"))
-                            && entry.path().is_file()
-                        {
-                            return Ok((entry.path(), "packaged external binary"));
-                        }
-                    }
-                }
-            }
-        }
-
         // `scripts/build_pi_runtime.mjs` stages the current development
         // sidecar here. Prefer it over `services/agent-runtime/dist`: the
         // latter is a convenience output of Bun's package script and can be
@@ -1530,8 +1626,17 @@ impl PiRuntimeSupervisor {
             .join("desktop")
             .join("src-tauri")
             .join("binaries");
-        if let Some(staged) = staged_development_runtime(&staged_directory) {
-            return Ok((staged, "development staged external binary"));
+        let staged = staged_development_runtime(&staged_directory);
+        let packaged = packaged_runtime_sibling();
+
+        // `tauri dev` runs the desktop executable from a debug target next to
+        // an older copied sidecar.  In that case the staged binary is the one
+        // just built for development and must win.  Packaged/release builds
+        // deliberately retain the sibling-first lookup used by bundlers.
+        if let Some(runtime) =
+            select_runtime_candidate(cfg!(debug_assertions), staged, packaged, None)
+        {
+            return Ok(runtime);
         }
 
         let development = self
@@ -1540,8 +1645,13 @@ impl PiRuntimeSupervisor {
             .join("agent-runtime")
             .join("dist")
             .join(RUNTIME_EXECUTABLE_NAME);
-        if development.is_file() {
-            return Ok((development, "repository Bun build"));
+        if let Some(runtime) = select_runtime_candidate(
+            cfg!(debug_assertions),
+            None,
+            None,
+            development.is_file().then_some(development),
+        ) {
+            return Ok(runtime);
         }
         Err("找不到 Pi Agent Runtime 可执行文件；请先构建 services/agent-runtime。".to_owned())
     }
@@ -1561,6 +1671,7 @@ impl PiRuntimeSupervisor {
             .try_clone()
             .map_err(|_| "无法创建 Pi Runtime 错误日志句柄。".to_owned())?;
         let (executable, source) = self.resolve_executable()?;
+        let publisher_bridge = self.model_source.publisher_bridge_runtime_configuration()?;
         let mut command = Command::new(&executable);
         command
             .current_dir(executable.parent().unwrap_or(&self.repository_root))
@@ -1569,6 +1680,15 @@ impl PiRuntimeSupervisor {
             .env("OPEN_PUBLISHER_DATA_DIR", &self.data_dir)
             .env("OPEN_PUBLISHER_ARTICLE_DIR", &self.article_dir)
             .env("OPEN_PUBLISHER_PROTOCOL_VERSION", "2")
+            .env("OPEN_PUBLISHER_WECHATSYNC_TOKEN", &publisher_bridge.token)
+            .env(
+                "OPEN_PUBLISHER_WECHATSYNC_WS_PORT",
+                publisher_bridge.websocket_port.to_string(),
+            )
+            .env(
+                "OPEN_PUBLISHER_WECHATSYNC_HTTP_PORT",
+                publisher_bridge.http_port.to_string(),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
@@ -1732,6 +1852,46 @@ fn staged_development_runtime(directory: &Path) -> Option<PathBuf> {
     (candidates.len() == 1).then(|| candidates.remove(0))
 }
 
+fn packaged_runtime_sibling() -> Option<PathBuf> {
+    let directory = env::current_exe().ok()?.parent()?.to_path_buf();
+    let exact = directory.join(RUNTIME_EXECUTABLE_NAME);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    fs::read_dir(directory).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        (name.starts_with("open-publisher-agent-runtime-")
+            && (!cfg!(windows) || name.ends_with(".exe"))
+            && path.is_file())
+        .then_some(path)
+    })
+}
+
+fn select_runtime_candidate(
+    development_build: bool,
+    staged: Option<PathBuf>,
+    packaged: Option<PathBuf>,
+    repository: Option<PathBuf>,
+) -> Option<(PathBuf, &'static str)> {
+    let candidates = if development_build {
+        [
+            (staged, "development staged external binary"),
+            (packaged, "packaged external binary"),
+            (repository, "repository Bun build"),
+        ]
+    } else {
+        [
+            (packaged, "packaged external binary"),
+            (staged, "development staged external binary"),
+            (repository, "repository Bun build"),
+        ]
+    };
+    candidates
+        .into_iter()
+        .find_map(|(path, source)| path.map(|path| (path, source)))
+}
+
 impl Drop for PiRuntimeSupervisor {
     fn drop(&mut self) {
         if let Ok(state) = self.inner.get_mut() {
@@ -1747,6 +1907,23 @@ fn bounded_operation_timeout(
     maximum: Duration,
 ) -> Duration {
     Duration::from_secs(u64::from(configured_seconds)).clamp(minimum, maximum)
+}
+
+/// Keep the desktop host alive for the same whole-document budget used by the
+/// Pi runtime. A paragraph edit retains the configured timeout; a full article
+/// rewrite gets a size-aware minimum and can always be cancelled by the user.
+fn rewrite_operation_timeout(
+    configured_seconds: u16,
+    markdown: &str,
+    whole_article: bool,
+) -> Duration {
+    let minimum = if whole_article {
+        let character_count = u64::try_from(markdown.chars().count()).unwrap_or(u64::MAX);
+        Duration::from_secs((character_count.saturating_add(159) / 160).clamp(240, 480))
+    } else {
+        REWRITE_OPERATION_MIN_TIMEOUT
+    };
+    bounded_operation_timeout(configured_seconds, minimum, REWRITE_OPERATION_MAX_TIMEOUT)
 }
 
 fn runtime_request_error(error: reqwest::Error, operation: &str, timeout: Duration) -> String {
@@ -1832,8 +2009,8 @@ fn validate_rewrite_request(request: &RewriteArticleRequest) -> Result<(), Strin
     if request.markdown.trim().is_empty() || request.markdown.len() > 2_000_000 {
         return Err("文章内容不能为空且不能超过 200 万字符。".to_owned());
     }
-    if request.instruction.trim().is_empty() || request.instruction.len() > 4_000 {
-        return Err("改写要求不能为空且不能超过 4000 字符。".to_owned());
+    if request.instruction.trim().is_empty() || request.instruction.chars().count() > 100_000 {
+        return Err("改写要求不能为空且不能超过 100000 字符。".to_owned());
     }
     if request.selected_texts.len() > 32
         || request
@@ -1845,10 +2022,64 @@ fn validate_rewrite_request(request: &RewriteArticleRequest) -> Result<(), Strin
     }
     if request.conversation.len() > 64
         || request.conversation.iter().any(|message| {
-            !matches!(message.role.as_str(), "user" | "assistant") || message.text.len() > 16_000
+            !matches!(message.role.as_str(), "user" | "assistant")
+                || message.text.chars().count() > 100_000
         })
     {
         return Err("改写对话上下文无效。".to_owned());
+    }
+    validate_prompt_image_attachments(&request.images)?;
+    Ok(())
+}
+
+/// Keep model capabilities attached to the saved model profile. The optional
+/// per-run field is retained for deserializing older desktop requests, but is
+/// not allowed to elevate a model from text-only to multimodal.
+fn effective_supports_vision(_per_run_hint: bool, configured_support: bool) -> bool {
+    configured_support
+}
+
+fn validate_prompt_image_attachments(images: &[PromptImageAttachment]) -> Result<(), String> {
+    const MAX_ATTACHMENTS: usize = 6;
+    const MAX_SINGLE_DATA_LENGTH: usize = 20_000_000;
+    const MAX_TOTAL_DATA_LENGTH: usize = 32_000_000;
+    if images.len() > MAX_ATTACHMENTS {
+        return Err("一次最多附加 6 张图片。".to_owned());
+    }
+    let mut total = 0_usize;
+    let mut ids = HashSet::new();
+    for image in images {
+        validate_identifier(&image.asset_id, "图片素材 id")?;
+        if !ids.insert(&image.asset_id) {
+            return Err("同一张图片不能重复附加。".to_owned());
+        }
+        if image.name.trim().is_empty() || image.name.len() > 160 {
+            return Err("图片名称无效。".to_owned());
+        }
+        if !matches!(
+            image.mime_type.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+        ) {
+            return Err("图片格式不受支持。".to_owned());
+        }
+        if image.data.is_empty()
+            || image.data.len() > MAX_SINGLE_DATA_LENGTH
+            || !image.data.bytes().all(
+                |byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'='),
+            )
+        {
+            return Err("图片数据无效或过大。".to_owned());
+        }
+        if !matches!(
+            image.intent.as_str(),
+            "auto" | "material" | "insert" | "analyze"
+        ) {
+            return Err("图片用途无效。".to_owned());
+        }
+        total = total.saturating_add(image.data.len());
+        if total > MAX_TOTAL_DATA_LENGTH {
+            return Err("本次附图总大小超出支持范围。".to_owned());
+        }
     }
     Ok(())
 }
@@ -1859,7 +2090,8 @@ fn validate_compose_visual_request(request: &ComposeVisualRequest) -> Result<(),
     }
     validate_identifier(&request.article_id, "articleId")?;
     validate_visible_text(&request.markdown, "文章正文", 2_000_000, true)?;
-    validate_visible_text(&request.instruction, "配图要求", 4_000, true)?;
+    validate_visible_text(&request.instruction, "配图要求", 100_000, true)?;
+    validate_prompt_image_attachments(&request.images)?;
     let composition = &request.visual_composition;
     if composition.assets.len() > 6 {
         return Err("配图最多可使用六张已选素材。".to_owned());
@@ -1886,11 +2118,11 @@ fn validate_compose_visual_request(request: &ComposeVisualRequest) -> Result<(),
     ) {
         return Err("配图类型或密度无效。".to_owned());
     }
-    validate_visible_text(&composition.style, "配图风格", 80, false)?;
+    validate_visible_text(&composition.style, "配图风格", 500, false)?;
     if let Some(palette) = &composition.palette {
-        validate_visible_text(palette, "配图色板", 80, false)?;
+        validate_visible_text(palette, "配图色板", 500, false)?;
     }
-    validate_visible_text(&composition.preferred_image_backend, "生图后端", 80, false)?;
+    validate_visible_text(&composition.preferred_image_backend, "生图后端", 500, false)?;
     if !(1..=8).contains(&composition.generation_batch_size)
         || composition.material_match_threshold > 100
     {
@@ -1902,14 +2134,29 @@ fn validate_compose_visual_request(request: &ComposeVisualRequest) -> Result<(),
         if !ids.insert(asset.id.as_str()) {
             return Err("素材 id 不能重复。".to_owned());
         }
-        validate_visible_text(&asset.alt, "素材说明", 160, false)?;
-        if asset.description.len() > 600
+        validate_visible_text(&asset.alt, "素材说明", 2_000, false)?;
+        // The TypeScript boundary truncates descriptions by Unicode scalar
+        // characters. Validate with the same unit here; `str::len()` counts
+        // UTF-8 bytes and rejects otherwise valid Chinese descriptions.
+        if asset.description.chars().count() > 12_000
             || asset
                 .description
                 .chars()
                 .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
         {
             return Err("素材描述无效。".to_owned());
+        }
+    }
+    if composition.required_asset_ids.len() > composition.assets.len()
+        || composition.required_asset_ids.len() > 6
+    {
+        return Err("强制插入素材数量无效。".to_owned());
+    }
+    let mut required_ids = HashSet::new();
+    for asset_id in &composition.required_asset_ids {
+        validate_visual_asset_id(asset_id)?;
+        if !required_ids.insert(asset_id.as_str()) || !ids.contains(asset_id.as_str()) {
+            return Err("强制插入素材必须是当前配图素材且不能重复。".to_owned());
         }
     }
     Ok(())
@@ -1922,7 +2169,9 @@ fn validate_visible_text(
     allow_newlines: bool,
 ) -> Result<(), String> {
     if value.trim().is_empty()
-        || value.len() > maximum
+        // Keep this aligned with the WebView's Array.from(...).slice(...)
+        // truncation. Byte length would make multi-byte text fail early.
+        || value.chars().count() > maximum
         || value.chars().any(|character| {
             character.is_control() && !(allow_newlines && matches!(character, '\n' | '\t'))
         })
@@ -1968,6 +2217,7 @@ fn visual_composition_body(request: &crate::supervisor::VisualCompositionRequest
         "mode": request.mode,
         "targetCount": request.target_count,
         "assets": assets,
+        "requiredAssetIds": request.required_asset_ids,
         "assetScope": request.asset_scope,
         "preferredType": request.preferred_type,
         "density": request.density,
@@ -1989,7 +2239,7 @@ fn deterministic_visual_summary(
         .chars()
         .filter(|character| !character.is_whitespace())
         .count();
-    let target_count = match composition.mode.as_str() {
+    let default_target_count = match composition.mode.as_str() {
         "fixed" => composition.target_count.min(6),
         "auto" if character_count <= 900 => 1,
         "auto" if character_count <= 2_000 => 2,
@@ -1997,6 +2247,7 @@ fn deterministic_visual_summary(
         "auto" => 4,
         _ => 0,
     };
+    let target_count = default_target_count.max(composition.required_asset_ids.len() as u8);
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut heading = "文章核心观点".to_owned();
     let mut paragraph = String::new();
@@ -2071,8 +2322,15 @@ fn deterministic_visual_summary(
         );
         let alt = take_visual_chars(&visual_content, 180);
         let asset = composition
-            .assets
+            .required_asset_ids
             .get(index)
+            .and_then(|required| {
+                composition
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == *required)
+            })
+            .or_else(|| composition.assets.get(index))
             .filter(|asset| composition.asset_scope != "none" && !asset.id.trim().is_empty());
         let source = if asset.is_some() {
             "existing_asset"
@@ -2430,6 +2688,15 @@ fn validate_pi_draft(request: &SaveDraftRequest) -> Result<(), String> {
     {
         return Err("baseRevision 包含不支持的字符。".to_owned());
     }
+    if request.reason.as_deref().is_some_and(|reason| {
+        reason.trim().is_empty()
+            || reason.chars().count() > 20_000
+            || reason
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    }) {
+        return Err("修订原因无效。".to_owned());
+    }
     Ok(())
 }
 
@@ -2460,6 +2727,59 @@ fn validate_pi_article(article: &PiArticle) -> Result<(), String> {
     }
     if article.markdown.trim().is_empty() || article.markdown.len() > 2_000_000 {
         return Err("Pi Runtime 返回了无效的文章正文。".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_pi_revision_summary(
+    revision: &PiArticleRevisionSummary,
+    expected_article_id: &str,
+) -> Result<(), String> {
+    if revision.schema_version != "2" || revision.article_id != expected_article_id {
+        return Err("Pi Runtime 返回了不兼容的文章修订。".to_owned());
+    }
+    validate_identifier(&revision.article_id, "articleId")?;
+    validate_identifier(&revision.revision_id, "revisionId")?;
+    if let Some(parent_revision_id) = revision.parent_revision_id.as_deref() {
+        validate_identifier(parent_revision_id, "parentRevisionId")?;
+    }
+    if revision.revision_number == 0 {
+        return Err("Pi Runtime 返回了无效的修订序号。".to_owned());
+    }
+    validate_title(&revision.title)?;
+    validate_content_hash(&revision.content_hash)?;
+    if revision.created_at.trim().is_empty() || revision.created_at.len() > 100 {
+        return Err("Pi Runtime 返回了无效的修订时间。".to_owned());
+    }
+    if revision.reason.trim().is_empty() || revision.reason.chars().count() > 20_000 {
+        return Err("Pi Runtime 返回了无效的修订原因。".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_pi_revision_detail(
+    revision: &PiArticleRevisionDetail,
+    expected_article_id: &str,
+    expected_revision_id: &str,
+) -> Result<(), String> {
+    let summary = PiArticleRevisionSummary {
+        schema_version: revision.schema_version.clone(),
+        article_id: revision.article_id.clone(),
+        revision_id: revision.revision_id.clone(),
+        revision_number: revision.revision_number,
+        parent_revision_id: revision.parent_revision_id.clone(),
+        title: revision.title.clone(),
+        content_hash: revision.content_hash.clone(),
+        created_at: revision.created_at.clone(),
+        reason: revision.reason.clone(),
+        is_current: revision.is_current,
+    };
+    validate_pi_revision_summary(&summary, expected_article_id)?;
+    if revision.revision_id != expected_revision_id {
+        return Err("Pi Runtime 返回了错误的修订记录。".to_owned());
+    }
+    if revision.markdown.trim().is_empty() || revision.markdown.len() > 2_000_000 {
+        return Err("Pi Runtime 返回了无效的修订正文。".to_owned());
     }
     Ok(())
 }
@@ -2507,13 +2827,13 @@ fn normalize_template_markdown(value: &str) -> Result<String, String> {
         .trim()
         .to_owned();
     if normalized.is_empty()
-        || normalized.chars().count() > 32_768
+        || normalized.chars().count() > 2_000_000
         || normalized
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
     {
         return Err(
-            "待提取的 Markdown 不能为空、不能超过 32768 字符且不能包含不支持的控制字符。"
+            "待提取的 Markdown 不能为空、不能超过 200 万字符且不能包含不支持的控制字符。"
                 .to_owned(),
         );
     }
@@ -2663,11 +2983,11 @@ fn validate_template_response(response: &PiTemplateExtractionResponse) -> Result
         !value.trim().is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
     };
     let markdown = response.markdown.trim();
-    if !visible(&response.name, 80)
-        || !visible(&response.description, 300)
-        || !visible(&response.category, 60)
+    if !visible(&response.name, 500)
+        || !visible(&response.description, 5_000)
+        || !visible(&response.category, 200)
         || markdown.is_empty()
-        || markdown.len() > 32_768
+        || markdown.chars().count() > 2_000_000
         || markdown
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
@@ -2790,18 +3110,22 @@ fn safe_status_message(status: StatusCode) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, fs, sync::Arc, time::Duration};
+    use std::{collections::HashMap, fs, path::PathBuf, sync::Arc, time::Duration};
 
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::{
-        bounded_operation_timeout, deterministic_visual_summary, encode_component,
-        public_visual_plan, staged_development_runtime, strong_token, title_from_markdown,
-        validate_identifier, PiRuntimeSupervisor, PiVisualCompositionPlan, PiVisualPlacement,
-        PiVisualPlanningResponse, VisualCompositionRequest,
+        bounded_operation_timeout, deterministic_visual_summary, effective_supports_vision,
+        encode_component, public_visual_plan, rewrite_operation_timeout, select_runtime_candidate,
+        staged_development_runtime, strong_token, title_from_markdown,
+        validate_compose_visual_request, validate_identifier, validate_visible_text,
+        PiRuntimeSupervisor, PiVisualCompositionPlan, PiVisualPlacement, PiVisualPlanningResponse,
+        VisualCompositionRequest,
     };
-    use crate::supervisor::{ModelConfigurationStore, SaveDraftRequest};
+    use crate::supervisor::{
+        ComposeVisualRequest, ModelConfigurationStore, PromptImageAttachment, SaveDraftRequest,
+    };
 
     #[test]
     fn launch_tokens_are_strong_and_url_safe() {
@@ -2815,6 +3139,45 @@ mod tests {
         assert!(validate_identifier("run:1234-test", "runId").is_ok());
         assert!(validate_identifier("../article", "articleId").is_err());
         assert!(validate_identifier("article/secret", "articleId").is_err());
+    }
+
+    #[test]
+    fn per_run_vision_hint_cannot_elevate_a_text_only_model() {
+        assert!(!effective_supports_vision(true, false));
+        assert!(!effective_supports_vision(false, false));
+        assert!(effective_supports_vision(false, true));
+    }
+
+    #[test]
+    fn visual_text_limits_use_characters_not_utf8_bytes() {
+        // This is exactly the unit used by the React boundary. A 160-character
+        // Chinese asset caption is valid even though it occupies more bytes.
+        assert!(validate_visible_text(&"配图".repeat(80), "素材说明", 160, false).is_ok());
+        assert!(validate_visible_text(&"配图".repeat(81), "素材说明", 160, false).is_err());
+    }
+
+    #[test]
+    fn visual_requests_accept_valid_local_prompt_attachments() {
+        let request = ComposeVisualRequest {
+            operation_id: Some("editor-visual-test".to_owned()),
+            article_id: "article-visual-test".to_owned(),
+            markdown: "# 一篇文章\n\n正文内容。".to_owned(),
+            instruction: "根据用户附图安排一张正文配图。".to_owned(),
+            images: vec![PromptImageAttachment {
+                asset_id: "media-visual-input".to_owned(),
+                name: "产品截图.png".to_owned(),
+                mime_type: "image/png".to_owned(),
+                data: "aW1hZ2U=".to_owned(),
+                intent: "insert".to_owned(),
+            }],
+            visual_composition: VisualCompositionRequest {
+                mode: "fixed".to_owned(),
+                target_count: 1,
+                ..VisualCompositionRequest::default()
+            },
+        };
+
+        assert!(validate_compose_visual_request(&request).is_ok());
     }
 
     #[test]
@@ -3022,6 +3385,23 @@ mod tests {
     }
 
     #[test]
+    fn development_prefers_the_staged_runtime_but_release_prefers_the_packaged_sibling() {
+        let staged = PathBuf::from("staged-runtime");
+        let packaged = PathBuf::from("packaged-runtime");
+
+        let development =
+            select_runtime_candidate(true, Some(staged.clone()), Some(packaged.clone()), None)
+                .expect("development runtime");
+        assert_eq!(development.0, staged);
+        assert_eq!(development.1, "development staged external binary");
+
+        let release = select_runtime_candidate(false, Some(staged), Some(packaged.clone()), None)
+            .expect("packaged runtime");
+        assert_eq!(release.0, packaged);
+        assert_eq!(release.1, "packaged external binary");
+    }
+
+    #[test]
     fn long_running_operation_timeouts_are_bounded_but_not_control_timeouts() {
         assert_eq!(
             bounded_operation_timeout(20, Duration::from_secs(90), Duration::from_secs(480)),
@@ -3034,6 +3414,19 @@ mod tests {
         assert_eq!(
             bounded_operation_timeout(1_800, Duration::from_secs(90), Duration::from_secs(480)),
             Duration::from_secs(480)
+        );
+    }
+
+    #[test]
+    fn whole_article_rewrite_timeout_grows_with_document_size() {
+        let document = "文".repeat(43_485);
+        assert_eq!(
+            rewrite_operation_timeout(120, &document, true),
+            Duration::from_secs(272),
+        );
+        assert_eq!(
+            rewrite_operation_timeout(120, "短段落", false),
+            Duration::from_secs(120),
         );
     }
 
@@ -3079,6 +3472,7 @@ mod tests {
                 article_id: "article:bridge-test".to_owned(),
                 base_revision: None,
                 markdown: "# First title\n\nInitial body".to_owned(),
+                reason: None,
             })
             .expect("initial draft saves");
         let second = supervisor
@@ -3086,6 +3480,7 @@ mod tests {
                 article_id: "article:bridge-test".to_owned(),
                 base_revision: Some(first.revision_id),
                 markdown: "# Revised title\n\nRevised body".to_owned(),
+                reason: None,
             })
             .expect("revision saves");
         let articles = supervisor.list_articles().expect("articles list");
@@ -3094,6 +3489,23 @@ mod tests {
         assert_eq!(articles[0].markdown, "# Revised title\n\nRevised body");
         assert_eq!(articles[0].revision_id, second.revision_id);
         assert_eq!(articles[0].revision_number, 2);
+        let revisions = supervisor
+            .list_article_revisions("article:bridge-test")
+            .expect("revision history lists");
+        assert_eq!(revisions.len(), 2);
+        assert!(revisions[0].is_current);
+        assert_eq!(revisions[1].revision_number, 1);
+        let original = supervisor
+            .article_revision("article:bridge-test", &revisions[1].revision_id)
+            .expect("old revision reads");
+        assert_eq!(original.markdown, "# First title\n\nInitial body");
+        let restored = supervisor
+            .restore_article_revision("article:bridge-test", &revisions[1].revision_id)
+            .expect("old revision restores as a new head");
+        assert_eq!(restored.revision_number, 3);
+        assert!(restored.is_current);
+        assert_eq!(restored.markdown, original.markdown);
+        assert_ne!(restored.revision_id, original.revision_id);
         supervisor.stop().expect("Runtime stops");
     }
 }

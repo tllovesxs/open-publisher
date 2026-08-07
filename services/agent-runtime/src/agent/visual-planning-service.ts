@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { TextModelProfile } from "./model-profile.js";
+import {
+  arePromptImageAttachments,
+  promptImageContents,
+  promptImageInstructions,
+  type PromptImageAttachment,
+} from "./image-attachments.js";
 import { PiAgentAdapter, type WriterAgentFactory } from "./pi-adapter.js";
 import { runWithModelDeadline } from "./model-deadline.js";
 import type { SecretProvider } from "../security/secret-provider.js";
@@ -30,6 +36,8 @@ export interface VisualCompositionRequest {
   readonly mode: VisualImageMode;
   readonly targetCount: number;
   readonly assets: readonly VisualAssetInstruction[];
+  /** Asset ids explicitly requested for insertion by the user. */
+  readonly requiredAssetIds: readonly string[];
   readonly assetScope: VisualAssetScope;
   readonly preferredType: VisualType;
   readonly density: VisualDensity;
@@ -47,6 +55,8 @@ export interface VisualPlanningRequest {
   /** Must be the exact `ArticleFileState.contentHash` for markdown. */
   readonly sourceRevisionHash: `sha256:${string}`;
   readonly instruction?: string;
+  /** Locally retained prompt attachments associated with this visual request. */
+  readonly images?: readonly PromptImageAttachment[];
   readonly visualComposition: VisualCompositionRequest;
   /** Omit this to use deterministic local planning without a text model. */
   readonly modelProfile?: TextModelProfile;
@@ -116,14 +126,14 @@ interface ModelPlacement {
 
 const MODEL_PLAN_PARAMETERS = Type.Object({
   placements: Type.Array(Type.Object({
-    position: Type.String({ minLength: 1, maxLength: 800 }),
-    purpose: Type.String({ minLength: 1, maxLength: 900 }),
-    visualContent: Type.String({ minLength: 1, maxLength: 1_500 }),
+    position: Type.String({ minLength: 1, maxLength: 4_000 }),
+    purpose: Type.String({ minLength: 1, maxLength: 4_000 }),
+    visualContent: Type.String({ minLength: 1, maxLength: 8_000 }),
     visualType: Type.Union(VISUAL_TYPES.map((value) => Type.Literal(value))),
     source: Type.Union([Type.Literal("existing_asset"), Type.Literal("generate")]),
     assetId: Type.Union([Type.String({ minLength: 1, maxLength: 100 }), Type.Null()]),
-    selectionReason: Type.String({ minLength: 1, maxLength: 900 }),
-    alt: Type.String({ minLength: 1, maxLength: 180 }),
+    selectionReason: Type.String({ minLength: 1, maxLength: 4_000 }),
+    alt: Type.String({ minLength: 1, maxLength: 2_000 }),
   }), { maxItems: MAX_PLACEMENTS }),
 });
 
@@ -137,6 +147,13 @@ const truncateCharacters = (value: string, maximum: number): string =>
 
 const clean = (value: string, maximum: number): string =>
   truncateCharacters(value.replace(/\s+/g, " ").trim(), maximum);
+
+const conciseAlt = (value: string, heading: string | null, ordinal: number): string => {
+  const candidate = clean(value, 80);
+  if (candidate && candidate.length <= 48) return candidate;
+  const section = clean(heading ?? "", 32);
+  return section ? `${section}配图` : `正文配图 ${ordinal}`;
+};
 
 const truncatePrompt = (value: string, maximum: number): string =>
   truncateCharacters(value, maximum);
@@ -232,18 +249,40 @@ const similarity = (left: string, right: string): number => {
   return Math.min(1, coverage * 0.82 + balanced * 0.18);
 };
 
+const candidateForAsset = (
+  visualContent: string,
+  purpose: string,
+  asset: VisualAssetInstruction,
+): VisualMaterialCandidate => ({
+  assetId: asset.id,
+  score: clampInteger(similarity(`${visualContent}\n${purpose}`, `${asset.alt}\n${asset.description}`) * 1_000, 0, 1_000),
+  description: clean(`${asset.alt}\n${asset.description}`, 900),
+});
+
 const candidatesFor = (
   visualContent: string,
   purpose: string,
   assets: readonly VisualAssetInstruction[],
 ): readonly VisualMaterialCandidate[] => [...assets]
-  .map((asset) => ({
-    assetId: asset.id,
-    score: clampInteger(similarity(`${visualContent}\n${purpose}`, `${asset.alt}\n${asset.description}`) * 1_000, 0, 1_000),
-    description: clean(`${asset.alt}\n${asset.description}`, 900),
-  }))
+  .map((asset) => candidateForAsset(visualContent, purpose, asset))
   .sort((left, right) => right.score - left.score || left.assetId.localeCompare(right.assetId))
   .slice(0, MAX_CANDIDATES);
+
+/**
+ * A model may intentionally choose a weakly related asset. Preserve that
+ * choice in the bounded candidate list instead of losing it to the top-five
+ * heuristic before buildPlan can honor it.
+ */
+const includeCandidate = (
+  candidates: readonly VisualMaterialCandidate[],
+  candidate: VisualMaterialCandidate | null,
+): readonly VisualMaterialCandidate[] => {
+  if (!candidate || candidates.some((entry) => entry.assetId === candidate.assetId)) return candidates;
+  return [
+    ...candidates.slice(0, Math.max(0, MAX_CANDIDATES - 1)),
+    candidate,
+  ].sort((left, right) => right.score - left.score || left.assetId.localeCompare(right.assetId));
+};
 
 const pickBlock = (
   position: string,
@@ -275,7 +314,11 @@ const promptFor = (
   settings: Readonly<Record<string, string>>,
   filename: string,
 ): string => {
-  const labelAnchor = placement.anchorExcerpt ?? placement.afterHeading ?? "文章核心观点";
+  // The article paragraph is evidence for the planner, not copy to typeset
+  // inside the image. Keep the generation brief short so image models do not
+  // turn a whole paragraph into a dense poster or fake UI screenshot.
+  const visualBrief = clean(placement.visualContent, 260) || "文章核心观点";
+  const anchor = clean(placement.anchorExcerpt ?? placement.afterHeading ?? "文章核心观点", 80);
   return truncatePrompt([
     "---",
     `illustration_id: ${placement.id}`,
@@ -286,13 +329,14 @@ const promptFor = (
     `output_file: ${filename}`,
     "---",
     "",
-    `# ${placement.alt}`,
+    "# 简洁正文配图",
     "",
-    `LAYOUT: Create one clear 3:2 ${placement.visualType} that explains the paragraph anchor.`,
-    `ZONES: ${placement.visualContent}`,
-    `LABELS: Prefer no in-image text. If indispensable, only use exact article terms: ${labelAnchor}`,
+    `LAYOUT: Create one clear 3:2 ${placement.visualType} for one idea only. Use one focal subject, at most three visual elements, generous whitespace, and no dense dashboard layout.`,
+    `ZONES: ${visualBrief}`,
+    `ANCHOR: This image supports the article section “${anchor}”; show the concept visually rather than writing the sentence into the image.`,
+    "TEXT: Render no readable text, paragraphs, headings, tables, captions, UI copy, numbers, or labels. Only use up to three tiny symbolic marks when absolutely necessary.",
     `COLORS: Use the ${settings.palette ?? "default"} palette consistently.`,
-    `STYLE: ${settings.style ?? "sketch-notes"}. Keep the composition explanatory, structured, and uncluttered.`,
+    `STYLE: ${settings.style ?? "sketch-notes"}. Keep it calm, editorial, simple, and uncluttered; never make a poster or presentation slide.`,
     "ASPECT: 3:2 landscape.",
     "",
     "Do not include brand marks, watermarks, portraits, fabricated metrics, decorative text, or claims not supported by the article.",
@@ -300,14 +344,20 @@ const promptFor = (
 };
 
 const targetCountFor = (markdown: string, request: VisualCompositionRequest): number => {
-  if (request.mode === "none") return 0;
-  if (request.mode === "fixed") return request.targetCount;
-  return autoImageCount(markdown);
+  const planned = request.mode === "none"
+    ? 0
+    : request.mode === "fixed"
+      ? request.targetCount
+      : autoImageCount(markdown);
+  return Math.max(planned, request.requiredAssetIds.length);
 };
 
 const assertRequest = (request: VisualPlanningRequest): void => {
   const composition = request.visualComposition;
   if (!request.markdown.trim()) throw new Error("Visual planning requires non-empty Markdown");
+  if (request.images !== undefined && !arePromptImageAttachments(request.images)) {
+    throw new Error("Visual planning image attachments are invalid");
+  }
   if (hashMarkdown(request.markdown) !== request.sourceRevisionHash) {
     throw new Error("Visual planning markdown does not match the supplied ArticleStore content hash");
   }
@@ -316,6 +366,7 @@ const assertRequest = (request: VisualPlanningRequest): void => {
   if (composition.mode === "none" && composition.targetCount !== 0) throw new Error("Visual mode none requires targetCount 0");
   if (composition.mode === "auto" && composition.targetCount !== 0) throw new Error("Visual mode auto requires targetCount 0");
   if (composition.mode === "fixed" && composition.targetCount === 0) throw new Error("Visual mode fixed requires a targetCount");
+  if (composition.mode === "none" && composition.requiredAssetIds.length > 0) throw new Error("Visual mode none cannot require assets");
   if (!isVisualType(composition.preferredType)) throw new Error("Visual preferredType is invalid");
   if (!Number.isInteger(composition.generationBatchSize) || composition.generationBatchSize < 1 || composition.generationBatchSize > 8) throw new Error("Visual generationBatchSize must be between 1 and 8");
   if (!Number.isInteger(composition.materialMatchThreshold) || composition.materialMatchThreshold < 0 || composition.materialMatchThreshold > 100) throw new Error("Visual materialMatchThreshold must be between 0 and 100");
@@ -323,9 +374,19 @@ const assertRequest = (request: VisualPlanningRequest): void => {
   if (composition.assetScope === "none" && composition.assets.length > 0) throw new Error("Visual assets require a non-none asset scope");
   const ids = new Set<string>();
   for (const asset of composition.assets) {
-    if (!/^[a-z][a-z0-9_-]{0,99}$/.test(asset.id) || !clean(asset.alt, 160)) throw new Error("Visual asset metadata is invalid");
+    if (!/^[a-z][a-z0-9_-]{0,99}$/.test(asset.id) || !clean(asset.alt, 2_000)) throw new Error("Visual asset metadata is invalid");
     if (ids.has(asset.id)) throw new Error("Visual asset ids must be unique");
     ids.add(asset.id);
+  }
+  if (composition.requiredAssetIds.length > composition.assets.length) {
+    throw new Error("Required visual assets must be supplied in the asset list");
+  }
+  const requiredIds = new Set<string>();
+  for (const assetId of composition.requiredAssetIds) {
+    if (!ids.has(assetId) || requiredIds.has(assetId)) {
+      throw new Error("Required visual assets must be unique supplied asset ids");
+    }
+    requiredIds.add(assetId);
   }
 };
 
@@ -338,8 +399,8 @@ const fallbackModelPlacements = (
   return Array.from({ length: count }, (_, index) => {
     const block = blocks[Math.min(Math.floor((index * blocks.length) / Math.max(count, 1)), Math.max(blocks.length - 1, 0))];
     const section = block?.heading ?? "文章核心观点";
-    const excerpt = block?.excerpt ?? "文章核心观点";
-    const visualContent = `围绕“${excerpt}”解释关键概念、关系或执行步骤的${request.preferredType}配图`;
+    const excerpt = clean(block?.excerpt ?? "文章核心观点", 90);
+    const visualContent = `只表现“${excerpt}”这一个核心概念的简洁${request.preferredType}配图`;
     return {
       position: `${section} / ${excerpt}`,
       purpose: "帮助读者在阅读对应段落后快速理解核心关系。",
@@ -348,7 +409,7 @@ const fallbackModelPlacements = (
       source: "generate",
       assetId: null,
       selectionReason: "本地确定性规划先按文章结构定位，再依据素材描述进行匹配。",
-      alt: clean(visualContent, 180) || `正文配图 ${index + 1}`,
+    alt: conciseAlt("", block?.heading ?? null, index + 1),
     };
   });
 };
@@ -384,9 +445,11 @@ const normalizeModelPlacements = (
 const modelSystemPrompt = [
   "You are the planning phase of the bundled Baoyu Article Illustrator.",
   "You do not generate images and never mutate the article. Return a bounded visual plan only through return_visual_plan.",
-  "Every illustration must teach a distinct concrete relationship, comparison, process, framework, or timeline from a safe prose paragraph. Avoid decorative images.",
+  "Every illustration must teach one distinct concrete relationship, comparison, process, framework, or timeline from a safe prose paragraph. Prefer one focal idea over a complete summary; avoid decorative images and dense posters.",
+  "Keep visualContent as a short visual brief, not article copy. Never request paragraphs, headings, tables, UI screenshots, or many labels inside the image. Default to zero readable text and at most three simple visual elements.",
   "Prefer supplied material only when its written metadata actually serves the visual need; an asset may be used at most once. Otherwise select generate.",
-  "Do not invent metrics, logos, brands, people, quotations, or in-image text. Keep images explanatory and use the configured style and palette consistently.",
+  "When requiredAssetIds is non-empty, those images were explicitly requested for insertion. Return one placement for each required id, keeping all of them as existing_asset choices.",
+  "Do not invent metrics, logos, brands, people, quotations, or in-image text. Keep images explanatory, sparse, and use the configured style and palette consistently.",
 ].join("\n");
 
 export class VisualPlanningService {
@@ -442,19 +505,27 @@ export class VisualPlanningService {
       onEvent: () => undefined,
     });
     const composition = request.visualComposition;
+    const images = request.images ?? [];
     const prompt = {
-      instruction: request.instruction?.slice(0, 4_000) ?? "为文章安排解释性正文配图。",
+      instruction: request.instruction?.slice(0, 100_000) ?? "为文章安排解释性正文配图。",
       imageCount: targetCountFor(request.markdown, composition),
-      configuration: { type: composition.preferredType, density: composition.density, style: composition.style.slice(0, 80), palette: composition.palette ?? "default", materialMatchThreshold: composition.materialMatchThreshold },
-      assets: composition.assetScope === "none" ? [] : composition.assets.map((asset) => ({ id: asset.id, alt: asset.alt, description: asset.description.slice(0, 600) })),
-      markdown: request.markdown.slice(0, 120_000),
+      configuration: { type: composition.preferredType, density: composition.density, style: composition.style.slice(0, 500), palette: composition.palette ?? "default", materialMatchThreshold: composition.materialMatchThreshold },
+      requiredAssetIds: composition.requiredAssetIds,
+      assets: composition.assetScope === "none" ? [] : composition.assets.map((asset) => ({ id: asset.id, alt: asset.alt, description: asset.description.slice(0, 12_000) })),
+      markdown: request.markdown.slice(0, 2_000_000),
     };
     throwIfOperationCancelled(signal);
     await runWithModelDeadline(
       agent,
       profile,
       "Visual planning",
-      () => agent.prompt(`Plan the requested illustrations from this JSON data. Use return_visual_plan now; do not answer with prose.\n${JSON.stringify(prompt)}`),
+      () => agent.prompt(
+        [
+          `Plan the requested illustrations from this JSON data. Use return_visual_plan now; do not answer with prose.\n${JSON.stringify(prompt)}`,
+          promptImageInstructions(images),
+        ].filter(Boolean).join("\n\n"),
+        promptImageContents(images, profile.supportsVision),
+      ),
       signal,
     );
     throwIfOperationCancelled(signal);
@@ -486,12 +557,43 @@ export class VisualPlanningService {
       const ordinal = index + 1;
       const block = pickBlock(item.position, item.visualContent, blocks, usedBlocks);
       if (block) usedBlocks.add(block.id);
-      const candidates = candidatesFor(item.visualContent, item.purpose, assets);
-      const requestedAsset = item.source === "existing_asset" && item.assetId !== null
-        ? candidates.find((candidate) => candidate.assetId === item.assetId) ?? null
+      const requiredAssetId = composition.requiredAssetIds[index];
+      const rankedCandidates = candidatesFor(item.visualContent, item.purpose, assets);
+      // An explicitly inserted image is a hard user constraint. It must not
+      // be lost merely because the semantic candidate list is capped at five
+      // items, so keep the required asset visible and selectable even when it
+      // has a low similarity score.
+      const requiredAsset = requiredAssetId
+        ? assets.find((asset) => asset.id === requiredAssetId) ?? null
         : null;
-      const defaultCandidate = candidates.find((candidate) => candidate.score >= composition.materialMatchThreshold * 10 && !usedAssets.has(candidate.assetId)) ?? null;
-      const selected = requestedAsset && !usedAssets.has(requestedAsset.assetId) ? requestedAsset : defaultCandidate;
+      const requiredCandidate = requiredAssetId
+        ? rankedCandidates.find((candidate) => candidate.assetId === requiredAssetId)
+          ?? (requiredAsset
+            ? candidateForAsset(item.visualContent, item.purpose, requiredAsset)
+            : null)
+        : null;
+      const requestedAsset = item.source === "existing_asset" && item.assetId !== null
+        ? assets.find((asset) => asset.id === item.assetId) ?? null
+        : null;
+      const requestedCandidate = requestedAsset
+        ? rankedCandidates.find((candidate) => candidate.assetId === requestedAsset.id)
+          ?? candidateForAsset(item.visualContent, item.purpose, requestedAsset)
+        : null;
+      // An explicit user insertion wins over the model's ordinary material
+      // choice for the same placement. Otherwise keep the model-selected
+      // candidate, even when it falls outside the heuristic's top five.
+      const candidates = includeCandidate(rankedCandidates, requiredCandidate ?? requestedCandidate);
+      const futureRequiredIds = new Set(composition.requiredAssetIds.slice(index + 1));
+      const defaultCandidate = candidates.find((candidate) =>
+        candidate.score >= composition.materialMatchThreshold * 10 &&
+        !usedAssets.has(candidate.assetId) &&
+        !futureRequiredIds.has(candidate.assetId)
+      ) ?? null;
+      const selected = requiredCandidate && !usedAssets.has(requiredCandidate.assetId)
+        ? requiredCandidate
+        : requestedCandidate && !usedAssets.has(requestedCandidate.assetId)
+          ? requestedCandidate
+          : defaultCandidate;
       if (selected) usedAssets.add(selected.assetId);
       const placementBase = {
         id: `illustration-${ordinal}` as `illustration-${number}`,
@@ -509,7 +611,7 @@ export class VisualPlanningService {
         selectionReason: clean(selected
           ? `${item.selectionReason} 已选素材与视觉目标匹配度为 ${Math.round(selected.score / 10)}%。`
           : `${item.selectionReason} 没有达到阈值且未重复使用的素材，准备生成新图片。`, 900),
-        alt: item.alt,
+        alt: conciseAlt(item.alt, block?.heading ?? null, ordinal),
       };
       const filename = `${String(ordinal).padStart(2, "0")}-${item.visualType}-${slug(block?.heading ?? item.alt, `concept-${ordinal}`)}.png`;
       const promptFile = `prompts/${String(ordinal).padStart(2, "0")}-${item.visualType}-${slug(block?.heading ?? item.alt, `concept-${ordinal}`)}.md`;

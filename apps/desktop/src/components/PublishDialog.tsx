@@ -22,6 +22,7 @@ interface PublishDialogProps {
   refreshing: boolean;
   onClose: () => void;
   onRefresh: (forceRefresh?: boolean) => Promise<void>;
+  onOpenSettings: () => void;
   onSubmit: (platforms: PlatformId[]) => Promise<void>;
 }
 
@@ -34,6 +35,7 @@ export function PublishDialog({
   refreshing,
   onClose,
   onRefresh,
+  onOpenSettings,
   onSubmit,
 }: PublishDialogProps) {
   const [selected, setSelected] = useState<Set<PlatformId>>(new Set());
@@ -134,9 +136,16 @@ export function PublishDialog({
             <strong>{connected ? "WechatSync 已连接" : "WechatSync 未连接"}</strong>
             <span>{bridge?.detail ?? "正在读取本机浏览器桥接状态。"}</span>
           </div>
-          <button className="text-button" disabled={refreshing || publishing} onClick={() => void onRefresh(true)} type="button">
-            <RefreshCw className={refreshing ? "spin" : undefined} size={14} /> 刷新
-          </button>
+          <div className="publish-dialog__connection-actions">
+            <button className="text-button" disabled={refreshing || publishing} onClick={() => void onRefresh(true)} type="button">
+              <RefreshCw className={refreshing ? "spin" : undefined} size={14} /> 刷新
+            </button>
+            {!connected && (
+              <button className="text-button" disabled={publishing} onClick={onOpenSettings} type="button">
+                前往设置
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="publish-dialog__body">

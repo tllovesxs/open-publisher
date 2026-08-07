@@ -1,0 +1,170 @@
+name: Build Desktop Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-installers-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }} (unsigned)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            bundles: nsis
+            artifact: gaoliu-windows-x64
+          - name: macOS Apple Silicon
+            os: macos-15
+            rust_target: aarch64-apple-darwin
+            bundles: dmg
+            artifact: gaoliu-macos-arm64
+
+    env:
+      OPEN_PUBLISHER_TAURI_TARGET: ${{ matrix.rust_target }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Verify native macOS build host
+        if: runner.os == 'macOS'
+        shell: bash
+        run: test "$(uname -m)" = "arm64"
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify desktop release version
+        run: node scripts/check_release_version.mjs
+
+      - name: Build desktop installer
+        run: node apps/desktop/node_modules/@tauri-apps/cli/tauri.js build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
+
+      - name: Verify and prepare Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundleRoot = "apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis"
+          $installer = Get-ChildItem -LiteralPath $bundleRoot -Filter *.exe -File | Select-Object -First 1
+          if (-not $installer) { throw "Tauri NSIS installer was not generated" }
+
+          $installRoot = Join-Path $env:RUNNER_TEMP "gaoliu-installer-smoke"
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$installRoot") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer smoke test failed with exit code $($process.ExitCode)" }
+
+          $appExecutable = Get-ChildItem -LiteralPath $installRoot -Filter *.exe -File |
+            Where-Object { $_.Name -notlike "Uninstall*" -and $_.Name -notlike "open-publisher-agent-runtime*" } |
+            Select-Object -First 1
+          $runtime = Get-ChildItem -LiteralPath $installRoot -Filter "open-publisher-agent-runtime*.exe" -File -Recurse |
+            Select-Object -First 1
+          if (-not $appExecutable) { throw "Installed desktop executable was not found" }
+          if (-not $runtime) { throw "Installed Pi Agent Runtime sidecar was not found" }
+
+          New-Item -ItemType Directory -Force release-output | Out-Null
+          $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+          Copy-Item -LiteralPath $installer.FullName -Destination "release-output/Gaoliu-$version-windows-x64-setup.exe"
+
+      - name: Verify and prepare macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bundle_root="apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          app_path="$(find "$bundle_root/macos" -maxdepth 1 -name '*.app' -print -quit)"
+          dmg_path="$(find "$bundle_root/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$app_path"
+          test -n "$dmg_path"
+
+          bundle_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
+          minimum_system="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
+          test "$minimum_system" = "11.0"
+          file "$app_path/Contents/MacOS/$bundle_executable" | grep -q 'arm64'
+          runtime_path="$(find "$app_path/Contents" -type f -name 'open-publisher-agent-runtime*' -print -quit)"
+          test -n "$runtime_path"
+          file "$runtime_path" | grep -q 'arm64'
+
+          mkdir -p release-output
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          cp "$dmg_path" "release-output/Gaoliu-${version}-macOS-arm64.dmg"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-output/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release Draft
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: release-artifacts
+        run: sha256sum * > SHA256SUMS
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 稿流 ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/*.exe
+            release-artifacts/*.dmg
+            release-artifacts/SHA256SUMS

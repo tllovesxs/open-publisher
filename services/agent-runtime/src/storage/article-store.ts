@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type {
   ArticlePatchRequestV2,
+  ArticleRevisionDetailV2,
+  ArticleRevisionSummaryV2,
   ArticleWriteRequestV2,
 } from "@open-publisher/contracts";
 
@@ -25,6 +28,11 @@ interface PendingArticleCommit {
   state: ArticleFileState;
 }
 
+interface StoredRevisionMetadata extends ArticleFileState {
+  parentRevisionId: string | null;
+  reason: string;
+}
+
 export class ArticleConflictError extends Error {
   readonly code = "ARTICLE_CONFLICT";
 }
@@ -33,6 +41,32 @@ const ARTICLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
 const hashMarkdown = (markdown: string): `sha256:${string}` =>
   `sha256:${createHash("sha256").update(markdown, "utf8").digest("hex")}`;
+
+const TRANSIENT_WINDOWS_FILE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
+
+type RenameFile = (source: string, destination: string) => Promise<void>;
+type Wait = (milliseconds: number) => Promise<unknown>;
+
+export const replaceFileWithRetry = async (
+  source: string,
+  destination: string,
+  renameFile: RenameFile = rename,
+  wait: Wait = delay,
+): Promise<void> => {
+  const maximumAttempts = 8;
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    try {
+      await renameFile(source, destination);
+      return;
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !TRANSIENT_WINDOWS_FILE_ERRORS.has(code) || attempt === maximumAttempts - 1) {
+        throw error;
+      }
+      await wait(Math.min(25 * (2 ** attempt), 800));
+    }
+  }
+};
 
 const atomicWrite = async (path: string, content: string): Promise<void> => {
   await mkdir(dirname(path), { recursive: true });
@@ -47,7 +81,10 @@ const atomicWrite = async (path: string, content: string): Promise<void> => {
     } finally {
       await handle.close();
     }
-    await rename(temporaryPath, path);
+    // Windows indexers and antivirus scanners can briefly hold the destination
+    // after a prior checkpoint. Preserve atomic replacement while waiting for
+    // that transient handle to be released.
+    await replaceFileWithRetry(temporaryPath, path);
     written = true;
   } finally {
     if (!written) {
@@ -61,6 +98,12 @@ const atomicWrite = async (path: string, content: string): Promise<void> => {
 const assertArticleId = (articleId: string): void => {
   if (!ARTICLE_ID_PATTERN.test(articleId)) {
     throw new Error("articleId contains unsupported path characters");
+  }
+};
+
+const assertRevisionId = (revisionId: string): void => {
+  if (!ARTICLE_ID_PATTERN.test(revisionId)) {
+    throw new Error("revisionId contains unsupported path characters");
   }
 };
 
@@ -120,6 +163,47 @@ export class ArticleStore {
   async commit(request: ArticleWriteRequestV2): Promise<StoredArticle> {
     assertArticleId(request.articleId);
     return this.withArticleLock(request.articleId, () => this.commitUnlocked(request));
+  }
+
+  async listRevisions(articleId: string): Promise<ArticleRevisionSummaryV2[]> {
+    assertArticleId(articleId);
+    return this.withArticleLock(articleId, () => this.listRevisionsUnlocked(articleId));
+  }
+
+  async readRevision(
+    articleId: string,
+    revisionId: string,
+  ): Promise<ArticleRevisionDetailV2 | null> {
+    assertArticleId(articleId);
+    assertRevisionId(revisionId);
+    return this.withArticleLock(articleId, () =>
+      this.readRevisionUnlocked(articleId, revisionId),
+    );
+  }
+
+  async restoreRevision(
+    articleId: string,
+    revisionId: string,
+  ): Promise<ArticleRevisionDetailV2 | null> {
+    assertArticleId(articleId);
+    assertRevisionId(revisionId);
+    return this.withArticleLock(articleId, async () => {
+      const [current, target] = await Promise.all([
+        this.readUnlocked(articleId),
+        this.readRevisionUnlocked(articleId, revisionId),
+      ]);
+      if (!current || !target) return null;
+      const restored = await this.commitUnlocked({
+        schemaVersion: "2",
+        articleId,
+        baseRevisionId: current.currentRevisionId,
+        baseContentHash: current.contentHash,
+        title: target.title,
+        markdown: target.markdown,
+        reason: `restore:${revisionId}`,
+      });
+      return this.readRevisionUnlocked(articleId, restored.currentRevisionId);
+    });
   }
 
   async applyPatch(request: ArticlePatchRequestV2): Promise<StoredArticle> {
@@ -190,6 +274,98 @@ export class ArticleStore {
       }
       throw error;
     }
+  }
+
+  private async listRevisionsUnlocked(articleId: string): Promise<ArticleRevisionSummaryV2[]> {
+    const current = await this.readUnlocked(articleId);
+    if (!current) return [];
+    const directory = join(this.articleDirectory(articleId), "revisions");
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    const metadata = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map(async (entry) => {
+          const value = JSON.parse(await readFile(join(directory, entry.name), "utf8")) as
+            Partial<StoredRevisionMetadata>;
+          if (
+            value.schemaVersion !== "2" ||
+            value.articleId !== articleId ||
+            typeof value.currentRevisionId !== "string" ||
+            !ARTICLE_ID_PATTERN.test(value.currentRevisionId) ||
+            typeof value.title !== "string" ||
+            typeof value.contentHash !== "string" ||
+            !/^sha256:[a-f0-9]{64}$/.test(value.contentHash) ||
+            typeof value.updatedAt !== "string"
+          ) {
+            throw new Error(`Invalid article revision metadata in ${join(directory, entry.name)}`);
+          }
+          return {
+            ...value,
+            parentRevisionId: typeof value.parentRevisionId === "string"
+              ? value.parentRevisionId
+              : null,
+            reason: typeof value.reason === "string" && value.reason.trim()
+              ? value.reason
+              : "legacy-import",
+          } as StoredRevisionMetadata;
+        }),
+    );
+    const metadataById = new Map(metadata.map((revision) => [revision.currentRevisionId, revision]));
+    const newestFirst: StoredRevisionMetadata[] = [];
+    const visited = new Set<string>();
+    let cursor: string | null = current.currentRevisionId;
+    while (cursor && !visited.has(cursor)) {
+      const revision = metadataById.get(cursor);
+      if (!revision) break;
+      newestFirst.push(revision);
+      visited.add(cursor);
+      cursor = revision.parentRevisionId;
+    }
+    // Normal ArticleStore writes form one immutable parent chain. Retain a
+    // deterministic timestamp fallback for legacy or manually recovered data
+    // that contains an orphan, but never let same-millisecond saves scramble a
+    // healthy chain's revision numbers.
+    const chronological = newestFirst.length === metadata.length
+      ? newestFirst.reverse()
+      : metadata.sort((left, right) =>
+          left.updatedAt.localeCompare(right.updatedAt) ||
+          left.currentRevisionId.localeCompare(right.currentRevisionId),
+        );
+    return chronological
+      .map((revision, index): ArticleRevisionSummaryV2 => ({
+        schemaVersion: "2",
+        articleId,
+        revisionId: revision.currentRevisionId,
+        revisionNumber: index + 1,
+        parentRevisionId: revision.parentRevisionId,
+        title: revision.title,
+        contentHash: revision.contentHash,
+        createdAt: revision.updatedAt,
+        reason: revision.reason,
+        isCurrent: revision.currentRevisionId === current.currentRevisionId,
+      }))
+      .reverse();
+  }
+
+  private async readRevisionUnlocked(
+    articleId: string,
+    revisionId: string,
+  ): Promise<ArticleRevisionDetailV2 | null> {
+    const summary = (await this.listRevisionsUnlocked(articleId)).find(
+      (candidate) => candidate.revisionId === revisionId,
+    );
+    if (!summary) return null;
+    const markdown = await readFile(
+      join(this.articleDirectory(articleId), "revisions", `${encodeURIComponent(revisionId)}.md`),
+      "utf8",
+    );
+    if (hashMarkdown(markdown) !== summary.contentHash) {
+      throw new Error(`Article revision checksum does not match for ${revisionId}`);
+    }
+    return { ...summary, markdown };
   }
 
   private async commitUnlocked(request: ArticleWriteRequestV2): Promise<StoredArticle> {
