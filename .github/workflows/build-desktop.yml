@@ -80,7 +80,8 @@ jobs:
         run: node scripts/check_release_version.mjs
 
       - name: Build desktop installer
-        run: node apps/desktop/node_modules/@tauri-apps/cli/tauri.js build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
+        working-directory: apps/desktop
+        run: node node_modules/@tauri-apps/cli/tauri.js build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
 
       - name: Verify and prepare Windows installer
         if: runner.os == 'Windows'
