@@ -69,12 +69,17 @@ import {
   type RunWorkflowSummary,
   type StoredArticleSummary,
 } from "./lib/desktopBridge";
-import { generatedMediaAssetId, mediaMarkdownReference } from "./lib/mediaReferences";
+import {
+  generatedMediaAssetId,
+  mediaMarkdownReference,
+  publishMediaSourcesForMarkdown,
+} from "./lib/mediaReferences";
 import {
   promptImageAttachmentFromAsset,
   type PromptImageAttachment,
   type PromptImageIntent,
 } from "./lib/imageAttachments";
+import { resolveCreationTaskMode } from "./lib/creationIntent";
 import {
   loadMediaAssetsFromDatabase,
   saveMediaAssetsToDatabase,
@@ -134,6 +139,7 @@ interface PersistedFailedCreationContext {
     disabledNodeIds: DisabledOptionalNodeId[];
     imagePlan: CreationRequest["imagePlan"];
     webSearchMode: CreationRequest["webSearchMode"];
+    taskMode: NonNullable<CreationRequest["taskMode"]>;
     templateId: string | null;
     imageAssetIds: string[];
     inputImages: PromptImageReference[];
@@ -194,6 +200,8 @@ interface WriterSourceFence extends ArticleSourceSnapshot {
 
 const CREATION_ACTIVITY_STORAGE_KEY = "open-publisher-creation-activity";
 const FAILED_CREATION_STORAGE_KEY = "open-publisher-failed-creation";
+const CREATION_ACTIVITIES_STORAGE_KEY = "open-publisher-creation-activities-v2";
+const FAILED_CREATION_CONTEXTS_STORAGE_KEY = "open-publisher-failed-creations-v2";
 const TEMPLATES_STORAGE_KEY = "open-publisher-studio-templates";
 const MEDIA_STORAGE_KEY = "open-publisher-studio-media";
 const SELECTED_TEMPLATE_STORAGE_KEY = "open-publisher-studio-selected-template";
@@ -375,6 +383,7 @@ export function persistedFailedCreationContext(
         ),
       },
       webSearchMode: request.webSearchMode,
+      taskMode: resolveCreationTaskMode(request),
       templateId: context.templateId,
       imageAssetIds: context.imageAssetIds.slice(0, 16),
       inputImages: context.inputImageReferences.slice(0, 6),
@@ -668,8 +677,12 @@ function uniqueMediaAssets(assets: readonly MediaAsset[]) {
  * in the article.
  */
 function uniqueCreationVisualAssets(request: CreationRequest) {
+  const taskMode = resolveCreationTaskMode(request);
   const attached = request.inputImages
-    .filter((attachment) => attachment.intent !== "analyze")
+    .filter((attachment) => (
+      attachment.intent !== "analyze" &&
+      !(taskMode === "transform" && attachment.intent === "auto")
+    ))
     .map((attachment) => attachment.asset);
   return uniqueMediaAssets([...attached, ...request.imageAssets]).slice(0, 6);
 }
@@ -708,7 +721,6 @@ export function visualCompositionFromCreation(
       ? [
           asset.visualDescription?.trim() && `图片内容：${asset.visualDescription.trim()}`,
           asset.usageHint?.trim() && `使用场景：${asset.usageHint.trim()}`,
-          asset.generationPrompt?.trim() && `生成提示词：${asset.generationPrompt.trim()}`,
           asset.tags && asset.tags.length > 0 && `标签：${asset.tags.join("、")}`,
         ].filter(Boolean).join("\n")
       : asset.description;
@@ -940,37 +952,43 @@ function workflowAgentLabel(
   );
 }
 
+function normalizeCreationActivity(value: unknown): CreationActivity | null {
+  if (!value || typeof value !== "object") return null;
+  const stored = value as CreationActivity;
+  if (
+    !["running", "succeeded", "failed"].includes(stored.status) ||
+    !Array.isArray(stored.logs) ||
+    !Array.isArray(stored.agentLabels) ||
+    typeof stored.startedAt !== "number"
+  ) return null;
+  if (stored.status !== "running") return stored;
+  return {
+    ...stored,
+    status: "failed",
+    phase: "上次生成未正常结束",
+    elapsedSeconds: Math.max(
+      stored.elapsedSeconds || 0,
+      Math.round((Date.now() - stored.startedAt) / 1000),
+    ),
+    error: "应用上次关闭时工作流仍在执行，请重新提交创作要求。",
+    retryable: false,
+    logs: [
+      ...stored.logs,
+      activityLog("interrupted", "检测到上次生成会话已中断", "error"),
+    ],
+  };
+}
+
 function loadCreationActivity(): CreationActivity | null {
   try {
     const raw = window.localStorage.getItem(CREATION_ACTIVITY_STORAGE_KEY);
-    if (!raw) return null;
-    const stored = JSON.parse(raw) as CreationActivity;
-    if (!Array.isArray(stored.logs) || !Array.isArray(stored.agentLabels)) return null;
-    if (stored.status === "running") {
-      return {
-        ...stored,
-        status: "failed",
-        phase: "上次生成未正常结束",
-        elapsedSeconds: Math.max(
-          stored.elapsedSeconds || 0,
-          Math.round((Date.now() - stored.startedAt) / 1000),
-        ),
-        error: "应用上次关闭时工作流仍在执行，请重新提交创作要求。",
-        retryable: false,
-        logs: [
-          ...stored.logs,
-          activityLog("interrupted", "检测到上次生成会话已中断", "error"),
-        ],
-      };
-    }
-    return stored;
+    return raw ? normalizeCreationActivity(JSON.parse(raw)) : null;
   } catch {
     return null;
   }
 }
 
-function loadFailedCreationContext(): FailedCreationContext | null {
-  const stored = loadStudioValue<unknown>(FAILED_CREATION_STORAGE_KEY, null);
+function failedCreationContextFromStored(stored: unknown): FailedCreationContext | null {
   if (!stored || typeof stored !== "object") return null;
   const context = stored as Partial<PersistedFailedCreationContext>;
   const request = context.request;
@@ -1019,6 +1037,13 @@ function loadFailedCreationContext(): FailedCreationContext | null {
       inputImages: [],
       imagePlan,
       webSearchMode,
+      taskMode: candidate.taskMode === "transform" || candidate.taskMode === "create"
+        ? candidate.taskMode
+        : resolveCreationTaskMode({
+            topic: recoveryString(candidate.topic),
+            references: recoveryReferences(candidate.references),
+            inputImages: promptImageReferences(candidate.inputImages),
+          }),
     },
     templateId: typeof candidate.templateId === "string" ? candidate.templateId : null,
     imageAssetIds: Array.isArray(candidate.imageAssetIds)
@@ -1026,6 +1051,45 @@ function loadFailedCreationContext(): FailedCreationContext | null {
       : [],
     inputImageReferences: promptImageReferences(candidate.inputImages),
   };
+}
+
+function loadFailedCreationContext(): FailedCreationContext | null {
+  return failedCreationContextFromStored(
+    loadStudioValue<unknown>(FAILED_CREATION_STORAGE_KEY, null),
+  );
+}
+
+function loadFailedCreationContexts(): Record<string, FailedCreationContext> {
+  const stored = loadStudioValue<unknown>(FAILED_CREATION_CONTEXTS_STORAGE_KEY, null);
+  if (stored && typeof stored === "object") {
+    const contexts = Object.fromEntries(
+      Object.entries(stored).flatMap(([articleId, value]) => {
+        const context = failedCreationContextFromStored(value);
+        return context && context.articleId === articleId ? [[articleId, context]] : [];
+      }),
+    );
+    if (Object.keys(contexts).length > 0) return contexts;
+  }
+  const legacy = loadFailedCreationContext();
+  return legacy ? { [legacy.articleId]: legacy } : {};
+}
+
+function loadCreationActivities(): Record<string, CreationActivity> {
+  const stored = loadStudioValue<unknown>(CREATION_ACTIVITIES_STORAGE_KEY, null);
+  if (stored && typeof stored === "object") {
+    const activities = Object.fromEntries(
+      Object.entries(stored).flatMap(([articleId, value]) => {
+        const activity = normalizeCreationActivity(value);
+        return activity ? [[articleId, activity]] : [];
+      }),
+    );
+    if (Object.keys(activities).length > 0) return activities;
+  }
+  const legacyActivity = loadCreationActivity();
+  const legacyContext = loadFailedCreationContext();
+  return legacyActivity && legacyContext
+    ? { [legacyContext.articleId]: legacyActivity }
+    : {};
 }
 
 function preferredTheme(): Theme {
@@ -1111,6 +1175,32 @@ function highFidelityReferenceBlock(template: MarkdownTemplate) {
 
 export function buildCreationSeed(request: CreationRequest) {
   const title = request.title || request.topic;
+  const taskMode = resolveCreationTaskMode(request);
+  if (taskMode === "transform") {
+    const source = request.references.trim()
+      ? request.references.trim()
+      : request.inputImages.length > 0
+        ? "原始内容位于用户附图中。先忠实读取图片内可见文字；无法可靠识别的部分不要猜测补齐。"
+        : "用户通过当前上下文提供了待加工内容。";
+    return `# ${title}
+
+## 用户当前指令
+
+${request.topic}
+
+## 任务模式：现有内容加工（内部规则，不要原样输出）
+
+- 用户当前指令具有最高优先级。模板、文风、篇幅、联网和配图数量只是默认设置，不得改变任务性质。
+- 如果指令只要求增加 Markdown 格式或调整排版，必须保留原文事实、信息范围、表达重点和大致顺序；只做必要的标题、段落、列表、表格、引用和代码格式整理。
+- 不得扩写成新的产品推广文章，不得新增背景知识、功能推断、使用建议、接入步骤、总结或“资料未说明”等审稿说明，除非用户明确要求。
+- 附图可能承载待加工原文。只把清晰可见的文字作为原文；不得把截图中的主题扩写成一篇新文章。
+- 配图由后续视觉流程负责。正文不得输出素材 ID、文件路径说明、图片占位符、“配图说明”或内部处理过程。
+- 输出只包含加工完成的 Markdown 成品。
+
+## 待加工原文
+
+${source}`.trim();
+  }
   const referenceBlock = request.template ? highFidelityReferenceBlock(request.template) : "";
   const referenceNotes = request.references
     ? `\n\n## 参考资料\n\n${request.references}`
@@ -1159,6 +1249,28 @@ ${request.template.mode === "reference" ? "- 本次参考文章只属于‘表�
 ${evidenceRules}
 ${referenceNotes}${productPromotionRules}${template}${referenceBlock ? `\n\n${referenceBlock}` : ""}`.trim();
   return seed;
+}
+
+export function buildCreationWriterPrompt(request: CreationRequest) {
+  const taskMode = resolveCreationTaskMode(request);
+  if (taskMode === "transform") {
+    return [
+      "请严格按照用户当前指令加工已经提供的内容，并输出完整 Markdown 成品。",
+      "当前用户指令高于页面中的模板、文风、篇幅、联网和配图预设。",
+      "若用户只要求增加 Markdown 格式，不得扩写、续写、补充常识或改造成产品推广文章。",
+      "原文位于附图时，忠实读取清晰可见文字；识别不清的内容不要猜测。",
+      "图片由后续视觉流程处理，不要输出素材 ID、图片路径说明、占位符或处理过程。",
+      "",
+      buildCreationSeed(request),
+    ].join("\n");
+  }
+  return [
+    "请根据下面的创作简报写一篇可直接发布的完整中文 Markdown 文章。",
+    "不要把“创作要求”“写作模板规范”等内部说明原样写进正文。",
+    "资料不足以支撑具名项目功能、数据或案例时，明确保持克制，不得自行发明。",
+    "",
+    buildCreationSeed(request),
+  ].join("\n");
 }
 
 function renderFixedBlock(content: string, article: Article, request: CreationRequest) {
@@ -1391,7 +1503,7 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [revisionIds, setRevisionIds] = useState<Record<string, string>>({});
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
-  const [saving, setSaving] = useState(false);
+  const [savingArticleIds, setSavingArticleIds] = useState<Set<string>>(new Set());
   // State updates are asynchronous. These refs are the serialization source
   // for local revisions, so a queued write always bases itself on the revision
   // committed immediately before it rather than on a stale render closure.
@@ -1403,10 +1515,16 @@ export default function App() {
   const articleEditVersionRef = useRef<Record<string, number>>({});
   const writerSourceFenceRef = useRef<Record<string, WriterSourceFence>>({});
   const revisionSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
-  const activeRevisionSaveCountRef = useRef(0);
-  const [workflowRunning, setWorkflowRunning] = useState(false);
-  const [cancellingWorkflow, setCancellingWorkflow] = useState(false);
-  const [creatingArticle, setCreatingArticle] = useState(false);
+  const activeRevisionSaveCountsRef = useRef<Record<string, number>>({});
+  const [activeWorkflowArticleIds, setActiveWorkflowArticleIds] = useState<Set<string>>(new Set());
+  const activeWorkflowArticleIdsRef = useRef(new Set<string>());
+  const [cancellingWorkflowArticleIds, setCancellingWorkflowArticleIds] = useState<Set<string>>(new Set());
+  const [activeCreationArticleIds, setActiveCreationArticleIds] = useState<Set<string>>(new Set());
+  const workflowRunning = selectedArticleId ? activeWorkflowArticleIds.has(selectedArticleId) : false;
+  const saving = selectedArticleId ? savingArticleIds.has(selectedArticleId) : false;
+  const cancellingWorkflow = selectedArticleId
+    ? cancellingWorkflowArticleIds.has(selectedArticleId)
+    : false;
   const [editorMode, setEditorMode] = useState<EditorMode>(() => {
     const stored = loadStudioValue<unknown>(EDITOR_MODE_STORAGE_KEY, "split");
     return stored === "edit" || stored === "split" || stored === "preview" ? stored : "split";
@@ -1424,7 +1542,11 @@ export default function App() {
     return new Set(Array.isArray(stored) ? stored.filter(isOptionalWorkflowNodeId) : defaultDisabled);
   });
   const [generatedImages, setGeneratedImages] = useState<Record<string, number>>({});
-  const [generatingImage, setGeneratingImage] = useState(false);
+  const [generatingImageArticleIds, setGeneratingImageArticleIds] = useState<Set<string>>(new Set());
+  const generatingImageArticleIdsRef = useRef(new Set<string>());
+  const generatingImage = selectedArticleId
+    ? generatingImageArticleIds.has(selectedArticleId)
+    : false;
   const [publishTargets, setPublishTargets] = useState<Set<PlatformId>>(
     () => new Set(["wechat", "csdn"]),
   );
@@ -1453,10 +1575,10 @@ export default function App() {
   const [publisherBridgeError, setPublisherBridgeError] = useState<string | null>(null);
   const [settingsInitialTab, setSettingsInitialTab] = useState<"models" | "accounts">("models");
   const lastKnownWechatSyncStatus = useRef<WechatSyncBridgeStatus | null>(null);
-  const [creationActivity, setCreationActivity] =
-    useState<CreationActivity | null>(loadCreationActivity);
-  const [failedCreationContext, setFailedCreationContext] =
-    useState<FailedCreationContext | null>(loadFailedCreationContext);
+  const [creationActivities, setCreationActivities] =
+    useState<Record<string, CreationActivity>>(loadCreationActivities);
+  const [failedCreationContexts, setFailedCreationContexts] =
+    useState<Record<string, FailedCreationContext>>(loadFailedCreationContexts);
   const [workflowWorkspaces, setWorkflowWorkspaces] =
     useState<Record<string, WorkflowWorkspaceSnapshot>>(loadWorkflowWorkspaces);
   const [toast, setToast] = useState<string | null>(null);
@@ -1487,25 +1609,23 @@ export default function App() {
   const writerTypewriterQueueRef = useRef<Record<string, WriterTypewriterQueue>>({});
   const writerTypewriterTimersRef = useRef<Record<string, number | undefined>>({});
   const writerDraftCompletedRef = useRef(new Set<string>());
-  const [writerStreamingArticleId, setWriterStreamingArticleId] = useState<string | null>(null);
-  const [articleProgress, setArticleProgress] = useState<ArticleProgress | null>(null);
-  const [articleContentReplacing, setArticleContentReplacing] = useState(false);
+  const [writerStreamingArticleIds, setWriterStreamingArticleIds] = useState<Set<string>>(new Set());
+  const [articleProgressById, setArticleProgressById] = useState<Record<string, ArticleProgress>>({});
+  const [articleContentReplacingIds, setArticleContentReplacingIds] = useState<Set<string>>(new Set());
   const [visualConfirmation, setVisualConfirmation] = useState<VisualConfirmationState | null>(null);
+  const visualConfirmationRef = useRef<VisualConfirmationState | null>(null);
   const [cachedVisualPlans, setCachedVisualPlans] = useState<Record<string, CachedVisualPlan>>({});
   const [visualPlanRegenerating, setVisualPlanRegenerating] = useState(false);
   const [rewriteUndoArticleId, setRewriteUndoArticleId] = useState<string | null>(null);
   const rewriteUndoRef = useRef<Record<string, { before: string; after: string }>>({});
   const lastWorkflowActivityAt = useRef(Date.now());
   const workflowExecutionSequenceRef = useRef(0);
-  const activeWorkflowExecutionRef = useRef<{ articleId: string; id: number } | null>(null);
-  const activeCreationRequestRef = useRef<FailedCreationContext | null>(null);
-  const activePiRunRef = useRef<{ articleId: string; runId: string } | null>(null);
-  const activePiRewriteRequestRef = useRef<{ articleId: string; requestId: string } | null>(null);
-  const activePiRewriteRunRef = useRef<{
-    articleId: string;
-    requestId: string;
-    runId: string;
-  } | null>(null);
+  const activeWorkflowExecutionsRef = useRef(new Map<string, number>());
+  const activeCreationRequestsRef = useRef(new Map<string, FailedCreationContext>());
+  const activePiRunsRef = useRef(new Map<string, string>());
+  const activePiRewriteRequestsRef = useRef(new Map<string, string>());
+  const activePiRewriteRunsRef = useRef(new Map<string, { requestId: string; runId: string }>());
+  const visualConfirmationQueueRef = useRef<VisualConfirmationState[]>([]);
   // Visual planning, image rendering, and template extraction do not create a
   // durable Pi Run. Track their scoped runtime operation ids separately so
   // Stop cancels the actual provider request rather than only hiding its UI.
@@ -1614,22 +1734,73 @@ export default function App() {
     requestId: string,
     runId: string,
   ) => {
-    const pending = activePiRewriteRequestRef.current;
-    if (!pending || pending.articleId !== articleId || pending.requestId !== requestId) {
+    if (activePiRewriteRequestsRef.current.get(articleId) !== requestId) {
       return;
     }
-    activePiRewriteRunRef.current = { articleId, requestId, runId };
+    activePiRewriteRunsRef.current.set(articleId, { requestId, runId });
+  };
+
+  const setWorkflowArticleActive = (articleId: string, active: boolean) => {
+    const next = new Set(activeWorkflowArticleIdsRef.current);
+    if (active) next.add(articleId);
+    else next.delete(articleId);
+    activeWorkflowArticleIdsRef.current = next;
+    setActiveWorkflowArticleIds(next);
+  };
+
+  const setCreationArticleActive = (articleId: string, active: boolean) => {
+    setActiveCreationArticleIds((current) => {
+      const next = new Set(current);
+      if (active) next.add(articleId);
+      else next.delete(articleId);
+      return next;
+    });
+  };
+
+  const setArticleGeneratingImage = (articleId: string, generating: boolean) => {
+    const next = new Set(generatingImageArticleIdsRef.current);
+    if (generating) next.add(articleId);
+    else next.delete(articleId);
+    generatingImageArticleIdsRef.current = next;
+    setGeneratingImageArticleIds(next);
+  };
+
+  const setWorkflowArticleCancelling = (articleId: string, cancelling: boolean) => {
+    setCancellingWorkflowArticleIds((current) => {
+      const next = new Set(current);
+      if (cancelling) next.add(articleId);
+      else next.delete(articleId);
+      return next;
+    });
+  };
+
+  const setArticleReplacing = (articleId: string, replacing: boolean) => {
+    setArticleContentReplacingIds((current) => {
+      const next = new Set(current);
+      if (replacing) next.add(articleId);
+      else next.delete(articleId);
+      return next;
+    });
+  };
+
+  const setArticleStreaming = (articleId: string, streaming: boolean) => {
+    setWriterStreamingArticleIds((current) => {
+      const next = new Set(current);
+      if (streaming) next.add(articleId);
+      else next.delete(articleId);
+      return next;
+    });
   };
 
   const beginWorkflowExecution = (articleId: string) => {
     const id = ++workflowExecutionSequenceRef.current;
-    activeWorkflowExecutionRef.current = { articleId, id };
+    activeWorkflowExecutionsRef.current.set(articleId, id);
+    setWorkflowArticleActive(articleId, true);
     return id;
   };
 
   const isWorkflowExecutionCurrent = (articleId: string, id: number) =>
-    activeWorkflowExecutionRef.current?.articleId === articleId &&
-    activeWorkflowExecutionRef.current.id === id;
+    activeWorkflowExecutionsRef.current.get(articleId) === id;
 
   const ensureWorkflowExecutionCurrent = (articleId: string, id: number) => {
     if (!isWorkflowExecutionCurrent(articleId, id)) {
@@ -1639,12 +1810,37 @@ export default function App() {
 
   const finishWorkflowExecution = (articleId: string, id: number) => {
     if (!isWorkflowExecutionCurrent(articleId, id)) return false;
-    activeWorkflowExecutionRef.current = null;
+    activeWorkflowExecutionsRef.current.delete(articleId);
+    setWorkflowArticleActive(articleId, false);
     return true;
   };
 
   const showArticleProgress = (progress: ArticleProgress) => {
-    setArticleProgress(progress);
+    setArticleProgressById((current) => ({ ...current, [progress.articleId]: progress }));
+  };
+
+  const clearArticleProgress = (articleId: string) => {
+    setArticleProgressById((current) => {
+      if (!(articleId in current)) return current;
+      const next = { ...current };
+      delete next[articleId];
+      return next;
+    });
+  };
+
+  const displayVisualConfirmation = (pending: VisualConfirmationState | null) => {
+    visualConfirmationRef.current = pending;
+    setVisualConfirmation(pending);
+  };
+
+  const enqueueVisualConfirmation = (pending: VisualConfirmationState) => {
+    if (!visualConfirmationRef.current) {
+      displayVisualConfirmation(pending);
+      return;
+    }
+    const duplicate = visualConfirmationQueueRef.current.some((candidate) =>
+      candidate.articleId === pending.articleId && candidate.createdAt === pending.createdAt);
+    if (!duplicate) visualConfirmationQueueRef.current.push(pending);
   };
 
   const requestVisualConfirmation = (
@@ -1670,14 +1866,28 @@ export default function App() {
     setCachedVisualPlans((current) => ({ ...current, [articleId]: cached }));
     if (!plan.needsConfirmation) return Promise.resolve(plan);
     return new Promise<VisualCompositionPlanSummary | null>((resolve) => {
-      setVisualConfirmation({ ...cached, stale: false, resolve });
+      const pending = { ...cached, stale: false, resolve };
+      enqueueVisualConfirmation(pending);
     });
   };
 
   const resolveVisualConfirmation = (plan: VisualCompositionPlanSummary | null) => {
-    const pending = visualConfirmation;
-    setVisualConfirmation(null);
+    const pending = visualConfirmationRef.current;
     pending?.resolve?.(plan);
+    displayVisualConfirmation(visualConfirmationQueueRef.current.shift() ?? null);
+  };
+
+  const cancelVisualConfirmation = (articleId: string) => {
+    const pending = visualConfirmationRef.current;
+    if (pending?.articleId === articleId) {
+      resolveVisualConfirmation(null);
+    }
+    const queued = visualConfirmationQueueRef.current;
+    visualConfirmationQueueRef.current = queued.filter((candidate) => {
+      if (candidate.articleId !== articleId) return true;
+      candidate.resolve?.(null);
+      return false;
+    });
   };
 
   const beginWorkflowWorkspace = (articleId: string) => {
@@ -1798,7 +2008,7 @@ export default function App() {
       currentMarkdown !== visualConfirmation.sourceMarkdown ||
       revisionIds[visualConfirmation.articleId] !== visualConfirmation.sourceRevisionId;
     if (stale !== visualConfirmation.stale) {
-      setVisualConfirmation((current) => current ? { ...current, stale } : current);
+      displayVisualConfirmation({ ...visualConfirmation, stale });
     }
   }, [currentMarkdown, dirty, revisionIds, selectedArticle?.id, visualConfirmation]);
   const selectedTemplate =
@@ -1984,29 +2194,33 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => {
-    if (!creationActivity) {
-      removeStudioValue(CREATION_ACTIVITY_STORAGE_KEY);
+    if (Object.keys(creationActivities).length === 0) {
+      removeStudioValue(CREATION_ACTIVITIES_STORAGE_KEY);
       return;
     }
-    replaceStudioValue(
-      CREATION_ACTIVITY_STORAGE_KEY,
-      creationActivity,
-    );
-  }, [creationActivity]);
+    replaceStudioValue(CREATION_ACTIVITIES_STORAGE_KEY, creationActivities);
+    removeStudioValue(CREATION_ACTIVITY_STORAGE_KEY);
+  }, [creationActivities]);
 
   useEffect(() => {
-    if (!failedCreationContext) {
-      removeStudioValue(FAILED_CREATION_STORAGE_KEY);
+    if (Object.keys(failedCreationContexts).length === 0) {
+      removeStudioValue(FAILED_CREATION_CONTEXTS_STORAGE_KEY);
       return;
     }
     const persisted = replaceStudioValue(
-      FAILED_CREATION_STORAGE_KEY,
-      persistedFailedCreationContext(failedCreationContext),
+      FAILED_CREATION_CONTEXTS_STORAGE_KEY,
+      Object.fromEntries(
+        Object.entries(failedCreationContexts).map(([articleId, context]) => [
+          articleId,
+          persistedFailedCreationContext(context),
+        ]),
+      ),
     );
     if (!persisted) {
       setToast("失败记录未写入浏览器缓存；当前文章和本次重试仍可用。");
     }
-  }, [failedCreationContext]);
+    removeStudioValue(FAILED_CREATION_STORAGE_KEY);
+  }, [failedCreationContexts]);
 
   useEffect(() => {
     if (!replaceStudioValue(TEMPLATES_STORAGE_KEY, templates)) {
@@ -2127,26 +2341,31 @@ export default function App() {
   }, [currentMarkdown, mediaAssets, selectedArticle]);
 
   useEffect(() => {
-    if (creationActivity?.status !== "running") return;
+    if (activeCreationArticleIds.size === 0) return;
     const interval = window.setInterval(() => {
-      setCreationActivity((current) => {
-        if (!current || current.status !== "running") return current;
-        const elapsedSeconds = Math.max(
-          current.elapsedSeconds,
-          Math.round((Date.now() - current.startedAt) / 1000),
-        );
-        return { ...current, elapsedSeconds };
+      setCreationActivities((current) => {
+        let changed = false;
+        const next = Object.fromEntries(Object.entries(current).map(([articleId, activity]) => {
+          if (activity.status !== "running") return [articleId, activity];
+          const elapsedSeconds = Math.max(
+            activity.elapsedSeconds,
+            Math.round((Date.now() - activity.startedAt) / 1000),
+          );
+          changed ||= elapsedSeconds !== activity.elapsedSeconds;
+          return [articleId, { ...activity, elapsedSeconds }];
+        }));
+        return changed ? next : current;
       });
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [creationActivity?.status, creationActivity?.startedAt]);
+  }, [activeCreationArticleIds.size]);
 
   const replaceArticleContent = (
     articleId: string,
     markdown: string,
     animate = true,
   ) => {
-    if (animate) setArticleContentReplacing(true);
+    if (animate) setArticleReplacing(articleId, true);
     // Keep the synchronous source fence in lockstep with the rendered state;
     // React may batch the following state update past an awaited Agent step.
     draftsRef.current = { ...draftsRef.current, [articleId]: markdown };
@@ -2168,7 +2387,7 @@ export default function App() {
           : article,
       ),
     );
-    if (animate) window.setTimeout(() => setArticleContentReplacing(false), 260);
+    if (animate) window.setTimeout(() => setArticleReplacing(articleId, false), 260);
   };
 
   const clearWriterTypewriter = (articleId: string, clearRendered = false) => {
@@ -2178,7 +2397,7 @@ export default function App() {
     delete writerTypewriterQueueRef.current[articleId];
     writerDraftCompletedRef.current.delete(articleId);
     if (clearRendered) delete writerStreamRef.current[articleId];
-    setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+    setArticleStreaming(articleId, false);
   };
 
   const completeWriterTypewriterIfDrained = (articleId: string) => {
@@ -2186,7 +2405,7 @@ export default function App() {
     if (queue && queue.nextIndex < queue.characters.length) return;
     if (!writerDraftCompletedRef.current.has(articleId)) return;
     writerDraftCompletedRef.current.delete(articleId);
-    setWriterStreamingArticleId((current) => (current === articleId ? null : current));
+    setArticleStreaming(articleId, false);
   };
 
   const waitForWriterTypewriterDrain = async (
@@ -2300,7 +2519,7 @@ export default function App() {
     lastWorkflowActivityAt.current = Date.now();
     if (event.eventType === "run.node_started" && event.nodeId === "draft") {
       clearWriterTypewriter(articleId, true);
-      setWriterStreamingArticleId(articleId);
+      setArticleStreaming(articleId, true);
       showArticleProgress({
         articleId,
         title: "正在撰写正文",
@@ -2353,14 +2572,14 @@ export default function App() {
       .some((owner) => owner === selectedArticle.id);
     if (hasWriterFence) {
       clearWriterTypewriter(selectedArticle.id);
-      const activeRun = activePiRunRef.current;
-      if (activeRun?.articleId === selectedArticle.id) {
+      const activeRunId = activePiRunsRef.current.get(selectedArticle.id);
+      if (activeRunId) {
         // Do not wait for the model loop to notice the stale local snapshot.
         // A manual keystroke means its pending commit must be aborted now;
         // the source fence below remains the final protection if the provider
         // has already produced a late response.
-        activePiRunRef.current = null;
-        void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+        activePiRunsRef.current.delete(selectedArticle.id);
+        void desktopBridge.stopPiRun(activeRunId).catch(() => undefined);
       }
     }
     if (hasWriterFence || hasArticleOperation) {
@@ -2480,8 +2699,9 @@ export default function App() {
     // them. Serialize writes per article and resolve the default base revision
     // inside the queue so each CAS write uses the latest committed revision.
     const previous = revisionSaveQueuesRef.current[articleId] ?? Promise.resolve();
-    activeRevisionSaveCountRef.current += 1;
-    setSaving(true);
+    activeRevisionSaveCountsRef.current[articleId] =
+      (activeRevisionSaveCountsRef.current[articleId] ?? 0) + 1;
+    setSavingArticleIds((current) => new Set(current).add(articleId));
     const operation = previous
       .catch(() => undefined)
       .then(async () => {
@@ -2561,11 +2781,20 @@ export default function App() {
       if (revisionSaveQueuesRef.current[articleId] === settled) {
         delete revisionSaveQueuesRef.current[articleId];
       }
-      activeRevisionSaveCountRef.current = Math.max(
+      const remaining = Math.max(
         0,
-        activeRevisionSaveCountRef.current - 1,
+        (activeRevisionSaveCountsRef.current[articleId] ?? 1) - 1,
       );
-      setSaving(activeRevisionSaveCountRef.current > 0);
+      if (remaining > 0) {
+        activeRevisionSaveCountsRef.current[articleId] = remaining;
+      } else {
+        delete activeRevisionSaveCountsRef.current[articleId];
+        setSavingArticleIds((current) => {
+          const next = new Set(current);
+          next.delete(articleId);
+          return next;
+        });
+      }
     }
   };
 
@@ -2632,20 +2861,24 @@ export default function App() {
   };
 
   const appendCreationActivity = (
+    articleId: string,
     phase: string,
     id: string,
     message: string,
     tone: CreationLogEntry["tone"] = "info",
   ) => {
-    setCreationActivity((current) =>
-      current && current.status === "running"
-        ? {
-            ...current,
-            phase,
-            logs: [...current.logs, activityLog(id, message, tone)],
-          }
-        : current,
-    );
+    setCreationActivities((current) => {
+      const activity = current[articleId];
+      if (!activity || activity.status !== "running") return current;
+      return {
+        ...current,
+        [articleId]: {
+          ...activity,
+          phase,
+          logs: [...activity.logs, activityLog(id, message, tone)],
+        },
+      };
+    });
   };
 
   const composeVisualPlan = async (
@@ -2674,6 +2907,7 @@ export default function App() {
     }
 
     appendCreationActivity(
+      article.id,
       "正在按文章结构编排配图",
       `visual-plan-received-${startedAt}`,
       plan.targetCount > 0
@@ -2740,6 +2974,7 @@ export default function App() {
           throw new Error("视觉 Agent 未为缺失素材提供可执行的生图提示词。");
         }
         appendCreationActivity(
+          article.id,
           `正在生成配图 ${index + 1}/${plan.targetCount}`,
           `visual-generation-started-${startedAt}-${index}`,
           `正在从已保存的 ${placement.promptFile ?? "Prompt 文件"} 生成第 ${index + 1} 张配图`,
@@ -2779,6 +3014,7 @@ export default function App() {
         generatedAssets.push(asset);
         updateVisualProgress(`已完成配图 ${completedCount}/${plan.targetCount}`);
         appendCreationActivity(
+          article.id,
           `正在生成配图 ${index + 1}/${plan.targetCount}`,
           `visual-generation-completed-${startedAt}-${index}`,
           `第 ${index + 1} 张配图已生成并加入本机素材库`,
@@ -2804,6 +3040,7 @@ export default function App() {
       value: 92,
     });
     appendCreationActivity(
+      article.id,
       "正在保存含配图的文章",
       `visual-insertion-started-${startedAt}`,
       plan.targetCount > 0
@@ -2841,8 +3078,9 @@ export default function App() {
         ? { ...currentArticle, status: "review" }
         : currentArticle
     )));
-    setArticleContentReplacing(true);
+    setArticleReplacing(article.id, true);
     appendCreationActivity(
+      article.id,
       "配图已插入正文",
       `visual-insertion-completed-${startedAt}`,
       plan.targetCount > 0
@@ -2850,8 +3088,8 @@ export default function App() {
         : "文章已保存，未插入正文配图",
       "success",
     );
-    window.setTimeout(() => setArticleContentReplacing(false), 260);
-    setArticleProgress(null);
+    window.setTimeout(() => setArticleReplacing(article.id, false), 260);
+    clearArticleProgress(article.id);
     return {
       revisionId,
       revisionNumber: summary.outputRevisionNumber + 1,
@@ -2905,7 +3143,7 @@ export default function App() {
       mapped.draftDelta = typeof payload.delta === "string" ? payload.delta : "";
       if (payload.reset === true) {
         clearWriterTypewriter(articleId, true);
-        setWriterStreamingArticleId(articleId);
+        setArticleStreaming(articleId, true);
         replaceArticleContent(articleId, "", false);
       }
     } else if (event.type === "revision.committed") {
@@ -2939,6 +3177,7 @@ export default function App() {
 
     if (event.type === "article.checkpointed") {
       appendCreationActivity(
+        articleId,
         "正在保存文章",
         event.id,
         "Pi Runtime 已保存可恢复的工作稿检查点",
@@ -2954,6 +3193,7 @@ export default function App() {
             ? "写作 Agent 正在提交完整 Markdown 文章"
             : `写作 Agent 正在执行 ${runtimeToolName || "工具"}`;
       appendCreationActivity(
+        articleId,
         runtimeToolName === "local_project"
           ? "正在读取本地项目资料"
           : runtimeToolName === "github_repository"
@@ -2966,6 +3206,7 @@ export default function App() {
       );
     } else if (event.type === "tool.failed") {
       appendCreationActivity(
+        articleId,
         researchTool ? "资料工具未完成" : "写作工具未完成",
         event.id,
         `${runtimeToolName || "工具"} 执行失败；写作 Agent 将根据可用资料继续或进入重试。`,
@@ -2973,6 +3214,7 @@ export default function App() {
       );
     } else if (event.type === "tool.completed" && researchTool) {
       appendCreationActivity(
+        articleId,
         runtimeToolName === "local_project" ? "本地项目资料已整理" : "资料已整理",
         event.id,
         runtimeToolName === "local_project"
@@ -2982,6 +3224,7 @@ export default function App() {
       );
     } else if (event.type === "revision.committed") {
       appendCreationActivity(
+        articleId,
         "写作草稿已完成",
         event.id,
         "正在提交到本机文章库",
@@ -3048,38 +3291,45 @@ export default function App() {
     retrying = false,
   ) => {
     const startedAt = Date.now();
-    const previousLogs = retrying ? (creationActivity?.logs ?? []) : [];
+    const previousLogs = retrying ? (creationActivities[article.id]?.logs ?? []) : [];
     const agents = request.agentInstructions
       ?? buildWorkflowAgentInstructions(studioAgents, studioSkills);
     const executionId = beginWorkflowExecution(article.id);
-    activeCreationRequestRef.current = createFailedCreationContext(article.id, request);
-    setCreatingArticle(true);
-    setWorkflowRunning(true);
-    setFailedCreationContext(null);
-    const referenceSummary = localReferenceSummary(request.references);
-    setCreationActivity({
-      status: "running",
-      phase: referenceSummary ? "正在整理项目资料" : "正在准备创作",
-      startedAt,
-      elapsedSeconds: 0,
-      agentLabels: referenceSummary ? ["资料读取", "写作 Agent"] : ["写作 Agent"],
-      logs: [
-        ...previousLogs,
-        activityLog(
-          `pi-request-${startedAt}`,
-          retrying ? "正在重试本次创作" : "已提交创作要求",
-        ),
-        ...(referenceSummary
-          ? [activityLog(
-              `local-reference-${startedAt}`,
-              `已载入 ${referenceSummary}。写作 Agent 将以这些资料作为项目事实依据。`,
-              "success",
-            )]
-          : []),
-      ],
-      error: null,
-      retryable: false,
+    activeCreationRequestsRef.current.set(article.id, createFailedCreationContext(article.id, request));
+    setCreationArticleActive(article.id, true);
+    setFailedCreationContexts((current) => {
+      if (!(article.id in current)) return current;
+      const next = { ...current };
+      delete next[article.id];
+      return next;
     });
+    const referenceSummary = localReferenceSummary(request.references);
+    setCreationActivities((current) => ({
+      ...current,
+      [article.id]: {
+        status: "running",
+        phase: referenceSummary ? "正在整理项目资料" : "正在准备创作",
+        startedAt,
+        elapsedSeconds: 0,
+        agentLabels: referenceSummary ? ["资料读取", "写作 Agent"] : ["写作 Agent"],
+        logs: [
+          ...previousLogs,
+          activityLog(
+            `pi-request-${startedAt}`,
+            retrying ? "正在重试本次创作" : "已提交创作要求",
+          ),
+          ...(referenceSummary
+            ? [activityLog(
+                `local-reference-${startedAt}`,
+                `已载入 ${referenceSummary}。写作 Agent 将以这些资料作为项目事实依据。`,
+                "success",
+              )]
+            : []),
+        ],
+        error: null,
+        retryable: false,
+      },
+    }));
     beginWorkflowWorkspace(article.id);
     showArticleProgress({
       articleId: article.id,
@@ -3111,13 +3361,7 @@ export default function App() {
       ensureWorkflowExecutionCurrent(article.id, executionId);
       ensureWriterSourceCurrent(writerSource);
       setPiRuntime(runtimeSnapshot);
-      const prompt = [
-        "请根据下面的创作简报写一篇可直接发布的完整中文 Markdown 文章。",
-        "不要把“创作要求”“写作模板规范”等内部说明原样写进正文。",
-        "资料不足以支撑具名项目功能、数据或案例时，明确保持克制，不得自行发明。",
-        "",
-        buildCreationSeed(request),
-      ].join("\n");
+      const prompt = buildCreationWriterPrompt(request);
       const inputImageAttachments = promptImageAttachments(request.inputImages);
       const creationVisualComposition = visualCompositionFromCreation(request);
       const run = await desktopBridge.startPiArticleRun({
@@ -3128,15 +3372,21 @@ export default function App() {
       });
       ensureWorkflowExecutionCurrent(article.id, executionId);
       ensureWriterSourceCurrent(writerSource);
-      activePiRunRef.current = { articleId: article.id, runId: run.id };
-      setCreationActivity((current) => current ? {
-        ...current,
-        phase: "正在撰写文章",
-        logs: [
-          ...current.logs,
-          activityLog(`pi-run-${run.id}`, "写作任务已开始"),
-        ],
-      } : current);
+      activePiRunsRef.current.set(article.id, run.id);
+      setCreationActivities((current) => {
+        const activity = current[article.id];
+        return activity ? {
+          ...current,
+          [article.id]: {
+            ...activity,
+            phase: "正在撰写文章",
+            logs: [
+              ...activity.logs,
+              activityLog(`pi-run-${run.id}`, "写作任务已开始"),
+            ],
+          },
+        } : current;
+      });
 
       const completed = await waitForPiWriterRun(article.id, run, agents, executionId);
       ensureWorkflowExecutionCurrent(article.id, executionId);
@@ -3189,6 +3439,7 @@ export default function App() {
       let visualPlan: VisualCompositionPlanSummary | null = null;
       if (creationVisualComposition.mode !== "none") {
         appendCreationActivity(
+          article.id,
           "正在规划正文配图",
           `pi-visual-plan-${run.id}`,
           "正在根据已生成的文章结构匹配素材并生成配图方案。",
@@ -3270,6 +3521,7 @@ export default function App() {
       ensureArticleSourceCurrent(outputSource);
       if (!approvedVisualPlan && creationVisualComposition.mode !== "none") {
         appendCreationActivity(
+          article.id,
           "已跳过正文配图",
           `pi-visual-plan-skipped-${run.id}`,
           "文章已保存，未启动任何图片生成或素材插入。",
@@ -3304,79 +3556,93 @@ export default function App() {
         outputMarkdown: composed.markdown,
       };
       ensureArticleSourceCurrent(outputSource);
-      setArticleContentReplacing(true);
+      setArticleReplacing(article.id, true);
       applyWorkflowResult(article.id, summary, request.platforms);
-      window.setTimeout(() => setArticleContentReplacing(false), 260);
-      setCreationActivity((current) => current ? {
-        ...current,
-        status: "succeeded",
-        phase: composed.generatedCount > 0 ? "文章与配图生成完成" : "文章生成完成",
-        elapsedSeconds: Math.max(current.elapsedSeconds, Math.round((Date.now() - startedAt) / 1000)),
-        logs: [
-          ...current.logs,
-          activityLog(
-            `pi-completed-${run.id}`,
-            `文章已保存为修订 ${composed.revisionNumber}`,
-            "success",
-          ),
-        ],
-      } : current);
-      setArticleProgress(null);
+      window.setTimeout(() => setArticleReplacing(article.id, false), 260);
+      setCreationActivities((current) => {
+        const activity = current[article.id];
+        return activity ? {
+          ...current,
+          [article.id]: {
+            ...activity,
+            status: "succeeded",
+            phase: composed.generatedCount > 0 ? "文章与配图生成完成" : "文章生成完成",
+            elapsedSeconds: Math.max(activity.elapsedSeconds, Math.round((Date.now() - startedAt) / 1000)),
+            logs: [
+              ...activity.logs,
+              activityLog(
+                `pi-completed-${run.id}`,
+                `文章已保存为修订 ${composed.revisionNumber}`,
+                "success",
+              ),
+            ],
+          },
+        } : current;
+      });
+      clearArticleProgress(article.id);
       setActiveNav("articles");
       setToast(`文章已生成 · 修订 ${composed.revisionNumber}`);
     } catch (error) {
-      const activeRun = activePiRunRef.current;
-      if (activeRun?.articleId === article.id) {
+      const activeRunId = activePiRunsRef.current.get(article.id);
+      if (activeRunId) {
         // A client-side timeout must not leave the model running in the
         // background and later overwrite a retried draft.
-        void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+        void desktopBridge.stopPiRun(activeRunId).catch(() => undefined);
       }
       if (!isWorkflowExecutionCurrent(article.id, executionId)) return;
       const detail = sanitizeActivityMessage(error instanceof Error ? error.message : String(error));
       clearWriterTypewriter(article.id);
       failWorkflowWorkspace(article.id, detail);
-      setFailedCreationContext(createFailedCreationContext(article.id, request));
-      setCreationActivity((current) => current ? {
+      setFailedCreationContexts((current) => ({
         ...current,
-        status: "failed",
-        phase: "文章生成失败",
-        elapsedSeconds: Math.max(current.elapsedSeconds, Math.round((Date.now() - startedAt) / 1000)),
-        error: `失败原因：${detail}`,
-        retryable: true,
-        logs: [
-          ...current.logs,
-          activityLog(`pi-failed-${Date.now()}`, `写作任务失败：${detail}`, "error"),
-        ],
-      } : current);
-      setArticleProgress(null);
+        [article.id]: createFailedCreationContext(article.id, request),
+      }));
+      setCreationActivities((current) => {
+        const activity = current[article.id];
+        return activity ? {
+          ...current,
+          [article.id]: {
+            ...activity,
+            status: "failed",
+            phase: "文章生成失败",
+            elapsedSeconds: Math.max(activity.elapsedSeconds, Math.round((Date.now() - startedAt) / 1000)),
+            error: `失败原因：${detail}`,
+            retryable: true,
+            logs: [
+              ...activity.logs,
+              activityLog(`pi-failed-${Date.now()}`, `写作任务失败：${detail}`, "error"),
+            ],
+          },
+        } : current;
+      });
+      clearArticleProgress(article.id);
       setToast("文章生成失败，当前工作稿已保留");
     } finally {
-      if (activePiRunRef.current?.articleId === article.id) activePiRunRef.current = null;
+      activePiRunsRef.current.delete(article.id);
       if (writerSourceFenceRef.current[article.id]?.executionId === executionId) {
         delete writerSourceFenceRef.current[article.id];
       }
       if (finishWorkflowExecution(article.id, executionId)) {
-        activeCreationRequestRef.current = null;
-        setCreatingArticle(false);
-        setWorkflowRunning(false);
+        activeCreationRequestsRef.current.delete(article.id);
+        setCreationArticleActive(article.id, false);
       }
     }
   };
 
   const createFromBrief = (request: CreationRequest) => {
-    if (creatingArticle || workflowRunning) return;
     if (!requireTextModel()) return;
     if (compositionCanRequireGeneratedImages(request) && !requireImageModel()) return;
     const agentDisabledNodes = disabledOptionalNodesFor(studioAgents);
     const normalizedRequest: CreationRequest = {
       ...request,
+      taskMode: resolveCreationTaskMode(request),
       disabledNodeIds: visualNodeDisabledIds(
         [...new Set([...request.disabledNodeIds, ...agentDisabledNodes])],
         visualCompositionFromCreation(request).mode !== "none",
       ),
       agentInstructions: buildWorkflowAgentInstructions(studioAgents, studioSkills),
     };
-    const id = `article-${Date.now()}`;
+    const id = `article-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
     const markdown = buildCreationSeed(normalizedRequest);
     const article: Article = {
       id,
@@ -3397,7 +3663,10 @@ export default function App() {
   };
 
   const retryCreation = () => {
-    if (!failedCreationContext || creatingArticle || workflowRunning) return;
+    const failedCreationContext = selectedArticleId
+      ? failedCreationContexts[selectedArticleId] ?? null
+      : null;
+    if (!failedCreationContext || activeWorkflowArticleIdsRef.current.has(failedCreationContext.articleId)) return;
     const retryRequest: CreationRequest = {
       ...failedCreationContext.request,
       template: failedCreationContext.templateId
@@ -3439,64 +3708,65 @@ export default function App() {
     // An unmounted workspace must never continue through a later bridge
     // instance (for example after a Tauri reload). Every await in a writer
     // execution rechecks this token before it can start or commit more work.
-    activeWorkflowExecutionRef.current = null;
-    activeCreationRequestRef.current = null;
-    const activeRun = activePiRunRef.current;
-    activePiRunRef.current = null;
-    if (activeRun) {
-      void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
-    }
-    const activeRewriteRun = activePiRewriteRunRef.current;
-    activePiRewriteRunRef.current = null;
-    activePiRewriteRequestRef.current = null;
-    if (activeRewriteRun) {
-      void desktopBridge.stopPiRun(activeRewriteRun.runId).catch(() => undefined);
-    }
+    activeWorkflowExecutionsRef.current.clear();
+    activeCreationRequestsRef.current.clear();
+    const runIds = new Set([
+      ...activePiRunsRef.current.values(),
+      ...[...activePiRewriteRunsRef.current.values()].map((run) => run.runId),
+    ]);
+    activePiRunsRef.current.clear();
+    activePiRewriteRunsRef.current.clear();
+    activePiRewriteRequestsRef.current.clear();
+    runIds.forEach((runId) => {
+      void desktopBridge.stopPiRun(runId).catch(() => undefined);
+    });
+    void cancelPiOperations();
+    visualConfirmationRef.current?.resolve?.(null);
+    visualConfirmationQueueRef.current.forEach((pending) => pending.resolve?.(null));
+    visualConfirmationQueueRef.current = [];
   }, []);
 
   const cancelCurrentWorkflow = () => {
-    const activeExecution = activeWorkflowExecutionRef.current;
+    const articleId = selectedArticleId;
+    if (!articleId) return;
+    const executionId = activeWorkflowExecutionsRef.current.get(articleId);
     if (cancellingWorkflow) return;
-    if (!activeExecution || !workflowRunning) {
-      const articleId = selectedArticleId;
-      const rewriteRun = activePiRewriteRunRef.current;
-      if (articleId && rewriteRun?.articleId === articleId) {
-        setCancellingWorkflow(true);
+    if (executionId === undefined || !activeWorkflowArticleIdsRef.current.has(articleId)) {
+      const rewriteRun = activePiRewriteRunsRef.current.get(articleId);
+      if (rewriteRun) {
+        setWorkflowArticleCancelling(articleId, true);
         void desktopBridge.stopPiRun(rewriteRun.runId)
           .catch(() => {
             setToast("停止请求未被本地服务确认；旧改写结果仍不会写回文章。");
           })
-          .finally(() => setCancellingWorkflow(false));
+          .finally(() => setWorkflowArticleCancelling(articleId, false));
         setToast("正在停止当前 AI 改写请求。");
         return;
       }
-      const pendingRewrite = activePiRewriteRequestRef.current;
-      if (articleId && pendingRewrite?.articleId === articleId) {
+      const pendingRewrite = activePiRewriteRequestsRef.current.get(articleId);
+      if (pendingRewrite) {
         // ArticleAssistant remembers this request and will issue cancellation
         // again as soon as the native start event supplies its run id.
         setToast("正在等待改写任务启动后停止。");
         return;
       }
-      if (!articleId || ![...activePiOperationsRef.current.values()].some((owner) => owner === articleId)) return;
-      setCancellingWorkflow(true);
-      void cancelPiOperations(articleId).finally(() => setCancellingWorkflow(false));
+      if (![...activePiOperationsRef.current.values()].some((owner) => owner === articleId)) return;
+      setWorkflowArticleCancelling(articleId, true);
+      void cancelPiOperations(articleId).finally(() => setWorkflowArticleCancelling(articleId, false));
       setToast("已停止当前 AI 操作，未完成结果不会写入文章。");
       return;
     }
 
-    const { articleId } = activeExecution;
-    const piRun = activePiRunRef.current?.articleId === articleId
-      ? activePiRunRef.current
-      : null;
-    activePiRunRef.current = null;
-    const creationContext = activeCreationRequestRef.current;
+    const piRunId = activePiRunsRef.current.get(articleId) ?? null;
+    activePiRunsRef.current.delete(articleId);
+    const creationContext = activeCreationRequestsRef.current.get(articleId) ?? null;
     // Invalidate first. Any response that arrives after this point belongs to
     // the stopped run and must never replace the user's current draft.
-    activeWorkflowExecutionRef.current = null;
-    activeCreationRequestRef.current = null;
-    if (visualConfirmation?.articleId === articleId) {
-      resolveVisualConfirmation(null);
-    }
+    activeWorkflowExecutionsRef.current.delete(articleId);
+    activeCreationRequestsRef.current.delete(articleId);
+    setWorkflowArticleActive(articleId, false);
+    setCreationArticleActive(articleId, false);
+    cancelVisualConfirmation(articleId);
     clearWriterTypewriter(articleId);
     setDirtyIds((current) => {
       const next = new Set(current).add(articleId);
@@ -3504,47 +3774,49 @@ export default function App() {
       return next;
     });
     failWorkflowWorkspace(articleId, WORKFLOW_CANCELLED_BY_USER_MESSAGE);
-    if (creationContext?.articleId === articleId) {
-      setFailedCreationContext(creationContext);
+    if (creationContext) {
+      setFailedCreationContexts((current) => ({ ...current, [articleId]: creationContext }));
     }
-    setCreationActivity((current) => {
-      if (!current || current.status !== "running") return current;
+    setCreationActivities((current) => {
+      const activity = current[articleId];
+      if (!activity || activity.status !== "running") return current;
       return {
         ...current,
-        status: "failed",
-        phase: "已停止生成",
-        elapsedSeconds: Math.max(
-          current.elapsedSeconds,
-          Math.round((Date.now() - current.startedAt) / 1000),
-        ),
-        error: `失败原因：${WORKFLOW_CANCELLED_BY_USER_MESSAGE}`,
-        retryable: true,
-        logs: [
-          ...current.logs,
-          activityLog(
-            `workflow-cancelled-${Date.now()}`,
-            "用户已停止本次生成，已保留当前编辑器内容",
-            "error",
+        [articleId]: {
+          ...activity,
+          status: "failed",
+          phase: "已停止生成",
+          elapsedSeconds: Math.max(
+            activity.elapsedSeconds,
+            Math.round((Date.now() - activity.startedAt) / 1000),
           ),
-        ],
+          error: `失败原因：${WORKFLOW_CANCELLED_BY_USER_MESSAGE}`,
+          retryable: true,
+          logs: [
+            ...activity.logs,
+            activityLog(
+              `workflow-cancelled-${Date.now()}`,
+              "用户已停止本次生成，已保留当前编辑器内容",
+              "error",
+            ),
+          ],
+        },
       };
     });
-    setArticleProgress(null);
-    setArticleContentReplacing(false);
-    setCreatingArticle(false);
-    setWorkflowRunning(false);
-    setCancellingWorkflow(true);
+    clearArticleProgress(articleId);
+    setArticleReplacing(articleId, false);
+    setWorkflowArticleCancelling(articleId, true);
     setToast("已停止生成，当前已写入的内容仍保留在编辑器中");
 
     const releaseCancellationState = window.setTimeout(
-      () => setCancellingWorkflow(false),
+      () => setWorkflowArticleCancelling(articleId, false),
       2_000,
     );
     // Stop both durable writer runs and scoped non-run operations. The latter
     // includes visual planning and every concurrent image request.
     void cancelPiOperations(articleId);
-    const cancellation = piRun
-      ? desktopBridge.stopPiRun(piRun.runId).then(() => undefined)
+    const cancellation = piRunId
+      ? desktopBridge.stopPiRun(piRunId).then(() => undefined)
       : Promise.resolve();
     void cancellation
       .catch(() => {
@@ -3552,12 +3824,12 @@ export default function App() {
       })
       .finally(() => {
         window.clearTimeout(releaseCancellationState);
-        setCancellingWorkflow(false);
+        setWorkflowArticleCancelling(articleId, false);
       });
   };
 
   const createBlankArticle = () => {
-    const id = `article-${Date.now()}`;
+    const id = `article-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
     const markdown = "# 未命名文章\n\n";
     const article: Article = {
       id,
@@ -3654,12 +3926,11 @@ export default function App() {
     const inputSource = captureArticleSource(article.id, markdown);
     const agents = buildWorkflowAgentInstructions(studioAgents, studioSkills);
     const executionId = beginWorkflowExecution(article.id);
-    setWorkflowRunning(true);
     beginWorkflowWorkspace(article.id);
     showArticleProgress({
       articleId: article.id,
-      title: "正在准备全文优化",
-      detail: "正在将当前修订交给写作 Agent。",
+      title: "正在准备深度去 AI 化",
+      detail: "正在将当前修订交给 Writer 进行二次改写。",
       value: null,
     });
     try {
@@ -3679,9 +3950,12 @@ export default function App() {
       const run = await desktopBridge.startPiArticleRun({
         articleId: article.id,
         prompt: [
-          "请完整优化下方的中文 Markdown 文章。",
-          "保留已经存在的事实、链接、图片 Markdown、代码块和有效的排版层级；不要虚构数据、功能、案例或用户反馈。",
-          "让文字具体、自然、有明确观点，删掉空泛套话。不要解释修改过程，只提交完整的优化后 Markdown。",
+          "<open-publisher-deep-humanize:v1>",
+          "请对下方中文 Markdown 文章进行深度去 AI 化改写。",
+          "这是原文编辑，不是重新选题或扩写。必须保留事实、信息范围、技术含义、链接、引用、图片 Markdown、代码块和有信息价值的结构。",
+          "不得虚构亲测经历、数据、功能、案例、用户反馈或竞品结论；不要为了显得排版丰富而新增章节、表格或列表。",
+          "删除套话、机械排比、重复总结和万能结语，调整句式与节奏，但不改变作者的核心判断。",
+          "不要解释修改过程，只提交深度去 AI 化后的完整 Markdown 正文。",
           "",
           "## 当前文章",
           markdown,
@@ -3689,12 +3963,12 @@ export default function App() {
       });
       ensureWorkflowExecutionCurrent(article.id, executionId);
       ensureWriterSourceCurrent(writerSource);
-      activePiRunRef.current = { articleId: article.id, runId: run.id };
+      activePiRunsRef.current.set(article.id, run.id);
       const completed = await waitForPiWriterRun(article.id, run, agents, executionId);
       ensureWorkflowExecutionCurrent(article.id, executionId);
       ensureWriterSourceCurrent(writerSource);
       if (completed.status !== "completed") {
-        throw new Error(completed.error?.message ?? `全文优化以 ${completed.status} 状态结束。`);
+        throw new Error(completed.error?.message ?? `深度去 AI 化以 ${completed.status} 状态结束。`);
       }
       const stored = await desktopBridge.getPiArticle(article.id);
       ensureWorkflowExecutionCurrent(article.id, executionId);
@@ -3707,14 +3981,14 @@ export default function App() {
         (candidate) => candidate.articleId === article.id,
       );
       if (!persisted || persisted.revisionId !== stored.currentRevisionId) {
-        throw new Error("全文优化已结束，但无法读取保存后的文章修订。" );
+        throw new Error("深度去 AI 化已结束，但无法读取保存后的文章修订。");
       }
       ensureWorkflowExecutionCurrent(article.id, executionId);
       ensureWriterSourceCurrent(writerSource);
       const summary: RunWorkflowSummary = {
         runId: run.id,
         status: "completed",
-        workflowName: "pi-writer-full-rewrite",
+        workflowName: "pi-writer-deep-humanize",
         workflowVersion: "2",
         inputRevisionId,
         outputRevisionId: stored.currentRevisionId,
@@ -3726,30 +4000,28 @@ export default function App() {
         persistence: "local_database",
       };
       completeWorkflowWorkspace(article.id, summary);
-      setArticleContentReplacing(true);
+      setArticleReplacing(article.id, true);
       applyWorkflowResult(article.id, summary);
-      window.setTimeout(() => setArticleContentReplacing(false), 260);
-      setArticleProgress(null);
-      setToast(`AI 处理完成 · 已生成修订 ${summary.outputRevisionNumber}`);
+      window.setTimeout(() => setArticleReplacing(article.id, false), 260);
+      clearArticleProgress(article.id);
+      setToast(`深度去 AI 化完成 · 已生成修订 ${summary.outputRevisionNumber}`);
     } catch (error) {
-      const activeRun = activePiRunRef.current;
-      if (activeRun?.articleId === article.id) {
-        void desktopBridge.stopPiRun(activeRun.runId).catch(() => undefined);
+      const activeRunId = activePiRunsRef.current.get(article.id);
+      if (activeRunId) {
+        void desktopBridge.stopPiRun(activeRunId).catch(() => undefined);
       }
       if (!isWorkflowExecutionCurrent(article.id, executionId)) return;
       const detail = error instanceof Error ? error.message : String(error);
       clearWriterTypewriter(article.id);
       failWorkflowWorkspace(article.id, sanitizeActivityMessage(detail));
-      setArticleProgress(null);
-      setToast(`AI 处理失败：${detail.slice(0, 120)}`);
+      clearArticleProgress(article.id);
+      setToast(`深度去 AI 化失败：${detail.slice(0, 120)}`);
     } finally {
-      if (activePiRunRef.current?.articleId === article.id) activePiRunRef.current = null;
+      activePiRunsRef.current.delete(article.id);
       if (writerSourceFenceRef.current[article.id]?.executionId === executionId) {
         delete writerSourceFenceRef.current[article.id];
       }
-      if (finishWorkflowExecution(article.id, executionId)) {
-        setWorkflowRunning(false);
-      }
+      finishWorkflowExecution(article.id, executionId);
     }
   };
 
@@ -3821,7 +4093,6 @@ export default function App() {
         const description = [
           asset.visualDescription?.trim() && `图片内容：${asset.visualDescription.trim()}`,
           asset.usageHint?.trim() && `使用场景：${asset.usageHint.trim()}`,
-          asset.generationPrompt?.trim() && `生成提示词：${asset.generationPrompt.trim()}`,
           asset.tags && asset.tags.length > 0 && `标签：${asset.tags.join("、")}`,
           asset.description?.trim() && `补充说明：${asset.description.trim()}`,
         ].filter(Boolean).join("\n");
@@ -4000,7 +4271,7 @@ export default function App() {
       detail: "配图已按文章结构定位，正在保存新的文章修订。",
       value: 92,
     });
-    setArticleContentReplacing(true);
+    setArticleReplacing(article.id, true);
     try {
       ensureArticleSourceCurrent(source);
       const revisionId = await persistRevision(
@@ -4038,7 +4309,7 @@ export default function App() {
           : currentArticle
       )));
     } finally {
-      window.setTimeout(() => setArticleContentReplacing(false), 260);
+      window.setTimeout(() => setArticleReplacing(article.id, false), 260);
     }
     onActivity({
       title: "配图已写入文章",
@@ -4065,7 +4336,7 @@ export default function App() {
     }
     const article = selectedArticle;
     const source = captureArticleSource(article.id, currentMarkdown);
-    activePiRewriteRequestRef.current = { articleId: article.id, requestId };
+    activePiRewriteRequestsRef.current.set(article.id, requestId);
     try {
       const imageAttachments = promptImageAttachments(attachments ?? []);
       const result = await desktopBridge.rewriteArticle({
@@ -4088,11 +4359,11 @@ export default function App() {
           visualMatchScore < ARTICLE_VISUAL_MATCH_REFRESH_THRESHOLD,
       };
     } finally {
-      if (activePiRewriteRequestRef.current?.requestId === requestId) {
-        activePiRewriteRequestRef.current = null;
+      if (activePiRewriteRequestsRef.current.get(article.id) === requestId) {
+        activePiRewriteRequestsRef.current.delete(article.id);
       }
-      if (activePiRewriteRunRef.current?.requestId === requestId) {
-        activePiRewriteRunRef.current = null;
+      if (activePiRewriteRunsRef.current.get(article.id)?.requestId === requestId) {
+        activePiRewriteRunsRef.current.delete(article.id);
       }
     }
   };
@@ -4130,7 +4401,7 @@ export default function App() {
     }
     if (!removeArticleImages(nextMarkdown).trim()) throw new Error("AI 返回了空内容，未修改文章。");
 
-    setArticleContentReplacing(true);
+    setArticleReplacing(source.articleId, true);
     try {
       ensureArticleSourceCurrent(source);
       const revisionId = await persistRevision(
@@ -4157,7 +4428,7 @@ export default function App() {
       setToast(`AI 修改已保存 · ${candidate.model}${preservedImageCount > 0 ? ` · 已保留 ${preservedImageCount} 张原图` : ""}`);
       return { revisionId, markdown: nextMarkdown };
     } finally {
-      window.setTimeout(() => setArticleContentReplacing(false), 260);
+      window.setTimeout(() => setArticleReplacing(source.articleId, false), 260);
     }
   };
 
@@ -4169,7 +4440,7 @@ export default function App() {
     if (!undo || currentMarkdown !== undo.after) {
       throw new Error("正文已有新的手动修改，无法自动撤销这次 AI 修改。");
     }
-    setArticleContentReplacing(true);
+    setArticleReplacing(selectedArticle.id, true);
     try {
       await persistRevision(
         selectedArticle.id,
@@ -4184,7 +4455,7 @@ export default function App() {
       );
       setToast("已撤销上一次 AI 修改");
     } finally {
-      window.setTimeout(() => setArticleContentReplacing(false), 260);
+      window.setTimeout(() => setArticleReplacing(selectedArticle.id, false), 260);
     }
   };
 
@@ -4214,11 +4485,20 @@ export default function App() {
       }
 
       const revisionId = await ensureRevision(selectedArticle.id, currentMarkdown);
+      const publishMedia = publishMediaSourcesForMarkdown(currentMarkdown, mediaAssets);
+      if (publishMedia.missingAssetIds.length > 0) {
+        throw new Error(
+          `文章中的图片素材已丢失：${publishMedia.missingAssetIds.slice(0, 3).join("、")}${
+            publishMedia.missingAssetIds.length > 3 ? " 等" : ""
+          }。请重新插入图片后再发布。`,
+        );
+      }
       let plan = await desktopBridge.createPublishPlan({
         articleId: selectedArticle.id,
         revisionId,
         platforms: targets,
         deliveryMode: "wechat_sync_draft",
+        mediaSources: publishMedia.sources,
       });
       plan = await desktopBridge.approvePublishPlan({ planId: plan.planId });
       plan = await desktopBridge.enqueuePublishPlan({ planId: plan.planId });
@@ -4260,7 +4540,7 @@ export default function App() {
     if (!selectedArticle) return false;
     const cached = cachedVisualPlans[selectedArticle.id];
     if (!cached) return false;
-    setVisualConfirmation({
+    enqueueVisualConfirmation({
       ...cached,
       stale: visualPlanIsStale(cached),
       resolve: null,
@@ -4333,7 +4613,7 @@ export default function App() {
         createdAt: Date.now(),
       };
       setCachedVisualPlans((current) => ({ ...current, [article.id]: cached }));
-      setVisualConfirmation({ ...cached, stale: false, resolve: pending.resolve });
+      displayVisualConfirmation({ ...cached, stale: false, resolve: pending.resolve });
       setToast(`已根据最新正文重新规划 ${planned.plan.targetCount} 张配图`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -4350,12 +4630,13 @@ export default function App() {
     const article = articleItems.find((candidate) => candidate.id === cached.articleId);
     if (!article) return;
     if (visualPlanIsStale(cached)) {
-      setVisualConfirmation({ ...cached, stale: true, resolve: null });
+      displayVisualConfirmation({ ...cached, stale: true, resolve: null });
       setToast("文章已经修改，请先重新生成配图策略");
       return;
     }
-    setVisualConfirmation(null);
-    setGeneratingImage(true);
+    resolveVisualConfirmation(null);
+    if (generatingImageArticleIdsRef.current.has(article.id)) return;
+    setArticleGeneratingImage(article.id, true);
     const source = captureArticleSource(
       article.id,
       cached.sourceMarkdown,
@@ -4392,7 +4673,7 @@ export default function App() {
       const detail = error instanceof Error ? error.message : String(error);
       setToast(`配图执行失败：${detail.slice(0, 120)}`);
     } finally {
-      setGeneratingImage(false);
+      setArticleGeneratingImage(article.id, false);
     }
   };
 
@@ -4400,25 +4681,25 @@ export default function App() {
     const pending = visualConfirmation;
     if (!pending || pending.stale || visualPlanRegenerating) return;
     if (pending.resolve) {
-      setVisualConfirmation(null);
-      pending.resolve(plan);
+      resolveVisualConfirmation(plan);
       return;
     }
     void applyReopenedVisualPlan(pending, plan);
   };
 
   const generateImage = async () => {
-    if (!selectedArticle || generatingImage) return;
+    if (!selectedArticle || generatingImageArticleIdsRef.current.has(selectedArticle.id)) return;
     if (reopenCachedVisualPlan()) return;
     if (!requireImageModel()) return;
-    setGeneratingImage(true);
+    const article = selectedArticle;
+    setArticleGeneratingImage(article.id, true);
     try {
-      const operationId = beginPiOperation("cover-image", selectedArticle.id);
+      const operationId = beginPiOperation("cover-image", article.id);
       let result;
       try {
         result = await desktopBridge.generateImage({
           operationId,
-          prompt: `为《${selectedArticle.title}》生成清晰克制的文章封面，不使用品牌标识。主题：${selectedArticle.deck}`,
+          prompt: `A restrained full-bleed editorial cover illustration representing this subject through one visual focal point, simple shapes, and color: ${article.deck}. No header area, title band, caption strip, poster frame, sheet of paper, notebook page, card, interface panel, writing, typography, numbers, logo, signature, or watermark.`,
           size: "1536x1024",
           model: modelConfiguration?.imageModel ?? null,
         });
@@ -4431,12 +4712,12 @@ export default function App() {
       }
       const createdAssets = result.images.map((image, index) => ({
         id: generatedMediaAssetId(image.id),
-        name: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 120),
-        alt: `${selectedArticle.title} 配图 ${index + 1}`.slice(0, 2_000),
+        name: `${article.title} 配图 ${index + 1}`.slice(0, 120),
+        alt: `${article.title} 配图 ${index + 1}`.slice(0, 2_000),
         description: "AI 生成的文章配图。",
-        visualDescription: `${selectedArticle.title} 的文章配图。`,
+        visualDescription: `${article.title} 的文章配图。`,
         usageHint: "适合在文章中补充核心观点或作为封面使用。",
-        generationPrompt: `为《${selectedArticle.title}》生成清晰克制的文章封面，不使用品牌标识。主题：${selectedArticle.deck}`,
+        generationPrompt: `为《${article.title}》生成清晰克制的文章封面，不使用品牌标识。主题：${article.deck}`,
         tags: ["AI 生成", "文章配图"],
         descriptionSource: "generation_prompt" as const,
         src: image.dataUrl,
@@ -4451,8 +4732,8 @@ export default function App() {
       ]);
       setGeneratedImages((current) => ({
         ...current,
-        [selectedArticle.id]:
-          (current[selectedArticle.id] ?? 0) + createdAssets.length,
+        [article.id]:
+          (current[article.id] ?? 0) + createdAssets.length,
       }));
       setToast(
         result.mocked
@@ -4463,7 +4744,7 @@ export default function App() {
       const detail = error instanceof Error ? error.message : String(error);
       setToast(`配图生成失败：${detail.slice(0, 120)}`);
     } finally {
-      setGeneratingImage(false);
+      setArticleGeneratingImage(article.id, false);
     }
   };
 
@@ -4850,7 +5131,7 @@ export default function App() {
       case "create":
         return (
           <CreatePage
-            generating={creatingArticle}
+            activeCreationCount={activeCreationArticleIds.size}
             activeModelProfileId={modelConfiguration?.profileId ?? null}
             modelProfiles={modelProfiles}
             onCreate={(request) => void createFromBrief(request)}
@@ -4870,8 +5151,11 @@ export default function App() {
         return (
           <ArticlesPage
             articles={articleItems}
+            activeWorkflowArticleIds={activeWorkflowArticleIds}
             activeModelProfileId={modelConfiguration?.profileId ?? null}
-            contentReplacing={articleContentReplacing}
+            contentReplacing={Boolean(
+              selectedArticle && articleContentReplacingIds.has(selectedArticle.id)
+            )}
             dirty={dirty}
             editorMode={editorMode}
             generatedImageCount={
@@ -4906,6 +5190,7 @@ export default function App() {
             onPublishToPlatforms={publishCurrentArticleToWechatSync}
             onRefreshWechatSync={refreshWechatSyncStatus}
             onOpenPublisherSettings={openPublisherSettings}
+            onOpenPublishingGuide={() => navigate("announcements")}
             onComposeVisual={composeVisualForCurrentArticle}
             onRewriteArticle={rewriteCurrentArticle}
             onRewriteRunStarted={registerPiRewriteRun}
@@ -4915,25 +5200,31 @@ export default function App() {
             onSelect={selectArticle}
             platforms={publishablePlatforms}
             publishing={publishAction === "process"}
+            publisherConfigured={publisherBridgeConfiguration?.tokenConfigured ?? false}
             saving={saving}
             switchingModel={configuringModel}
             selectedArticle={selectedArticle}
             selectedPlatform={selectedPlatform}
-            workflowProgress={articleProgress}
+            workflowProgress={
+              selectedArticle ? articleProgressById[selectedArticle.id] ?? null : null
+            }
             workflowWorkspace={
               selectedArticle ? workflowWorkspaces[selectedArticle.id] ?? null : null
             }
             workflowRunning={workflowRunning}
             wechatSyncRefreshing={refreshingWechatSync}
             wechatSyncStatus={wechatSyncStatus}
-            writerStreaming={writerStreamingArticleId === selectedArticle?.id}
+            writerStreaming={Boolean(
+              selectedArticle && writerStreamingArticleIds.has(selectedArticle.id)
+            )}
             workflowFailure={
-              creationActivity?.status === "failed" &&
-              failedCreationContext?.articleId === selectedArticle?.id
+              selectedArticle &&
+              creationActivities[selectedArticle.id]?.status === "failed" &&
+              failedCreationContexts[selectedArticle.id]
                 ? {
-                    detail: creationActivity.error ?? "工作流未返回具体失败原因。",
-                    logs: creationActivity.logs,
-                    retryable: creationActivity.retryable,
+                    detail: creationActivities[selectedArticle.id]!.error ?? "工作流未返回具体失败原因。",
+                    logs: creationActivities[selectedArticle.id]!.logs,
+                    retryable: creationActivities[selectedArticle.id]!.retryable,
                   }
                 : null
             }
@@ -5078,7 +5369,9 @@ export default function App() {
                   ? "素材库"
                   : activeNav === "publish"
                     ? "发布"
-                    : "设置"}
+                    : activeNav === "announcements"
+                      ? "公告"
+                      : "设置"}
           </strong>
           <span className="workspace-topbar__spacer" />
           {runtime?.bridgeMode === "interface_only" && (

@@ -51,6 +51,9 @@ Thumbs.db
 
 # Tauri bundles
 apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/icons/android/
+apps/desktop/src-tauri/icons/ios/
+/release-output/
 *.app
 *.dmg
 *.msi

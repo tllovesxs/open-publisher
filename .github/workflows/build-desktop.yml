@@ -32,7 +32,7 @@ jobs:
           - name: macOS Apple Silicon
             os: macos-15
             rust_target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app
             artifact: gaoliu-macos-arm64
 
     env:
@@ -113,9 +113,7 @@ jobs:
         run: |
           bundle_root="apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle"
           app_path="$(find "$bundle_root/macos" -maxdepth 1 -name '*.app' -print -quit)"
-          dmg_path="$(find "$bundle_root/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$app_path"
-          test -n "$dmg_path"
 
           bundle_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
           minimum_system="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
@@ -127,7 +125,16 @@ jobs:
 
           mkdir -p release-output
           version="$(node -p "require('./apps/desktop/package.json').version")"
-          cp "$dmg_path" "release-output/Gaoliu-${version}-macOS-arm64.dmg"
+          dmg_root="$(mktemp -d "${RUNNER_TEMP}/gaoliu-dmg.XXXXXX")"
+          ditto "$app_path" "$dmg_root/稿流.app"
+          ln -s /Applications "$dmg_root/Applications"
+          hdiutil create \
+            -volname "Gaoliu" \
+            -srcfolder "$dmg_root" \
+            -ov \
+            -format UDZO \
+            "release-output/Gaoliu-${version}-macOS-arm64.dmg"
+          hdiutil verify "release-output/Gaoliu-${version}-macOS-arm64.dmg"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

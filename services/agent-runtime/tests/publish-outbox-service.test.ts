@@ -48,6 +48,67 @@ describe("WechatSyncDraftDelivery", () => {
     expect(body.params.idempotencyKey).toBe(deliveryInput.idempotencyKey);
     expect(body.params.article.idempotencyKey).toBe(deliveryInput.idempotencyKey);
   });
+
+  it("uploads inline image data before syncing and sends only a platform URL", async () => {
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const fetchImplementation = vi.fn<typeof fetch>();
+    fetchImplementation.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: Record<string, unknown> };
+      requests.push(body);
+      if (body.method === "uploadImage:complete") {
+        return Response.json({ result: { url: "https://i-blog.csdnimg.cn/direct/image.png", platform: "csdn" } });
+      }
+      if (body.method === "syncArticle") {
+        return Response.json({
+          result: {
+            syncId: "sync-with-image",
+            results: [{ platform: "csdn", success: true, postId: "draft-with-image" }],
+          },
+        });
+      }
+      return Response.json({ result: { success: true } });
+    });
+    const image = "data:image/png;base64,aW1hZ2U=";
+    const delivery = new WechatSyncDraftDelivery(fetchImplementation);
+
+    await expect(delivery.deliver({
+      ...deliveryInput,
+      markdown: `![第一处](${image})\n\n![重复引用](${image})`,
+    })).resolves.toMatchObject({ remoteId: "draft-with-image" });
+
+    expect(requests.map((request) => request.method)).toEqual([
+      "uploadImage:start",
+      "uploadImage:chunk",
+      "uploadImage:complete",
+      "syncArticle",
+    ]);
+    const sync = requests.at(-1)?.params as {
+      article?: { markdown?: string };
+    };
+    expect(sync.article?.markdown).toContain("https://i-blog.csdnimg.cn/direct/image.png");
+    expect(sync.article?.markdown).not.toContain("data:image/");
+  });
+
+  it("stops before draft creation when the plugin cannot return an uploaded image URL", async () => {
+    const methods: string[] = [];
+    const fetchImplementation = vi.fn<typeof fetch>();
+    fetchImplementation.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      methods.push(body.method);
+      return Response.json({
+        result: body.method === "uploadImage:complete"
+          ? { url: "data:image/png;base64,aW1hZ2U=", platform: "csdn" }
+          : { success: true },
+      });
+    });
+    const delivery = new WechatSyncDraftDelivery(fetchImplementation);
+
+    await expect(delivery.deliver({
+      ...deliveryInput,
+      markdown: "![图片](data:image/png;base64,aW1hZ2U=)",
+    })).rejects.toThrow(/已停止创建草稿/);
+    expect(methods).not.toContain("syncArticle");
+  });
 });
 
 describe("delivery reconciliation hooks", () => {
@@ -76,6 +137,52 @@ describe("delivery reconciliation hooks", () => {
 });
 
 describe("PublishOutboxService", () => {
+  it("resolves local asset references only inside the immutable publish variant", async () => {
+    const database = openRuntimeDatabase(await mkdtemp(join(tmpdir(), "open-publisher-outbox-media-")));
+    let deliveredMarkdown = "";
+    const delivery: PublishDelivery = {
+      async deliver(input) {
+        deliveredMarkdown = input.markdown;
+        return { remoteId: "test:media", details: {} };
+      },
+    };
+    const service = new PublishOutboxService(database.sqlite, delivery);
+    const canonical = "# Article\n\n![产品截图](asset://media-product)";
+    try {
+      const plan = service.createPlan({
+        revisionId: "revision:media",
+        title: "Article",
+        markdown: canonical,
+        mediaSources: [{ assetId: "media-product", source: "data:image/png;base64,aW1hZ2U=" }],
+        targets: [{ platform: "csdn", accountRef: "desktop-csdn", deliveryMode: "dry_run" }],
+      });
+      service.approve(plan.planId, "user:desktop");
+      const queued = service.enqueue(plan.planId);
+      await service.process(queued.jobs[0]!.id);
+
+      expect(deliveredMarkdown).toContain("data:image/png;base64,aW1hZ2U=");
+      expect(deliveredMarkdown).not.toContain("asset://");
+      expect(canonical).toContain("asset://media-product");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a plan before enqueueing when a referenced local image is missing", async () => {
+    const database = openRuntimeDatabase(await mkdtemp(join(tmpdir(), "open-publisher-outbox-missing-media-")));
+    const service = new PublishOutboxService(database.sqlite, new DryRunDelivery());
+    try {
+      expect(() => service.createPlan({
+        revisionId: "revision:missing-media",
+        title: "Article",
+        markdown: "![缺失图片](asset://media-missing)",
+        targets: [{ platform: "csdn", accountRef: "desktop-csdn", deliveryMode: "dry_run" }],
+      })).toThrow(/media-missing/);
+    } finally {
+      database.close();
+    }
+  });
+
   it("atomically claims a job so a stale concurrent process cannot deliver it twice", async () => {
     const database = openRuntimeDatabase(await mkdtemp(join(tmpdir(), "open-publisher-outbox-race-")));
     let releaseDelivery: (() => void) | undefined;

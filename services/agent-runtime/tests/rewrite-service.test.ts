@@ -23,7 +23,10 @@ const profile = {
 };
 
 class FauxRewriteAgentFactory implements WriterAgentFactory {
+  systemPrompt = "";
+
   createWriterAgent(options: CreateWriterAgentOptions): Agent {
+    this.systemPrompt = options.systemPrompt;
     const faux = fauxProvider({ provider: "faux-rewriter", tokensPerSecond: 10_000 });
     faux.setResponses([
       fauxAssistantMessage(
@@ -117,7 +120,8 @@ const createService = (secretProvider: SecretProvider, factory: WriterAgentFacto
 
 describe("RewriteService with Pi Agent", () => {
   it("streams a structured paragraph candidate without mutating an article", async () => {
-    const service = createService({ resolve: async () => "test-key" }, new FauxRewriteAgentFactory());
+    const factory = new FauxRewriteAgentFactory();
+    const service = createService({ resolve: async () => "test-key" }, factory);
     {
       const run = await service.startRewrite({
         articleId: "article:rewrite",
@@ -136,6 +140,8 @@ describe("RewriteService with Pi Agent", () => {
         replacements: ["改写后的段落，更清晰也更紧凑。"],
         mocked: false,
       });
+      expect(factory.systemPrompt).toContain("局部改写时只返回目标片段");
+      expect(factory.systemPrompt).toContain("富 Markdown 排版契约");
     }
   });
 

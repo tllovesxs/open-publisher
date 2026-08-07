@@ -86,6 +86,20 @@ fork or bundled derivative. Before distributing any WechatSync source or binary 
 Publisher, obtain a written clarification from its maintainers and comply with the applicable
 license and notice requirements.
 
+## Humanizer-zh
+
+- Project: <https://github.com/op7418/Humanizer-zh>
+- Reviewed revision: `91f3d394db8419c20d67ebe22a96cf8fee0a404b`
+- License: MIT
+- Copyright: Copyright (c) 2026 歸藏
+- Use in Open Publisher: the optional deep de-AI editing mode uses an independently adapted
+  Chinese checklist of detectable writing patterns
+- Copied executable code or assets: none
+
+The adapted checklist preserves Open Publisher's own Writer contract and article storage flow. It
+is loaded only for an explicit deep de-AI rewrite; ordinary creation uses the shorter built-in
+natural-writing rules.
+
 ## Dependency notices
 
 JavaScript and Rust package dependencies retain their own licenses. Before a public

@@ -60,20 +60,27 @@ export function promptImageContents(
   }));
 }
 
-export function promptImageInstructions(images: readonly PromptImageAttachment[]): string {
+export function promptImageInstructions(
+  images: readonly PromptImageAttachment[],
+  options: { readonly exposeAssetIds?: boolean } = {},
+): string {
   if (images.length === 0) return "";
   return [
     "## 用户附图（内部说明，不要原样输出）",
     "这些图片已加入本机素材库。若模型支持视觉输入，你可以直接查看图片；否则只能依据用户写明的用途，不能编造图片内容。",
+    "不要在文章正文中输出附件文件名、素材 ID、存储路径、图片占位符、配图说明或本节处理过程。图片插入由后续视觉流程完成。",
     ...images.map((image, index) => {
       const purpose = image.intent === "insert"
-        ? "用户明确希望把它插入文章，请在正文中保留其素材引用或让后续配图流程优先安排它。"
+        ? "用户明确希望把它插入文章；写作阶段只需组织适合插图的正文，后续视觉流程会负责实际插入。"
         : image.intent === "analyze"
           ? "用户希望你识别图片内容，并依据可见信息回答或修改文章；不能识别时应明确说明。"
           : image.intent === "material"
             ? "用户仅将它作为素材库图片，可在确实匹配正文时使用。"
-            : "请结合用户文本判断它是素材、待插入图片还是需要识别的图片；不确定时只作为素材保留。";
-      return `- 附图 ${index + 1}：${image.name}（素材 ID：${image.assetId}）。${purpose}`;
+            : "请以用户当前指令判断用途；它可能是待加工原文、参考素材或待插入图片，不得因为看见主题就扩写成另一篇文章。";
+      const identity = options.exposeAssetIds
+        ? `${image.name}（素材 ID：${image.assetId}）`
+        : image.name;
+      return `- 附图 ${index + 1}：${identity}。${purpose}`;
     }),
   ].join("\n");
 }

@@ -27,7 +27,15 @@ describe("prompt image attachments", () => {
 
   it("does not pass binary image content to a text-only model", () => {
     expect(promptImageContents([attachment], false)).toEqual([]);
-    expect(promptImageInstructions([attachment])).toContain("不能编造图片内容");
+    const instructions = promptImageInstructions([attachment]);
+    expect(instructions).toContain("不能编造图片内容");
+    expect(instructions).toContain("后续视觉流程");
+    expect(instructions).not.toContain(attachment.assetId);
+  });
+
+  it("exposes asset ids only to the visual planning context", () => {
+    expect(promptImageInstructions([attachment], { exposeAssetIds: true }))
+      .toContain(`素材 ID：${attachment.assetId}`);
   });
 
   it("passes canonical MIME types to vision-capable model adapters", () => {

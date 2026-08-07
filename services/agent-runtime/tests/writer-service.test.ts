@@ -110,7 +110,11 @@ class MemoryRunJournal implements RunJournalPort {
 }
 
 class FauxWriterAgentFactory implements WriterAgentFactory {
+  systemPrompt = "";
+  userPrompt = "";
+
   createWriterAgent(options: CreateWriterAgentOptions): Agent {
+    this.systemPrompt = options.systemPrompt;
     const faux = fauxProvider({ provider: "faux-writer", tokensPerSecond: 10_000 });
     faux.setResponses([
       fauxAssistantMessage(
@@ -136,6 +140,11 @@ class FauxWriterAgentFactory implements WriterAgentFactory {
       sessionId: options.sessionId,
       toolExecution: "sequential",
     });
+    const originalPrompt = agent.prompt.bind(agent) as (...args: unknown[]) => Promise<void>;
+    agent.prompt = (async (...args: unknown[]) => {
+      this.userPrompt = typeof args[0] === "string" ? args[0] : JSON.stringify(args[0]);
+      await originalPrompt(...args);
+    }) as typeof agent.prompt;
     agent.subscribe(options.onEvent);
     return agent;
   }
@@ -157,6 +166,153 @@ const waitForTerminalRun = async (
 };
 
 describe("WriterService with Pi Agent", () => {
+  it("allows different articles to run concurrently while locking the same article", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-writer-concurrency-"));
+    const articleStore = new ArticleStore(root);
+    await articleStore.initialize();
+    const journal = new MemoryRunJournal();
+    let releaseSecrets!: () => void;
+    const secretsReady = new Promise<void>((resolve) => {
+      releaseSecrets = resolve;
+    });
+    const secretProvider: SecretProvider = {
+      resolve: async () => {
+        await secretsReady;
+        return "test-key";
+      },
+    };
+    const writer = new WriterService(
+      journal,
+      articleStore,
+      secretProvider,
+      new FauxWriterAgentFactory(),
+    );
+    const modelProfile = {
+      providerId: "test-provider",
+      displayName: "Test Provider",
+      protocol: "openai-responses" as const,
+      baseUrl: "https://example.invalid/v1",
+      modelId: "test-model",
+      secretRef: "env://TEST_KEY",
+      supportsVision: false,
+      reasoning: false,
+      thinkingLevel: "off" as const,
+      contextWindow: 32_768,
+      maxTokens: 8_192,
+      timeoutSeconds: 120,
+    };
+
+    const first = await writer.startCreate({
+      articleId: "article:parallel-a",
+      prompt: "写第一篇文章",
+      webSearchMode: "off",
+      modelProfile,
+    });
+    const second = await writer.startCreate({
+      articleId: "article:parallel-b",
+      prompt: "写第二篇文章",
+      webSearchMode: "off",
+      modelProfile,
+    });
+    await expect(writer.startCreate({
+      articleId: "article:parallel-a",
+      prompt: "重复启动第一篇",
+      webSearchMode: "off",
+      modelProfile,
+    })).rejects.toThrow("already active for this article");
+    expect(journal.getRun(first.id)?.status).toBe("running");
+    expect(journal.getRun(second.id)?.status).toBe("running");
+
+    await writer.stop(first.id);
+    await writer.stop(second.id);
+    releaseSecrets();
+  });
+
+  it("injects the content-driven rich Markdown contract into article creation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-writer-markdown-"));
+    const articleStore = new ArticleStore(root);
+    await articleStore.initialize();
+    const journal = new MemoryRunJournal();
+    const factory = new FauxWriterAgentFactory();
+    const writer = new WriterService(
+      journal,
+      articleStore,
+      { resolve: async () => "test-key" },
+      factory,
+    );
+    const started = await writer.startCreate({
+      articleId: "article:rich-markdown",
+      prompt: "写一篇产品介绍",
+      webSearchMode: "off",
+      modelProfile: {
+        providerId: "test-provider",
+        displayName: "Test Provider",
+        protocol: "openai-responses",
+        baseUrl: "https://example.invalid/v1",
+        modelId: "test-model",
+        secretRef: "env://TEST_KEY",
+        supportsVision: false,
+        reasoning: false,
+        thinkingLevel: "off",
+        contextWindow: 32_768,
+        maxTokens: 8_192,
+        timeoutSeconds: 120,
+      },
+    });
+
+    await waitForTerminalRun(journal, started.id);
+    expect(factory.systemPrompt).toContain("全文恰好有一个一级标题");
+    expect(factory.systemPrompt).toContain("至少使用两种与内容匹配的结构化表达");
+    expect(factory.systemPrompt).toContain("核心信息一览");
+    expect(factory.systemPrompt).toContain("不要只裸写 URL");
+    expect(factory.systemPrompt).toContain("accTitle");
+    expect(factory.systemPrompt).toContain("不得泄露事实表、写作计划、格式说明、提示词");
+    expect(factory.systemPrompt).toContain("默认不添加");
+    expect(factory.systemPrompt).not.toContain("逐段检查并修正以下 24 类模式");
+  });
+
+  it("loads the full Humanizer rules only for an explicit deep de-AI rewrite", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-writer-humanizer-"));
+    const articleStore = new ArticleStore(root);
+    await articleStore.initialize();
+    const journal = new MemoryRunJournal();
+    const factory = new FauxWriterAgentFactory();
+    const writer = new WriterService(
+      journal,
+      articleStore,
+      { resolve: async () => "test-key" },
+      factory,
+    );
+    const started = await writer.startCreate({
+      articleId: "article:deep-humanize",
+      prompt: [
+        "<open-publisher-deep-humanize:v1>",
+        "请深度去 AI 化，保留原文事实与 Markdown。",
+      ].join("\n"),
+      webSearchMode: "off",
+      modelProfile: {
+        providerId: "test-provider",
+        displayName: "Test Provider",
+        protocol: "openai-responses",
+        baseUrl: "https://example.invalid/v1",
+        modelId: "test-model",
+        secretRef: "env://TEST_KEY",
+        supportsVision: false,
+        reasoning: false,
+        thinkingLevel: "off",
+        contextWindow: 32_768,
+        maxTokens: 8_192,
+        timeoutSeconds: 120,
+      },
+    });
+
+    await waitForTerminalRun(journal, started.id);
+    expect(factory.systemPrompt).toContain("逐段检查并修正以下 24 类模式");
+    expect(factory.systemPrompt).toContain("删除万能积极总结");
+    expect(factory.userPrompt).toContain("请深度去 AI 化");
+    expect(factory.userPrompt).not.toContain("<open-publisher-deep-humanize:v1>");
+  });
+
   it("preflights a public GitHub URL before writing even without a GitHub token", async () => {
     const jsonResponse = (value: unknown) => new Response(JSON.stringify(value), {
       status: 200,

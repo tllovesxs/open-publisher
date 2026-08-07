@@ -7,6 +7,7 @@ import type {
   JsonValue,
 } from "@open-publisher/contracts";
 import type { TextModelProfile } from "./model-profile.js";
+import RICH_MARKDOWN_PROMPT from "../prompts/shared/rich-markdown.v1.md" with { type: "text" };
 import { promptImageContents, promptImageInstructions, type PromptImageAttachment } from "./image-attachments.js";
 import { PiAgentAdapter, type WriterAgentFactory } from "./pi-adapter.js";
 import { ModelDeadlineExceededError, runWithModelDeadline } from "./model-deadline.js";
@@ -186,7 +187,8 @@ export class RewriteService {
         "你是稿流编辑助手。你只能提出修改建议，绝不能声称或尝试保存、发布、修改文章。",
         "保持原文事实、Markdown 结构、链接、图片与代码块，除非用户明确要求修改它们。",
         "完成后必须调用 submit_rewrite_candidate 一次。",
-      ].join("\n"),
+        RICH_MARKDOWN_PROMPT,
+      ].join("\n\n"),
       sessionId: run.sessionId ?? run.id,
       tools: [submitCandidate],
       onEvent: async (event, signal) => this.handleAgentEvent(run.id, event, signal),

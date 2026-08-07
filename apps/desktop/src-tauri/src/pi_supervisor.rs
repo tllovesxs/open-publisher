@@ -1274,6 +1274,34 @@ impl PiRuntimeSupervisor {
         if request.platforms.is_empty() || request.platforms.len() > 50 {
             return Err("发布计划需要选择 1–50 个平台。".to_owned());
         }
+        if request.media_sources.len() > 200 {
+            return Err("单篇文章引用的图片素材数量不能超过 200 个。".to_owned());
+        }
+        let mut seen_media = HashSet::new();
+        for media in &request.media_sources {
+            let valid_asset_id = !media.asset_id.is_empty()
+                && media.asset_id.len() <= 256
+                && media
+                    .asset_id
+                    .bytes()
+                    .enumerate()
+                    .all(|(index, byte)| match byte {
+                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' => true,
+                        b'_' | b':' | b'-' => index > 0,
+                        _ => false,
+                    });
+            if !valid_asset_id {
+                return Err("assetId 包含不支持的字符。".to_owned());
+            }
+            if !seen_media.insert(media.asset_id.as_str()) {
+                return Err("发布图片素材包含重复项。".to_owned());
+            }
+            let valid_source = media.source.starts_with("https://")
+                || (media.source.starts_with("data:image/") && media.source.contains(";base64,"));
+            if !valid_source {
+                return Err("发布图片必须是 HTTPS 地址或内嵌图片数据。".to_owned());
+            }
+        }
         let delivery_mode = request
             .delivery_mode
             .unwrap_or_else(|| "dry_run".to_owned());
@@ -1309,6 +1337,7 @@ impl PiRuntimeSupervisor {
                 "articleId": request.article_id,
                 "revisionId": request.revision_id,
                 "targets": targets,
+                "mediaSources": request.media_sources,
             }),
         )?;
         public_pi_publish_plan(response)

@@ -20,6 +20,10 @@ import {
   MAX_PROMPT_IMAGE_ATTACHMENTS,
   type PromptImageIntent,
 } from "../lib/imageAttachments";
+import {
+  inferCreationTaskMode,
+  type CreationTaskMode,
+} from "../lib/creationIntent";
 import { mediaAssetIdFromReference } from "../lib/mediaReferences";
 import type { MarkdownTemplate, MediaAsset, PlatformId } from "../types";
 
@@ -50,6 +54,7 @@ export interface CreationRequest {
   imagePlan: ImagePlanPreference;
   agentInstructions?: WorkflowAgentInstruction[];
   webSearchMode: WebSearchMode;
+  taskMode?: CreationTaskMode;
 }
 
 export interface ImagePlanPreference {
@@ -141,7 +146,7 @@ interface CreationDraft {
 }
 
 interface CreatePageProps {
-  generating: boolean;
+  activeCreationCount: number;
   modelProfiles: ModelProfileSummary[];
   activeModelProfileId: string | null;
   switchingModel: boolean;
@@ -194,7 +199,7 @@ const promotionToneOptions: Array<{ id: PromotionTone; instruction: string }> = 
   },
   {
     id: "真人感",
-    instruction: "真人感：使用自然、克制、去 AI 腔的中文。围绕具体使用情境和真实细节展开，允许段落长短不一和带判断的过渡，删除机械排比、套路小标题、重复总结、宏大背景与万能结语；不得虚构第一人称使用经历。",
+    instruction: "真人感：在默认自然写作规则上，进一步增强口语节奏、有依据的作者观点、具体场景和个性表达。允许段落长短不一，删除机械排比、同构小标题、重复总结、宏大开头与万能结语；不得虚构第一人称使用经历。",
   },
 ];
 
@@ -470,6 +475,11 @@ export function CreatePage(props: CreatePageProps) {
         materialMatchThreshold,
       },
       webSearchMode,
+      taskMode: inferCreationTaskMode({
+        instruction: normalizedTopic,
+        hasReferenceText: sourceText.trim().length > 0,
+        hasImages: inputImages.length > 0,
+      }),
     };
   };
 
@@ -834,13 +844,17 @@ export function CreatePage(props: CreatePageProps) {
               <option value="__settings__">添加模型...</option>
             </select>
           </label>
-          <button className="button button--primary" disabled={props.generating || promptImageImporting} onClick={() => {
+          <button className="button button--primary" disabled={promptImageImporting} onClick={() => {
             if (promptImageImporting) return;
             const request = creationRequest();
             if (request) props.onCreate(request);
           }} type="button">
-            {props.generating ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
-            {props.generating ? "正在创作" : promptImageImporting ? "正在导入图片" : "开始创作"}
+            {promptImageImporting ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}
+            {promptImageImporting
+              ? "正在导入图片"
+              : props.activeCreationCount > 0
+                ? "开始另一篇"
+                : "开始创作"}
           </button>
         </div>
       </div>

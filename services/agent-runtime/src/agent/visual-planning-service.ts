@@ -122,6 +122,7 @@ interface ModelPlacement {
   readonly assetId: string | null;
   readonly selectionReason: string;
   readonly alt: string;
+  readonly visibleText?: readonly string[];
 }
 
 const MODEL_PLAN_PARAMETERS = Type.Object({
@@ -134,6 +135,7 @@ const MODEL_PLAN_PARAMETERS = Type.Object({
     assetId: Type.Union([Type.String({ minLength: 1, maxLength: 100 }), Type.Null()]),
     selectionReason: Type.String({ minLength: 1, maxLength: 4_000 }),
     alt: Type.String({ minLength: 1, maxLength: 2_000 }),
+    visibleText: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 80 }), { maxItems: 4 })),
   }), { maxItems: MAX_PLACEMENTS }),
 });
 
@@ -309,38 +311,66 @@ const settingsFor = (request: VisualCompositionRequest): Readonly<Record<string,
   image_backend: clean(request.preferredImageBackend, 80) || "auto",
 });
 
+const visualFormFor: Readonly<Record<VisualType, string>> = {
+  infographic: "A sparse arrangement of symbolic objects, simple shapes, and connecting lines",
+  scene: "One symbolic focal subject in a restrained editorial scene",
+  flowchart: "A sequence of up to three symbolic objects connected by directional arrows",
+  comparison: "A balanced split composition contrasting two visual states through objects and color",
+  framework: "A small group of visual nodes connected through shape, position, and line",
+  timeline: "A left-to-right progression shown through objects, spacing, and directional movement",
+};
+
+const VISIBLE_TEXT_MARKER = "OPEN_PUBLISHER_VISIBLE_TEXT_JSON:";
+
+const renderingStyleFor = (value: string): string => {
+  const normalized = value.toLowerCase();
+  if (/sketch|hand.?drawn|手绘|手写/.test(normalized)) {
+    return "soft hand-drawn ink lines, simple flat shapes, and a subtle tactile texture";
+  }
+  if (/photo|photograph|摄影|写实/.test(normalized)) {
+    return "natural editorial photography, soft daylight, and restrained real-world materials";
+  }
+  if (/3d|三维|立体/.test(normalized)) {
+    return "softly lit dimensional objects with restrained materials and clean silhouettes";
+  }
+  return "clean editorial line art, restrained flat shapes, and a soft tactile finish";
+};
+
+const paletteFor = (value: string | undefined): string => {
+  const normalized = value?.toLowerCase() ?? "";
+  if (/macaron|马卡龙/.test(normalized)) return "muted coral, soft mint, warm gray, and off-white";
+  if (/mono|black|gray|grey|黑白|灰/.test(normalized)) return "charcoal, warm gray, and off-white";
+  if (/warm|暖/.test(normalized)) return "muted coral, warm ochre, soft green, and off-white";
+  if (/cool|冷/.test(normalized)) return "soft teal, muted blue-gray, pale green, and off-white";
+  return "balanced muted colors with clear figure-ground contrast";
+};
+
 const promptFor = (
   placement: Omit<VisualPlacement, "generationPrompt" | "promptFile">,
   settings: Readonly<Record<string, string>>,
-  filename: string,
+  visibleText: readonly string[],
 ): string => {
   // The article paragraph is evidence for the planner, not copy to typeset
   // inside the image. Keep the generation brief short so image models do not
   // turn a whole paragraph into a dense poster or fake UI screenshot.
   const visualBrief = clean(placement.visualContent, 260) || "文章核心观点";
-  const anchor = clean(placement.anchorExcerpt ?? placement.afterHeading ?? "文章核心观点", 80);
-  return truncatePrompt([
-    "---",
-    `illustration_id: ${placement.id}`,
-    `type: ${placement.visualType}`,
-    `style: ${settings.style ?? "sketch-notes"}`,
-    `palette: ${settings.palette ?? "default"}`,
-    "aspect_ratio: 3:2",
-    `output_file: ${filename}`,
-    "---",
-    "",
-    "# 简洁正文配图",
-    "",
-    `LAYOUT: Create one clear 3:2 ${placement.visualType} for one idea only. Use one focal subject, at most three visual elements, generous whitespace, and no dense dashboard layout.`,
-    `ZONES: ${visualBrief}`,
-    `ANCHOR: This image supports the article section “${anchor}”; show the concept visually rather than writing the sentence into the image.`,
-    "TEXT: Render no readable text, paragraphs, headings, tables, captions, UI copy, numbers, or labels. Only use up to three tiny symbolic marks when absolutely necessary.",
-    `COLORS: Use the ${settings.palette ?? "default"} palette consistently.`,
-    `STYLE: ${settings.style ?? "sketch-notes"}. Keep it calm, editorial, simple, and uncluttered; never make a poster or presentation slide.`,
-    "ASPECT: 3:2 landscape.",
-    "",
-    "Do not include brand marks, watermarks, portraits, fabricated metrics, decorative text, or claims not supported by the article.",
-  ].join("\n"), 12_000);
+  const textPolicy = visibleText.length > 0
+    ? `The only readable wording permitted is exactly ${JSON.stringify(visibleText)}. Use it only where essential for understanding, reproduce it verbatim, and render no other writing or pseudo-writing.`
+    : "No readable wording is needed. Render no writing or pseudo-writing.";
+  const prompt = [
+    `${visualFormFor[placement.visualType]} representing this idea: ${visualBrief}.`,
+    "Use one focal subject, clear relationships, and generous negative space on a simple full-bleed background.",
+    `Render with ${renderingStyleFor(settings.style ?? "")}; use ${paletteFor(settings.palette)}.`,
+    "Communicate only with objects, icons, shapes, arrows, scale, position, and color.",
+    "Leave no header area, title band, caption strip, poster frame, presentation slide, sheet of paper, notebook page, card, diagram key, or interface panel.",
+    textPolicy,
+    "Never render prompt fragments, style names, aspect-ratio instructions, layout metadata, filenames, signatures, logos, brand marks, or watermarks.",
+    "Apart from explicitly permitted wording, do not reproduce any phrase from the article or this request. Avoid dense dashboards, portraits, and fabricated metrics.",
+  ].join(" ");
+  return truncatePrompt(
+    `${VISIBLE_TEXT_MARKER}${JSON.stringify(visibleText)}\n${prompt}`,
+    12_000,
+  );
 };
 
 const targetCountFor = (markdown: string, request: VisualCompositionRequest): number => {
@@ -430,6 +460,13 @@ const normalizeModelPlacements = (
     assetId: placement.assetId === null ? null : clean(placement.assetId, 100) || null,
     selectionReason: clean(placement.selectionReason, 900),
     alt: clean(placement.alt, 180),
+    // Exact visible wording is a narrow opt-in. It must already exist in the
+    // article, otherwise planner metadata such as "3:2 landscape" could be
+    // smuggled into the pixels as if it were article content.
+    visibleText: [...new Set((placement.visibleText ?? [])
+      .map((value) => clean(value, 32))
+      .filter((value) => value && markdown.includes(value)))]
+      .slice(0, 4),
   }));
   return normalized.every((placement) =>
     placement.position
@@ -447,6 +484,8 @@ const modelSystemPrompt = [
   "You do not generate images and never mutate the article. Return a bounded visual plan only through return_visual_plan.",
   "Every illustration must teach one distinct concrete relationship, comparison, process, framework, or timeline from a safe prose paragraph. Prefer one focal idea over a complete summary; avoid decorative images and dense posters.",
   "Keep visualContent as a short visual brief, not article copy. Never request paragraphs, headings, tables, UI screenshots, or many labels inside the image. Default to zero readable text and at most three simple visual elements.",
+  "Use visibleText only when reading those exact words is necessary to understand the illustration. Each entry must be copied verbatim from the article, use at most four short entries, and otherwise return an empty array.",
+  "Never put prompt wording, style names, aspect ratios, layout directions, field names, or generation metadata in visibleText.",
   "Prefer supplied material only when its written metadata actually serves the visual need; an asset may be used at most once. Otherwise select generate.",
   "When requiredAssetIds is non-empty, those images were explicitly requested for insertion. Return one placement for each required id, keeping all of them as existing_asset choices.",
   "Do not invent metrics, logos, brands, people, quotations, or in-image text. Keep images explanatory, sparse, and use the configured style and palette consistently.",
@@ -522,7 +561,7 @@ export class VisualPlanningService {
       () => agent.prompt(
         [
           `Plan the requested illustrations from this JSON data. Use return_visual_plan now; do not answer with prose.\n${JSON.stringify(prompt)}`,
-          promptImageInstructions(images),
+          promptImageInstructions(images, { exposeAssetIds: true }),
         ].filter(Boolean).join("\n\n"),
         promptImageContents(images, profile.supportsVision),
       ),
@@ -615,7 +654,11 @@ export class VisualPlanningService {
       };
       const filename = `${String(ordinal).padStart(2, "0")}-${item.visualType}-${slug(block?.heading ?? item.alt, `concept-${ordinal}`)}.png`;
       const promptFile = `prompts/${String(ordinal).padStart(2, "0")}-${item.visualType}-${slug(block?.heading ?? item.alt, `concept-${ordinal}`)}.md`;
-      return { ...placementBase, generationPrompt: promptFor(placementBase, settings, filename), promptFile };
+      return {
+        ...placementBase,
+        generationPrompt: promptFor(placementBase, settings, item.visibleText ?? []),
+        promptFile,
+      };
     });
     return {
       sourceRevisionHash: request.sourceRevisionHash,

@@ -6,6 +6,15 @@ import { MarkdownWorkbench } from "./MarkdownWorkbench";
 import { ImageInsertDialog } from "./ImageInsertDialog";
 import { generatedMediaAssetId } from "../lib/mediaReferences";
 
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async () => ({
+      svg: '<svg viewBox="0 0 200 80"><text x="10" y="30">研究到发布</text></svg>',
+    })),
+  },
+}));
+
 const platforms = [
   { id: "csdn" as const, name: "CSDN", shortName: "CSDN", limit: "", status: "connected" as const },
 ];
@@ -58,6 +67,62 @@ describe("Markdown media support", () => {
 
     rerender(<MarkdownPreview markdown="![不安全](javascript:alert(1))" />);
     expect(screen.queryByRole("img", { name: "不安全" })).toBeNull();
+  });
+
+  it("renders tables, task lists, collapsible details, and footnotes", () => {
+    render(
+      <MarkdownPreview
+        markdown={[
+          "# 富 Markdown 示例",
+          "",
+          "| 能力 | 状态 |",
+          "| --- | --- |",
+          "| 表格 | 可用 |",
+          "",
+          "- [x] 已核验",
+          "- [ ] 待发布",
+          "",
+          "<details open>",
+          "<summary>补充资料</summary>",
+          "",
+          "这里是折叠内容。",
+          "",
+          "</details>",
+          "",
+          "公开事实带有脚注。[^1]",
+          "",
+          "[^1]: [项目主页](https://example.com/project)",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.getByRole("table")).toHaveTextContent("表格");
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes[0]).toBeChecked();
+    expect(checkboxes[0]).toBeDisabled();
+    expect(screen.getByText("补充资料").closest("details")).toHaveAttribute("open");
+    expect(screen.getByRole("link", { name: "项目主页" })).toHaveAttribute("href", "https://example.com/project");
+  });
+
+  it("renders Mermaid lazily with an accessible title", async () => {
+    render(
+      <MarkdownPreview
+        markdown={[
+          "```mermaid",
+          "flowchart LR",
+          "accTitle: 研究到发布",
+          "accDescr: 内容从资料核验流转到多平台发布",
+          "A[研究] --> B[写作] --> C[发布]",
+          "```",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("正在绘制图表");
+    const diagram = await screen.findByRole("img", { name: "研究到发布" });
+    expect(diagram.querySelector("svg")).not.toBeNull();
+    expect(screen.queryByText("flowchart LR")).toBeNull();
   });
 
   it("inserts a media-card Markdown payload at the selection", () => {

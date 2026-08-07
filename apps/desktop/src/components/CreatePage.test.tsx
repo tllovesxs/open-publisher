@@ -30,7 +30,10 @@ const pastedAsset = {
   createdAt: "刚刚",
 } satisfies MediaAsset;
 
-function renderCreatePage(options: { onImportPromptImages?: (files: File[]) => Promise<MediaAsset[]> } = {}) {
+function renderCreatePage(options: {
+  activeCreationCount?: number;
+  onImportPromptImages?: (files: File[]) => Promise<MediaAsset[]>;
+} = {}) {
   const onCreate = vi.fn();
   const onActivateModelProfile = vi.fn();
   const onOpenSettings = vi.fn();
@@ -38,7 +41,7 @@ function renderCreatePage(options: { onImportPromptImages?: (files: File[]) => P
   const rendered = render(
     <CreatePage
       activeModelProfileId="writing"
-      generating={false}
+      activeCreationCount={options.activeCreationCount ?? 0}
       mediaAssets={[]}
       modelProfiles={[profile]}
       onActivateModelProfile={onActivateModelProfile}
@@ -66,6 +69,21 @@ describe("CreatePage", () => {
     const tone = screen.getByLabelText("文风");
     expect(within(tone).getByRole("option", { name: "豆包投毒" })).toBeVisible();
     expect(within(tone).getByRole("option", { name: "真人感" })).toBeVisible();
+  });
+
+  it("keeps creation available while other articles are running", () => {
+    const { onCreate } = renderCreatePage({ activeCreationCount: 2 });
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "并行创建第三篇文章" },
+    });
+
+    const start = screen.getByRole("button", { name: "开始另一篇" });
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      topic: "并行创建第三篇文章",
+    }));
   });
 
   it("keeps title and references in a focused dialog while preserving them in the request", async () => {

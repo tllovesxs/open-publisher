@@ -38,12 +38,14 @@ describe("PublishDialog", () => {
           ],
         }}
         onClose={vi.fn()}
+        onOpenPublishingGuide={vi.fn()}
         onOpenSettings={vi.fn()}
         onRefresh={vi.fn().mockResolvedValue(undefined)}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         open
         platforms={platforms}
         publishing={false}
+        publisherConfigured
         refreshing={false}
       />,
     );
@@ -71,12 +73,14 @@ describe("PublishDialog", () => {
           platforms: [{ id: "csdn", authenticated: true, accountLabel: "demo" }],
         }}
         onClose={vi.fn()}
+        onOpenPublishingGuide={vi.fn()}
         onOpenSettings={vi.fn()}
         onRefresh={vi.fn().mockResolvedValue(undefined)}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         open
         platforms={platforms}
         publishing={false}
+        publisherConfigured
         refreshing={false}
       />,
     );
@@ -84,5 +88,39 @@ describe("PublishDialog", () => {
     expect(screen.getByText(/连接正在恢复/)).toBeVisible();
     expect(screen.getByRole("checkbox", { name: /CSDN/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /同步到/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "添加发布功能" })).toBeNull();
+  });
+
+  it("opens the publishing tutorial when no bridge Token has been configured", () => {
+    const onOpenPublishingGuide = vi.fn();
+    const onOpenSettings = vi.fn();
+    render(
+      <PublishDialog
+        article={article}
+        bridge={{
+          available: false,
+          connected: false,
+          state: "token_required",
+          detail: "尚未配置发布连接 Token。",
+          platforms: [],
+        }}
+        onClose={vi.fn()}
+        onOpenPublishingGuide={onOpenPublishingGuide}
+        onOpenSettings={onOpenSettings}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        open
+        platforms={[]}
+        publisherConfigured={false}
+        publishing={false}
+        refreshing={false}
+      />,
+    );
+
+    expect(screen.getByText("尚未添加发布功能")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "添加发布功能" }));
+    expect(onOpenPublishingGuide).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "前往设置" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 });

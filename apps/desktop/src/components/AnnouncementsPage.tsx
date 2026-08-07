@@ -37,56 +37,67 @@ interface NoticeManifest {
 const REPOSITORY_URL = "https://github.com/tllovesxs/open-publisher";
 const RAW_BASE_URL = "https://raw.githubusercontent.com/tllovesxs/open-publisher/main/";
 const MANIFEST_URL = `${RAW_BASE_URL}docs/announcements.json`;
+const PUBLISHING_GUIDE_PATH = "docs/integrations/wechatsync-publishing-guide.md";
 const MAX_NOTICE_BODY_LENGTH = 80_000;
 
 const embeddedManifest: NoticeManifest = {
   version: 1,
-  updatedAt: "2026-08-05",
+  updatedAt: "2026-08-07",
   repository: REPOSITORY_URL,
   items: [
     {
-      id: "read-first",
-      type: "announcement",
-      pinned: true,
-      title: "稿流正在构建：写作、配图与分发保持在同一条工作流中",
-      summary: "当前版本先把文章创作与本地草稿管理跑稳；平台同步始终由你确认后才会开始。",
-      date: "2026-08-05",
-      badge: "置顶",
-      tags: ["公告", "本地优先", "工作流"],
-      path: "docs/announcements/read-first.md",
-      body: `# 稿流正在构建
-
-稿流把**创作、配图和发布准备**放在同一个本地工作台里。文章正文始终以 Markdown 修订为准，AI 只提出结果，最终内容由你确认。
-
-## 这一版可以做什么
-
-- 根据创作要求生成并保存文章草稿。
-- 使用素材库或生成图片，插入到 Markdown 的合适位置。
-- 通过已安装的浏览器发布桥查看可用平台，并在确认后创建平台草稿。
-
-## 发布边界
-
-平台账号登录状态只保留在浏览器扩展中。稿流不会读取 Cookie，也不会在未经确认时对外发布内容。`,
-    },
-    {
-      id: "announcement-center-guide",
+      id: "wechatsync-publishing-guide",
       type: "tutorial",
       pinned: false,
-      title: "如何阅读与刷新公告",
-      summary: "公告内容优先从项目仓库同步；网络暂不可用时，应用会显示随安装包附带的版本。",
-      date: "2026-08-05",
-      badge: "使用说明",
-      tags: ["教程", "公告栏"],
-      path: "docs/announcements/announcement-center-guide.md",
-      body: `# 如何阅读与刷新公告
+      title: "如何添加文章同步发布功能",
+      summary: "安装文章同步助手、复制 Token，并把稿流连接到浏览器中的已登录平台。",
+      date: "2026-08-07",
+      badge: "发布教程",
+      tags: ["发布", "WechatSync", "Token"],
+      path: PUBLISHING_GUIDE_PATH,
+      body: `# 稿流发布使用教程
 
-公告栏会先展示可离线阅读的内置内容，再尝试同步项目仓库中的最新索引。
+使用文章同步助手连接稿流后，可以把文章同步到微信公众号、知乎、CSDN 等平台的草稿箱。
 
-1. 在左侧选择公告或教程。
-2. 使用右上角的“刷新公告”重新读取仓库内容。
-3. 网络不可用时会显示“使用内置公告”，不影响阅读。
+## 1. 下载插件
 
-公告正文会缓存在当前会话中，切换条目不会重复请求。`,
+打开[文章同步助手官网](https://www.wechatsync.com/?utm_source=extension_about)，下载并安装浏览器插件。
+
+## 2. 打开插件设置
+
+安装完成后，点击浏览器工具栏里的「文章同步助手」，再点击右上角的「设置」。
+
+![点击文章同步助手右上角的设置](./images/wechatsync-open-settings.png)
+
+## 3. 复制连接信息
+
+在设置中找到「同步桥接」：
+
+1. 打开「CLI / MCP 连接」开关。
+2. 复制下方显示的 \`Token\`。
+3. 服务器地址保持为 \`ws://localhost:9527\`。
+
+![打开 CLI MCP 连接并复制 Token](./images/wechatsync-cli-mcp-settings.png)
+
+> 截图中的 Token 已隐藏，请复制自己插件中显示的 Token。
+
+## 4. 填入稿流
+
+打开稿流，进入「设置 → 平台账号 → 发布连接」，填写：
+
+- 服务器地址：\`ws://localhost:9527\`
+- Token：刚才从插件中复制的 Token
+
+点击「保存并测试」。显示「已连接」后，再点击「刷新状态」，稿流就会显示浏览器中已经登录的平台。
+
+## 5. 同步文章
+
+1. 在稿流的「文章」页面选择文章，点击「发布」。
+2. 勾选需要同步的平台。
+3. 点击「同步到草稿」。
+4. 打开对应平台的草稿箱，检查内容后手动完成最终发布。
+
+如果一直显示「等待插件」，请确认插件中的「CLI / MCP 连接」开关已经打开，然后重新打开插件并在稿流中刷新状态。`,
     },
   ],
 };
@@ -97,7 +108,7 @@ function safeText(value: unknown, limit: number, fallback = "") {
 }
 
 function isRepositoryNoticePath(path: string) {
-  return /^docs\/announcements\/[a-z0-9][a-z0-9._-]*\.md$/i.test(path);
+  return path === PUBLISHING_GUIDE_PATH;
 }
 
 function rawDocumentUrl(path: string) {
@@ -165,10 +176,10 @@ function kindLabel(item: NoticeItem) {
 }
 
 function sourceLabel(source: SourceState) {
-  if (source === "loading") return "正在同步公告";
+  if (source === "loading") return "正在同步教程";
   if (source === "remote") return "已从 GitHub 同步";
-  if (source === "fallback") return "使用内置公告";
-  return "内置公告";
+  if (source === "fallback") return "使用内置教程";
+  return "内置教程";
 }
 
 export function AnnouncementsPage() {
@@ -189,14 +200,6 @@ export function AnnouncementsPage() {
     () => items.find((item) => item.id === selectedId) ?? items[0] ?? null,
     [items, selectedId],
   );
-  const announcements = useMemo(
-    () => items.filter((item) => item.type === "announcement"),
-    [items],
-  );
-  const tutorials = useMemo(
-    () => items.filter((item) => item.type === "tutorial"),
-    [items],
-  );
 
   const refreshManifest = useCallback(async () => {
     const requestId = ++manifestRequestId.current;
@@ -208,7 +211,14 @@ export function AnnouncementsPage() {
       });
       if (!response.ok) throw new Error(`仓库返回 HTTP ${response.status}`);
       const normalized = normalizeManifest(await response.json());
-      if (!normalized) throw new Error("公告索引格式无效");
+      if (!normalized) {
+        if (!mounted.current || manifestRequestId.current !== requestId) return;
+        bodyCache.current = cacheEmbeddedBodies();
+        setManifest(embeddedManifest);
+        setSourceState("embedded");
+        setSelectedId(embeddedManifest.items[0]!.id);
+        return;
+      }
       if (!mounted.current || manifestRequestId.current !== requestId) return;
       bodyCache.current = {};
       setManifest(normalized);
@@ -283,9 +293,9 @@ export function AnnouncementsPage() {
     <section className="page page--announcements">
       <header className="page-heading page-heading--announcements">
         <div>
-          <span className="page-kicker">项目动态</span>
-          <h1>公告与教程</h1>
-          <p>从项目仓库同步，网络不可用时保留安装包内的可读版本。</p>
+          <span className="page-kicker">发布连接</span>
+          <h1>发布教程</h1>
+          <p>按照教程连接浏览器中的文章同步助手，读取已登录的发布平台。</p>
         </div>
         <div className="announcement-page-actions">
           <span aria-live="polite" className={`announcement-source is-${sourceState}`}>
@@ -294,15 +304,14 @@ export function AnnouncementsPage() {
           </span>
           <button className="button button--quiet" disabled={sourceState === "loading"} onClick={() => void refreshManifest()} type="button">
             <RefreshCw aria-hidden="true" className={sourceState === "loading" ? "spin" : undefined} size={16} />
-            刷新公告
+            刷新教程
           </button>
         </div>
       </header>
 
       <div className="announcement-layout">
         <aside aria-label="公告列表" className="announcement-list">
-          <NoticeSection items={announcements} label="公告" onSelect={setSelectedId} selectedId={selected?.id ?? ""} />
-          <NoticeSection items={tutorials} label="教程" onSelect={setSelectedId} selectedId={selected?.id ?? ""} />
+          <NoticeSection items={items} label="教程" onSelect={setSelectedId} selectedId={selected?.id ?? ""} />
         </aside>
 
         <article aria-busy={bodyState === "loading"} className="announcement-document">
@@ -334,7 +343,9 @@ export function AnnouncementsPage() {
                     正在读取公告正文
                   </div>
                 )}
-                {bodyState === "ready" && <MarkdownPreview markdown={body} />}
+                {bodyState === "ready" && (
+                  <MarkdownPreview imageBaseUrl={rawDocumentUrl(selected.path) ?? undefined} markdown={body} />
+                )}
                 {bodyState === "error" && (
                   <div className="announcement-document__error" role="alert">
                     <CircleAlert aria-hidden="true" size={20} />

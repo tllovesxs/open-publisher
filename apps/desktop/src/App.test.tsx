@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import App, {
   applyTemplateFixedBlocks,
   buildCreationSeed,
+  buildCreationWriterPrompt,
   normalizeTemplate,
   persistedFailedCreationContext,
   replaceStudioValue,
@@ -239,6 +240,61 @@ describe("desktop product flow", () => {
     });
 
     expect(seed).toContain(references);
+  });
+
+  it("keeps a Markdown-formatting request above template, tone and length defaults", () => {
+    const sourceImage = {
+      id: "asset-source-screenshot",
+      name: "待排版原文.png",
+      alt: "待排版原文",
+      description: "用户粘贴的原文截图",
+      visualDescription: "一张包含中文正文的截图",
+      usageHint: "仅作为待识别原文",
+      generationPrompt: "",
+      tags: ["原文"],
+      src: "data:image/png;base64,abc",
+      source: "uploaded" as const,
+      createdAt: "2026-08-08T00:00:00.000Z",
+    };
+    const template = normalizeTemplate({
+      id: "product-promotion",
+      name: "产品推广",
+      description: "产品推广模板",
+      category: "产品推广",
+      markdown: "# {{title}}\n\n## 写作模板规范\n\n从用户痛点开始写完整推广文。",
+      isBuiltIn: true,
+    });
+    const request = {
+      topic: "给这个内容加一下md格式并配图",
+      title: "",
+      references: "",
+      contentType: "产品推广",
+      tone: "真人感：增强口语节奏和个性表达。",
+      length: "约 800 字",
+      platforms: [],
+      preset: "standard" as const,
+      disabledNodeIds: [],
+      template,
+      imageAssets: [],
+      inputImages: [{ assetId: sourceImage.id, intent: "auto" as const, asset: sourceImage }],
+      imagePlan: { mode: "fixed" as const, targetCount: 2, materialMatchThreshold: 30 },
+      webSearchMode: "auto" as const,
+      taskMode: "transform" as const,
+    };
+
+    const prompt = buildCreationWriterPrompt(request);
+    const visual = visualCompositionFromCreation(request);
+    expect(prompt).toContain("任务模式：现有内容加工");
+    expect(prompt).toContain("用户当前指令具有最高优先级");
+    expect(prompt).toContain("不得扩写成新的产品推广文章");
+    expect(prompt).not.toContain("产品推广事实表");
+    expect(prompt).not.toContain("写作模板规范");
+    expect(prompt).not.toContain("约 800 字");
+    expect(prompt).not.toContain("写一篇可直接发布的完整文章");
+    expect(prompt).toContain("不得输出素材 ID");
+    expect(visual.mode).toBe("fixed");
+    expect(visual.targetCount).toBe(2);
+    expect(visual.assets).toEqual([]);
   });
 
   it("normalizes selected asset metadata without clipping normal long descriptions", () => {
@@ -598,6 +654,75 @@ describe("desktop product flow", () => {
     await waitFor(() => expect(
       (screen.getByLabelText("Markdown 正文") as HTMLTextAreaElement).value,
     ).toContain("Pi Runtime 流式生成"), { timeout: 5_000 });
+  });
+
+  it("starts another article while the first writer run is still active", async () => {
+    const articleIdsByRun = new Map<string, string>();
+    const startPiArticleRun = vi.fn<DesktopBridge["startPiArticleRun"]>(async ({ articleId }) => {
+      const runId = `parallel-run-${articleIdsByRun.size + 1}`;
+      articleIdsByRun.set(runId, articleId);
+      return {
+        schemaVersion: "2",
+        id: runId,
+        articleId,
+        sessionId: `session:${articleId}`,
+        agentId: "writer",
+        operation: "create_article",
+        status: "running",
+        baseRevisionId: null,
+        createdAt: "2026-08-07T00:00:00.000Z",
+        startedAt: "2026-08-07T00:00:00.000Z",
+        completedAt: null,
+        error: null,
+      };
+    });
+    const getPiRunEvents = vi.fn<DesktopBridge["getPiRunEvents"]>(async () => []);
+    const getPiRun = vi.fn<DesktopBridge["getPiRun"]>(async (runId) => ({
+      schemaVersion: "2",
+      id: runId,
+      articleId: articleIdsByRun.get(runId) ?? "unknown-article",
+      sessionId: `session:${articleIdsByRun.get(runId) ?? "unknown-article"}`,
+      agentId: "writer",
+      operation: "create_article",
+      status: "running",
+      baseRevisionId: null,
+      createdAt: "2026-08-07T00:00:00.000Z",
+      startedAt: "2026-08-07T00:00:00.000Z",
+      completedAt: null,
+      error: null,
+    }));
+    setDesktopBridgeForTests({
+      ...nativeTestBridge,
+      startPiArticleRun,
+      getPiRunEvents,
+      getPiRun,
+    });
+    render(<App />);
+    await waitForNativeRuntime();
+    setImagePlan("none");
+
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "并行创作第一篇" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始创作" }));
+    await waitFor(() => expect(startPiArticleRun).toHaveBeenCalledTimes(1));
+
+    const navigation = screen.getByRole("navigation", { name: "主导航" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "创作" }));
+    const startAnother = await screen.findByRole("button", { name: "开始另一篇" });
+    expect(startAnother).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("文章主题"), {
+      target: { value: "并行创作第二篇" },
+    });
+    fireEvent.click(startAnother);
+
+    await waitFor(() => expect(startPiArticleRun).toHaveBeenCalledTimes(2));
+    const startedArticleIds = startPiArticleRun.mock.calls.map(([input]) => input.articleId);
+    expect(new Set(startedArticleIds).size).toBe(2);
+    await waitFor(() => {
+      expect(getPiRunEvents).toHaveBeenCalledWith("parallel-run-1", 0);
+      expect(getPiRunEvents).toHaveBeenCalledWith("parallel-run-2", 0);
+    });
   });
 
   it("passes an approximate custom length into the writing brief", async () => {

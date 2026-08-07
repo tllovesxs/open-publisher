@@ -1,187 +1,277 @@
-# 稿流（Open Publisher）
+<p align="center">
+  <img src="docs/brand/gaoliu-logo.svg" alt="稿流 Gaoliu Logo" width="112">
+</p>
 
-> 一个本地优先、以 Markdown 为内容源的 AI 写作与多平台发布工作台。
+<h1 align="center">稿流 Gaoliu</h1>
 
-Open Publisher 把研究、写作、审核、配图规划、平台改写和发布任务放进同一个桌面工作区。
-它不是“让 Agent 拿着账号自动乱点”的脚本：Agent 只生产结构化内容，真正的发布动作由
-可审计、可重试的确定性任务队列执行。
+<p align="center">
+  <strong>让内容从想法，自然流向发布。</strong>
+</p>
 
-后续产品与技术改进统一遵循
-[`稿流项目基线规范 v0.3`](docs/product/project-baseline.md)。该文档明确区分当前实现与
-目标设计，并固定了产品范围、Agent/Prompt、Pi Agent Harness、数据契约、安全边界、
-测试门禁和实施顺序。
+<p align="center">
+  在一个本地桌面工作台中完成资料读取、联网研究、AI 写作、正文配图、文章修改与多平台草稿同步。<br>
+  保留 Markdown 主稿和每次修改记录，让 Agent 真正参与创作，而不是只生成一段无法继续维护的文字。
+</p>
 
-当前版本为 `0.1.0-alpha`。P0 主要用于验证产品架构和本地演示闭环；默认使用
-deterministic mock（确定性模拟）提供商，不会向真实模型或内容平台写入数据。
+<p align="center">
+  <a href="https://github.com/tllovesxs/open-publisher/releases"><img src="https://img.shields.io/github/v/release/tllovesxs/open-publisher?label=Release&color=2f80ed" alt="最新版本"></a>
+  <a href="https://github.com/tllovesxs/open-publisher/releases"><img src="https://img.shields.io/github/downloads/tllovesxs/open-publisher/total?label=Downloads&color=22a06b" alt="累计下载"></a>
+  <a href="https://github.com/tllovesxs/open-publisher/stargazers"><img src="https://img.shields.io/github/stars/tllovesxs/open-publisher?style=flat&color=f5a623" alt="GitHub Stars"></a>
+  <a href="https://github.com/tllovesxs/open-publisher/network/members"><img src="https://img.shields.io/github/forks/tllovesxs/open-publisher?label=Forks&color=4f86c6" alt="GitHub Forks"></a>
+  <a href="https://github.com/tllovesxs/open-publisher/issues?q=is%3Aissue"><img src="https://img.shields.io/github/issues-search?query=repo%3Atllovesxs%2Fopen-publisher%20is%3Aissue&label=Issues&color=8a63d2" alt="全部 GitHub Issues"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0 License"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20macOS%20arm64-lightgrey" alt="Windows x64 与 macOS Apple Silicon">
+</p>
 
-## v0.1 做到了什么
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/windows.svg" alt="Windows" title="Windows" width="25">
+  &nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/apple.svg" alt="macOS" title="macOS" width="25">
+  &nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/markdown.svg" alt="Markdown" title="Markdown" width="25">
+  &nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/typescript.svg" alt="TypeScript" title="TypeScript" width="25">
+</p>
 
-| 能力 | 当前状态 |
-| --- | --- |
-| 桌面工作区 | React + Tauri v2，一级导航为创作、文章、模板、素材库和设置；发布是文章内的受控动作 |
-| 内容模型 | Markdown 主稿、不可变 `ArticleRevision`、内容寻址 Artifact 和平台派生稿 |
-| Agent 运行时 | TypeScript + Bun + Hono Sidecar，以 Pi Agent Core 执行模型/工具循环、流式、取消、steer 与会话压缩 |
-| 模型接入 | 默认 Mock；提供 OpenAI-compatible 文本/图像提供商的接入边界，不内置独立模型网关 |
-| 发布可靠性 | SQLite durable outbox、幂等键、审批哈希、Attempt/Receipt 和 `UNKNOWN` 状态核验；超时不会盲目重试 |
-| 平台接入 | 通过本机 WechatSync 动态读取当前已登录且已适配的平台，并在明确确认后保存平台草稿；不会点击最终发布 |
-| 工作流定制 | 版本化声明式策略与产品 Harness；不执行用户提供的任意代码 |
-| 万能导互通 | 通过 `ContentPackage v1` 交换 Markdown、素材、哈希和来源信息，不共享数据库或凭据 |
+<p align="center">
+  <strong><a href="https://github.com/tllovesxs/open-publisher/releases">📦 下载最新版</a></strong>
+  &nbsp;·&nbsp;
+  <a href="docs/integrations/wechatsync-publishing-guide.md">📖 发布教程</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/tllovesxs/open-publisher/issues">🐛 反馈问题</a>
+  &nbsp;·&nbsp;
+  <a href="CONTRIBUTING.md">🤝 参与共创</a>
+</p>
 
-P0 **没有承诺**以下能力：
+稿流是一个面向创作者、独立开发者和内容团队的本地 AI 内容工作台。你可以只输入一个选题，也可以交给它一个本地项目文件夹、GitHub 仓库、参考资料或图片，让写作 Agent 先理解事实，再完成文章。
 
-- 不会在默认演示或测试中执行真实平台写入；WechatSync 草稿同步必须由用户在文章页明确确认；
-- 不会代替用户点击最终发布，验证码、平台二次确认和最终发布仍在浏览器中完成；
-- 没有产出或签名 Windows、macOS、Linux 安装包；
-- 没有验证长时间生图、供应商限流、断网恢复和平台编辑器 DOM 变更；
-- 没有“桌面关闭后仍能运行”的云端定时任务，也不要求用户部署网络服务；
-- 不把“去 AI 化”描述为规避检测，只提供自然表达、重复检查和人工编辑辅助。
+文章生成后仍然是可继续编辑的 Markdown。你可以在同一个页面中修改正文、与 AI 讨论、局部重写、补充图片、查看预览，并随时恢复到任意一次保存过的版本。需要分发时，稿流会读取 WechatSync 当前已经登录且可用的平台，把确认后的内容同步为平台草稿，实现全平台的发布效果.
 
-平台的准确能力边界见
-[`docs/integrations/platform-capabilities.md`](docs/integrations/platform-capabilities.md)，
-验收范围见 [`docs/product/v0.1-acceptance.md`](docs/product/v0.1-acceptance.md)。
+稿流不绑定某一家模型服务。文本模型和生图模型可以分别配置，也可以保存多套文本模型并在创作页或文章侧边栏中切换。
 
-## 架构
+如果这个项目对你有帮助，欢迎在 GitHub 点一个 Star ⭐，这对项目后续迭代很重要。
 
-```mermaid
-flowchart LR
-    UI["React WebView<br/>编辑与审阅"] -->|"类型化 Tauri 命令"| Rust["Rust Host<br/>校验 · 秘密边界 · 进程监管"]
-    Rust -->|"随机 loopback 端口<br/>每次启动独立 token"| Runtime["Pi Sidecar<br/>Bun · Hono · Product Harness"]
-    Runtime --> Store["SQLite + Markdown ArticleStore"]
-    Runtime --> Outbox["确定性发布服务<br/>Outbox · 幂等 · 核验"]
-    Outbox --> API["官方 API"]
-    Outbox --> Bridge["WechatSync 本机桥<br/>仅保存平台草稿"]
-    Bridge --> Ext["浏览器扩展<br/>保持登录态"]
-    Store <-->|"ContentPackage v1"| Wandao["万能导"]
-```
+---
 
-| 分层 | 主要技术 | 责任 |
+## 🖼️ 界面预览
+
+<!--
+截图文件待补充。收到图片后使用与 Wandao 相同的 2 × 2 表格展示：
+
+docs/images/gaoliu-create.png    创作页：输入主题并选择项目、模板、素材和模型
+docs/images/gaoliu-editor.png    文章页：Markdown 编辑、同步预览和 AI 改文
+docs/images/gaoliu-assets.png    素材库：管理本地图片并交给视觉 Agent 匹配
+docs/images/gaoliu-publish.png   发布页：读取当前登录平台并确认同步草稿
+
+建议截图使用相同窗口尺寸，并在提交前压缩图片体积。
+-->
+
+> 📌 **截图占位：** 创作页、文章编辑页、素材库和发布确认页截图将在正式发布前补充。
+
+## ✨ 为什么使用稿流
+
+| | 能力 | | 能力 |
+| --- | --- | --- | --- |
+| 📚 | **基于资料写作**：读取本地项目、GitHub 仓库和用户资料，减少脱离事实的空写 | 🌐 | **按需联网核实**：通过模型原生搜索或 Tavily 查询最新信息 |
+| ✍️ | **写作与改稿一体**：生成全文后继续对话、局部修改、全文重写和选区优化 | 🖼️ | **视觉 Agent 配图**：分析文章结构，优先匹配素材库，不足时再调用生图模型 |
+| 📝 | **Markdown 主稿**：编辑与预览同步，支持表格、任务列表、代码块、引用和 Mermaid | 🔄 | **版本记录**：每次保存与 AI 修改形成修订，可预览并恢复历史版本 |
+| 🎨 | **模板与仿写**：内置产品推广模板，也可从参考文章提取结构、文风和排版 | 🤖 | **多模型配置**：文本模型与生图模型独立配置，多套文本模型随时切换 |
+| 📦 | **本地素材库**：粘贴、导入和管理图片，支持作为参考、素材或正文插图 | 📤 | **多平台草稿**：展示 WechatSync 当前已登录的平台，确认后同步平台草稿 |
+| 🔐 | **本地优先**：文章、修订、素材和任务数据保存在本机，外部写入必须明确确认 | ⚡ | **桌面体验**：Tauri 原生桌面端，支持任务进度、停止生成和失败恢复 |
+
+## 🚀 从一个想法到多平台草稿
+
+### 先把事实交给 Agent
+
+稿流支持多种创作入口，不要求用户先整理成一份完美的提示词：
+
+- **主题创作**：输入主题、目标读者和希望文章解决的问题
+- **本地项目**：选择项目文件夹，让 Agent 阅读可用的说明、配置和源码资料
+- **GitHub 项目**：粘贴仓库地址，自动读取公开简介、README 和语言信息
+- **联网研究**：遇到最新事实或陌生产品时，先检索来源再开始写作
+- **图片输入**：粘贴图片作为内容参考、素材库资源或待插入的正文图片
+- **参考模板**：使用产品推广模板，或根据已有文章提取结构和表达方式
+
+对于具名项目，项目资料是事实来源；参考文章只提供表达方式。资料没有出现的功能、数据、案例和技术细节，不应由 Agent 根据项目名称猜测。
+
+### 在文章里继续完成创作
+
+生成正文不是流程终点。文章页同时提供 Markdown 编辑、渲染预览和 AI 侧边栏：
+
+- 直接编辑 Markdown，并按比例同步编辑区和预览区
+- 让 AI 回答文章相关问题，或执行全文、局部和选区修改
+- 粘贴图片，让 AI 识别图片、加入素材库或插入合适段落
+- 根据正文变化评估已有配图匹配度，并决定是否重新配图
+- 查看每一次修订的内容、修改原因和时间，恢复时保留原历史记录
+- 在生成过程中查看读项目、联网、写作、配图和保存等真实进度
+
+### 让配图跟着文章结构走
+
+视觉 Agent 不会只在文末堆放图片。它会先分析当前正文和小节，再给出插入位置、图片用途与来源策略：
+
+1. 优先检查用户已经选择的素材
+2. 判断哪些段落真正需要图片
+3. 为缺少素材的位置生成独立生图提示词
+4. 由用户确认或调整配图方案
+5. 将生成结果加入本地素材库，并写入新的文章修订
+
+用户可以选择自动配图、指定数量或不配图。文章修改后，也可以重新生成与当前正文一致的配图策略。
+
+### 确认后再同步平台
+
+稿流通过本机 WechatSync 桥读取当前浏览器中已经登录、且适配器支持的平台。平台列表不是写死的；软件只展示当前环境真实可用的账号。
+
+同步前，用户可以检查文章和目标平台。稿流负责保存平台草稿，不读取浏览器 Cookie，也不会代替用户点击最终发布按钮。连接和 Token 配置请查看 [WechatSync 发布教程](docs/integrations/wechatsync-publishing-guide.md)。
+
+## ⚡ 快速开始
+
+### 安装桌面版
+
+1. 打开 [GitHub Releases](https://github.com/tllovesxs/open-publisher/releases)
+2. 下载 Windows x64 安装包或 macOS Apple Silicon 安装包
+3. 启动稿流，在“设置”中配置文本模型
+4. 如需 AI 生图，再单独配置生图模型
+5. 回到“创作”，输入主题并按需添加项目、模板、素材或图片
+6. 生成并检查文章，确认后同步到当前已登录的平台草稿
+
+发行版已内置稿流 Agent Runtime，普通用户不需要安装 Node.js、Bun、Rust 或 Python。
+
+> ⚠️ **签名说明：** 当前自动构建产物尚未完成 Windows 代码签名、macOS Developer ID 签名和 Apple 公证。请只从本项目 GitHub Releases 下载，并根据系统提示确认应用来源。
+
+### 配置模型
+
+文本模型与生图模型使用两套独立配置：
+
+| 配置 | 用途 | 是否必需 |
 | --- | --- | --- |
-| 桌面界面 | React 19、TypeScript、Vite | Markdown 编辑、预览、审阅与任务状态展示 |
-| 本地主机 | Tauri v2、Rust | IPC 校验、Sidecar 生命周期和敏感能力边界 |
-| Agent Runtime | TypeScript、Bun、Hono、Pi Agent Core | Harness、模型访问、工具循环、Artifact 与发布用例 |
-| 本地持久化 | SQLite、Markdown ArticleStore、Rust 密钥存储 | 修订、运行快照、任务、尝试与回执 |
-| 跨进程协议 | JSON Schema、TypeScript SDK | 桌面、Sidecar、扩展、技能和适配器的版本化契约 |
-| 浏览器助手 | Manifest V3 | 在明确来源的编辑器中填充草稿，异常时返回 `NEEDS_USER` |
+| **文本模型** | 写作、改稿、项目理解、研究与视觉规划 | 是 |
+| **生图模型** | 在素材不足时生成封面或正文图片 | 否 |
+| **Tavily** | 文本模型没有原生联网搜索时提供检索 | 否 |
+| **GitHub Token** | 提高 GitHub API 访问额度；公开仓库可不填 | 否 |
+| **WechatSync Token** | 连接本机发布桥并读取可用平台 | 发布时需要 |
 
-更完整的说明在
-[`system-overview.md`](docs/architecture/system-overview.md) 和
-[`harness-and-agents.md`](docs/architecture/harness-and-agents.md)。
+稿流支持 OpenAI-compatible 模型服务，并会在设置页测试连接、发现可用模型。API 地址、模型名称和密钥请以所选服务商提供的信息为准。
 
-## 快速开始
+<details>
+<summary><strong>🧑‍💻 源码启动与本地开发</strong></summary>
 
-当前开发路径以 Windows PowerShell 为准。请先准备：
+源码开发需要：
 
-- Node.js 22.19+
-- pnpm 11（仓库声明版本为 `11.7.0`）
-- Rust 1.88（由 `rust-toolchain.toml` 固定）
-- Bun 1.3.14（`pnpm install` 会提供仓库锁定的版本；亦可安装全局 Bun）
+| 环境 | 版本 |
+| --- | --- |
+| Node.js | `22.19+` |
+| pnpm | `11.7.0` |
+| Bun | `1.3.14` |
+| Rust | `1.88.0` |
 
-在仓库根目录安装依赖：
-
-```powershell
-.\scripts\bootstrap.ps1
-```
-
-脚本会安装 pnpm workspace 依赖。Pi Runtime 在开发时由 Bun 执行，在打包时编译为
-Tauri sidecar。首次安装依赖需要联网。
-
-启动完整桌面开发环境：
+在仓库根目录执行：
 
 ```powershell
+git clone https://github.com/tllovesxs/open-publisher.git
+cd open-publisher
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Tauri 的 Rust Host 会启动 Bun 编译的 Pi Sidecar，为它选择随机本机端口并注入每次启动独立的
-Bearer token。端口和 token 不会返回给 WebView。
-
-打包前置检查会编译并验证目标平台的 Pi Sidecar；安装包不要求系统 Python。准确的
-构建和签名边界见 [`release-packaging.md`](docs/development/release-packaging.md)。
-
-只开发界面时可以运行：
+`pnpm dev` 会先编译 TypeScript Agent Runtime，再启动 Tauri 桌面端。只开发前端界面时可以运行：
 
 ```powershell
 pnpm dev:web
 ```
 
-该模式使用 interface-only bridge，只展示本地界面与模拟数据，不能直接访问 Pi
-Sidecar，也不能执行发布。
+浏览器预览只用于界面开发，不能调用本地 Agent、读取项目文件或执行发布。
 
-运行当前全部基础检查：
+</details>
+
+---
+
+<details>
+<summary><strong>🛠️ 质量检查与安装包构建</strong></summary>
+
+运行完整基础检查：
 
 ```powershell
 pnpm quality
 ```
 
-它会依次执行 TypeScript 检查与测试、Web 构建、Pi Runtime 编译与 bundle preflight，
-以及 Rust 格式、编译检查和测试。真实模型及真实平台调用不属于默认测试。
+检查范围包括 TypeScript 类型与测试、前端构建、Agent Runtime 编译、桌面 Bundle 输入检查，以及 Rust 格式、编译和测试。
 
-详细演示步骤见
-[`docs/development/manual-demo.md`](docs/development/manual-demo.md)。
-其中也包含显式 opt-in 的 SiliconFlow 真实模型 E2E 命令；该命令真实生成正文与图片，
-但发布阶段固定使用本地 dry-run，不会写入任何内容平台。
+GitHub Actions 流水线支持：
 
-## 安全设计
+| 平台 | 架构 | 产物 |
+| --- | --- | --- |
+| Windows | x64 | NSIS `.exe` 安装包 |
+| macOS | Apple Silicon | `.dmg` 安装包 |
 
-- WebView 不直接访问 Sidecar；完整桌面模式只通过白名单 Tauri 命令调用 Rust Host。
-- Sidecar 仅监听随机 loopback 端口，`/api/v1` 请求需要每次启动生成的 Bearer token。
-- 连接资料、工作流与普通数据库记录不应携带 API Key、Cookie 或平台密码。
-- Agent 和第三方 Skill 只能生成结构化 Artifact，不能直接获得发布权限。
-- 发布审批绑定内容和计划哈希；重复入队复用幂等任务，不确定结果先进入 `UNKNOWN`
-  并核验，不能盲目重试。
-- 浏览器任务只携带文章、目标来源、过期时间和一次性 nonce；扩展不读取或导出 Cookie，
-  不点击最终发布按钮。
-- 文章页的 WechatSync 同步只读取平台 ID、已登录状态和插件提供的账号显示名，并通过本机桥请求保存草稿；
-  WebView 不接触 Cookie、桥接令牌或账号凭据。最终发布仍由用户在平台页面完成。
-- `pnpm dev:web` 明确不具备 Sidecar 与秘密访问能力。
+推送 `v*` Tag 后，流水线会生成安装包、SHA-256 校验文件和 GitHub Release 草稿。详细边界见 [发布与打包说明](docs/development/release-packaging.md)。
 
-这是 P0 安全基线，不等于经过生产安全审计。真实凭据、账号和未发布稿件不要放进公开
-Issue 或测试夹具。详见 [`SECURITY.md`](SECURITY.md) 与
-[`trust-boundaries.md`](docs/architecture/trust-boundaries.md)。
+</details>
 
-## 与万能导交换内容
+---
 
-Open Publisher 和万能导保持两个独立应用，不共享数据库、运行环境、插件进程或
-平台凭据。`ContentPackage v1` 使用普通目录作为交换边界：
+## 🏗️ 技术架构
 
-```text
-content-package/
-  manifest.json
-  articles/
-    <stable-article-id>.md
-  assets/
-    <sha256>.<extension>
-```
+| 分层 | 主要技术 | 负责内容 |
+| --- | --- | --- |
+| **桌面界面** | React 19、TypeScript、Vite | 创作、Markdown 编辑、预览、素材与任务状态 |
+| **桌面主机** | Tauri v2、Rust | 本地能力边界、敏感配置、进程监管和桌面打包 |
+| **Agent Runtime** | TypeScript、Bun、Hono、Pi Agent Core | 模型循环、工具调用、会话压缩、写作与视觉任务 |
+| **内容存储** | SQLite、Markdown ArticleStore | 文章、修订、素材、任务、发布计划与回执 |
+| **发布连接** | WechatSync 本机桥 | 读取当前登录平台并保存确认后的平台草稿 |
 
-万能导可以先把 `articles` 目录当作普通 Markdown 来源导入；后续 Provider 可读取
-`manifest.json` 获得稳定 ID、哈希、来源和修订元数据。导入端必须拒绝绝对路径、
-父目录穿越、越界符号链接和哈希不匹配。完整约定见
-[`docs/integrations/wandao.md`](docs/integrations/wandao.md)。
+更完整的设计说明见 [系统架构](docs/architecture/system-overview.md)、[Agent 与 Harness](docs/architecture/harness-and-agents.md) 和 [项目基线规范](docs/product/project-baseline.md)。
 
-## 仓库结构
+## 🔐 本地数据与使用边界
 
-```text
-apps/desktop/                   React + Tauri v2 桌面端
-services/agent-runtime/         Bun + Hono + Pi Agent Core 本地 Sidecar
-extensions/browser-publisher/  Manifest V3 草稿填充扩展
-packages/contracts/             版本化 JSON Schema 与类型
-packages/platform-sdk/          平台适配器契约
-packages/skill-sdk/             Skill 包契约与校验
-skills/official/                第一方声明式 Skills
-docs/adr/                       架构决策记录
-docs/architecture/              系统、信任边界与 Agent 设计
-docs/integrations/              平台与万能导集成边界
-scripts/                        安装与质量检查脚本
-```
+- 文章、Markdown 修订、素材和任务记录保存在用户本机
+- 文本模型和生图模型分别配置，密钥由桌面端本地安全边界管理
+- React WebView 不直接接收平台 Cookie、浏览器凭据或发布桥 Token
+- Agent 可以准备和修改内容，但不能绕过确认直接执行最终发布
+- 发布任务绑定明确的文章版本和目标平台，内容变化后需要重新确认
+- WechatSync 只返回平台标识、登录状态和账号显示名，不把 Cookie 交给稿流
+- 不确定的发布结果不会自动重复提交，需要用户核验后处理
 
-跨桌面、Pi Runtime、浏览器扩展或 Skill 的改动应先更新 `packages/contracts` 中的版本化
-契约。贡献流程见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+请只发布你有权使用的文字与图片，不要在 Issue、截图或日志中公开 API Key、Token、Cookie、账号密码和未发布内容。安全问题请按照 [安全策略](SECURITY.md) 反馈。
 
-## 许可与第三方来源
+## 🤝 参与共创
 
-仓库核心代码采用 [`AGPL-3.0-only`](LICENSE)。
+欢迎参与写作质量、视觉 Agent、Markdown 编辑体验、模型兼容、平台草稿同步、安装包构建和文档维护。
 
-AIWriteX 仅用于产品/架构研究。内置的正文配图规则改编自 MIT 协议的
-`JimLiu/baoyu-skills` 中 `baoyu-article-illustrator` 的工作流；它只提供文字规则，
-不会打包或执行上游的脚本、提供商或素材。来源、核对版本和许可证记录在
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。引入新的模板、提示词、Skill
-或适配器前，需要记录来源 URL、精确版本、SPDX 标识、归属信息和兼容性结论。
+| 入口 | 用途 |
+| --- | --- |
+| [贡献指南](CONTRIBUTING.md) | 本地开发、提交代码和测试要求 |
+| [GitHub Issues](https://github.com/tllovesxs/open-publisher/issues) | 反馈 Bug、提出功能建议 |
+| [项目基线规范](docs/product/project-baseline.md) | 了解产品边界、Agent 设计和实施原则 |
+| [第三方来源](THIRD_PARTY_NOTICES.md) | 查看依赖、Skill 和提示词资源的来源与许可证 |
+
+## 🔗 项目与联系
+
+| 项目 | 地址 |
+| --- | --- |
+| GitHub | [tllovesxs/open-publisher](https://github.com/tllovesxs/open-publisher) |
+| Issues | [问题与建议](https://github.com/tllovesxs/open-publisher/issues) |
+| Releases | [桌面安装包](https://github.com/tllovesxs/open-publisher/releases) |
+| 作者 | [tllovesxs](https://github.com/tllovesxs) |
+| 联系邮箱 | `tl200599@163.com` |
+| 作者微信 | `pressure_spring` |
+
+## 📈 Star history
+
+<a href="https://www.star-history.com/#tllovesxs/open-publisher&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=tllovesxs/open-publisher&type=Date&theme=dark">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=tllovesxs/open-publisher&type=Date">
+    <img alt="稿流 GitHub Star 历史趋势" src="https://api.star-history.com/svg?repos=tllovesxs/open-publisher&type=Date">
+  </picture>
+</a>
+
+## 📄 License
+
+本项目采用 [GNU Affero General Public License v3.0](LICENSE) 开源。
+
+内置正文配图规则改编自 MIT 协议的 `JimLiu/baoyu-skills` 中 `baoyu-article-illustrator` 工作流。Pi Agent、相关依赖与第三方资源的版本、来源和许可证记录在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+<p align="center">
+  <strong>稿流：让内容从想法，自然流向发布。</strong><br>
+  如果这个项目对你有帮助，欢迎在 GitHub 点一个 Star ⭐
+</p>

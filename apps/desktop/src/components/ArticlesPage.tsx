@@ -59,6 +59,7 @@ interface WorkflowFailure {
 
 interface ArticlesPageProps {
   articles: Article[];
+  activeWorkflowArticleIds: ReadonlySet<string>;
   modelProfiles: ModelProfileSummary[];
   activeModelProfileId: string | null;
   switchingModel: boolean;
@@ -98,8 +99,10 @@ interface ArticlesPageProps {
   wechatSyncStatus: WechatSyncBridgeStatus | null;
   wechatSyncRefreshing: boolean;
   publishing: boolean;
+  publisherConfigured: boolean;
   onRefreshWechatSync: (forceRefresh?: boolean) => Promise<void>;
   onOpenPublisherSettings: () => void;
+  onOpenPublishingGuide: () => void;
   onPublishToPlatforms: (platforms: PlatformId[]) => Promise<void>;
   onRewriteArticle: (
     instruction: string,
@@ -164,6 +167,7 @@ function loadArticleBrowserPreference(): ArticleBrowserPreference {
 
 export function ArticlesPage({
   articles,
+  activeWorkflowArticleIds,
   modelProfiles,
   activeModelProfileId,
   switchingModel,
@@ -203,8 +207,10 @@ export function ArticlesPage({
   wechatSyncStatus,
   wechatSyncRefreshing,
   publishing,
+  publisherConfigured,
   onRefreshWechatSync,
   onOpenPublisherSettings,
+  onOpenPublishingGuide,
   onPublishToPlatforms,
   onRewriteArticle,
   onRewriteRunStarted,
@@ -334,9 +340,15 @@ export function ArticlesPage({
               onClick={() => onSelect(article.id)}
               type="button"
             >
-              <span className={`article-status article-status--${article.status}`}>
-                {statusLabel[article.status]}
-              </span>
+              {activeWorkflowArticleIds.has(article.id) ? (
+                <span className="article-status article-status--running">
+                  <LoaderCircle className="spin" size={11} />创作中
+                </span>
+              ) : (
+                <span className={`article-status article-status--${article.status}`}>
+                  {statusLabel[article.status]}
+                </span>
+              )}
               <strong>{article.title}</strong>
               <span className="article-list-item__meta">
                 <span>{article.updatedAt}</span>
@@ -447,7 +459,7 @@ export function ArticlesPage({
               ) : (
                 <Sparkles size={16} />
               )}
-              {workflowRunning ? "处理中" : "AI 完善全文"}
+              {workflowRunning ? "处理中" : "深度去 AI 化"}
             </button>
             <button
               className="button button--primary"
@@ -548,10 +560,12 @@ export function ArticlesPage({
           onClose={() => setPublishDialogOpen(false)}
           onRefresh={onRefreshWechatSync}
           onOpenSettings={onOpenPublisherSettings}
+          onOpenPublishingGuide={onOpenPublishingGuide}
           onSubmit={onPublishToPlatforms}
           open={publishDialogOpen}
           platforms={platforms}
           publishing={publishing}
+          publisherConfigured={publisherConfigured}
           refreshing={wechatSyncRefreshing}
         />
         <RevisionHistoryDrawer

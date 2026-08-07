@@ -3,6 +3,8 @@ import type { AgentRunEventV2, AgentRunV2, JsonValue } from "@open-publisher/con
 import { Type } from "typebox";
 import CREATE_PROMPT from "../prompts/writer/create.v1.md" with { type: "text" };
 import SYSTEM_PROMPT from "../prompts/writer/system.v1.md" with { type: "text" };
+import RICH_MARKDOWN_PROMPT from "../prompts/shared/rich-markdown.v1.md" with { type: "text" };
+import HUMANIZER_PROMPT from "../prompts/shared/humanizer-zh.v1.md" with { type: "text" };
 import type { SecretProvider } from "../security/secret-provider.js";
 import type { ArticleFileState, ArticleStore } from "../storage/article-store.js";
 import type { RunJournalPort } from "../runs/run-journal.js";
@@ -48,6 +50,8 @@ export const releaseArticleRunLock = (articleId: string, token: symbol): void =>
 
 const isTerminal = (status: AgentRunV2["status"]): boolean =>
   ["completed", "failed", "stopped", "interrupted"].includes(status);
+
+const DEEP_HUMANIZE_MARKER = "<open-publisher-deep-humanize:v1>";
 
 const WRITE_PARAMETERS = Type.Object({
   title: Type.String({ minLength: 1, maxLength: 2_000 }),
@@ -404,6 +408,8 @@ export class WriterService {
     request: CreateArticleRunRequest,
     current: (ArticleFileState & { markdown: string }) | null,
   ): Promise<void> {
+    const deepHumanize = request.prompt.includes(DEEP_HUMANIZE_MARKER);
+    const workingPrompt = request.prompt.replaceAll(DEEP_HUMANIZE_MARKER, "").trim();
     const beforeStart = this.journal.getRun(run.id);
     if (!beforeStart || isTerminal(beforeStart.status)) {
       this.cleanupRun(run.id);
@@ -493,7 +499,11 @@ export class WriterService {
     const agent = this.pi.createWriterAgent({
       profile: request.modelProfile,
       apiKey,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: [
+        SYSTEM_PROMPT,
+        RICH_MARKDOWN_PROMPT,
+        deepHumanize ? HUMANIZER_PROMPT : "",
+      ].filter(Boolean).join("\n\n"),
       sessionId: run.sessionId ?? run.id,
       tools: [...researchTools, ...repositoryTools, writeTool],
       onEvent: async (event, signal) => {
@@ -574,7 +584,7 @@ export class WriterService {
     const requestContext = current
       ? `\n\n当前文章标题：${current.title}\n当前正文将被完整重写。`
       : "";
-    const localProject = localProjectContext(request.prompt);
+    const localProject = localProjectContext(workingPrompt);
     if (localProject) {
       // This is intentionally represented as a normal tool lifecycle event so
       // older desktop clients can render it without a new contract version.
@@ -615,7 +625,7 @@ export class WriterService {
       });
     }
     let githubEvidence = "";
-    const githubRepository = githubRepositoryFromText(request.prompt);
+    const githubRepository = githubRepositoryFromText(workingPrompt);
     if (githubRepository) {
       const toolCallId = `github-preflight:${run.id}`;
       this.emit(run.id, "tool.started", {
@@ -657,7 +667,7 @@ export class WriterService {
       request.modelProfile,
       "Article generation",
       () => agent.prompt(
-        `${CREATE_PROMPT}${researchInstruction ? `\n${researchInstruction}` : ""}${localProjectInstruction ? `\n\n本地项目资料硬性约束：\n${localProjectInstruction}` : ""}${githubInstruction ? `\n\n## GitHub 事实资料（由程序预检）\n${githubInstruction}` : ""}${promptImageInstructions(images) ? `\n\n${promptImageInstructions(images)}` : ""}\n\n用户要求：\n${request.prompt}${requestContext}`,
+        `${CREATE_PROMPT}${researchInstruction ? `\n${researchInstruction}` : ""}${localProjectInstruction ? `\n\n本地项目资料硬性约束：\n${localProjectInstruction}` : ""}${githubInstruction ? `\n\n## GitHub 事实资料（由程序预检）\n${githubInstruction}` : ""}${promptImageInstructions(images) ? `\n\n${promptImageInstructions(images)}` : ""}\n\n用户要求：\n${workingPrompt}${requestContext}`,
         promptImageContents(images, request.modelProfile.supportsVision),
       ),
     );

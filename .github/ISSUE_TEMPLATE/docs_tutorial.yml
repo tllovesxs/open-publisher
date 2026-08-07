@@ -1,0 +1,56 @@
+name: 教程 / 文档建议
+description: 补充教程、排障文档、使用案例或修正 README
+title: "[Docs] "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        适合提交模型配置、写作流程、配图、WechatSync 发布、安装排障和 README 修正。
+
+        教程截图和样例文章必须先脱敏。
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过已有 Issue 和 PR，没有找到相同建议。
+          required: true
+        - label: 我确认文档、截图和样例不包含 API Key、Token、Cookie 或私人内容。
+          required: true
+  - type: dropdown
+    id: docs_type
+    attributes:
+      label: 文档类型
+      options:
+        - 快速开始
+        - 模型 / API 配置
+        - 创作与写作质量
+        - Markdown 与配图
+        - WechatSync 发布
+        - 安装 / 升级 / 排障
+        - README 修正
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: content
+    attributes:
+      label: 建议内容
+      description: 请说明希望新增或修改什么。
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: 参考资料
+      description: 可提供官方文档、公开教程或脱敏截图。
+  - type: dropdown
+    id: willing
+    attributes:
+      label: 是否愿意提交 PR
+      options:
+        - 愿意提交文档 PR
+        - 愿意协助校对
+        - 暂时只提供建议
+        - 其他

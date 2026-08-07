@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: WechatSync 发布教程
+    url: https://github.com/tllovesxs/open-publisher/blob/main/docs/integrations/wechatsync-publishing-guide.md
+    about: 遇到 Token、连接或平台草稿问题时，请先对照这份教程排查。
+  - name: 安全问题报告
+    url: https://github.com/tllovesxs/open-publisher/security/policy
+    about: 涉及密钥、本地数据或发布权限的安全问题，请不要在公开 Issue 中披露细节。

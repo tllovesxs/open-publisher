@@ -27,6 +27,7 @@ import type {
   PublishTargetInput,
   UnknownPublishResolution,
 } from "../publishing/publish-outbox-service.js";
+import type { PublishMediaSourceInput } from "../publishing/publish-media.js";
 import type { ArticleWriteRequestV2 } from "@open-publisher/contracts";
 import {
   PI_AGENT_VERSION,
@@ -66,6 +67,7 @@ const isTerminalRunStatus = (status: string): boolean =>
   ["completed", "failed", "stopped", "interrupted"].includes(status);
 
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
+const MEDIA_ASSET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 const isArticleWriteRequest = (value: unknown): value is ArticleWriteRequestV2 => {
@@ -133,6 +135,7 @@ interface PublishPlanRequest {
   readonly articleId: string;
   readonly revisionId: string;
   readonly targets: readonly PublishTargetInput[];
+  readonly mediaSources?: readonly PublishMediaSourceInput[];
 }
 
 const isPublishDeliveryMode = (value: unknown): value is PublishDeliveryMode =>
@@ -147,6 +150,17 @@ const isPublishPlanRequest = (value: unknown): value is PublishPlanRequest => {
   return (
     typeof body.articleId === "string" && IDENTIFIER_PATTERN.test(body.articleId) &&
     typeof body.revisionId === "string" && IDENTIFIER_PATTERN.test(body.revisionId) &&
+    (body.mediaSources === undefined || (
+      Array.isArray(body.mediaSources) && body.mediaSources.length <= 200 &&
+      body.mediaSources.every((media) => {
+        if (!media || typeof media !== "object" || Array.isArray(media)) return false;
+        const source = media as Record<string, unknown>;
+        return typeof source.assetId === "string" && MEDIA_ASSET_ID_PATTERN.test(source.assetId) &&
+          typeof source.source === "string" && source.source.length > 0 && source.source.length <= 50_000_000 &&
+          (/^https:\/\//i.test(source.source) ||
+            /^data:image\/(?:png|jpe?g|gif|webp|avif);base64,[a-z0-9+/=\s]+$/i.test(source.source));
+      })
+    )) &&
     Array.isArray(body.targets) && body.targets.length > 0 && body.targets.length <= 50 &&
     body.targets.every((target) => {
       if (!target || typeof target !== "object" || Array.isArray(target)) return false;
@@ -678,6 +692,7 @@ export const createRuntimeApp = ({
             revisionId: article.currentRevisionId,
             title: article.title,
             markdown: article.markdown,
+            mediaSources: body.mediaSources ?? [],
             targets: body.targets,
           }),
           201,

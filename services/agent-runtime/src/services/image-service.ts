@@ -9,6 +9,13 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_IMAGES = 4;
 const SUPPORTED_SIZES = new Set(["512x512", "768x768", "1024x1024", "1024x1536", "1536x1024"]);
+const PROVIDER_NEGATIVE_PROMPT = [
+  "text", "letters", "words", "numbers", "typography", "pseudo-text", "headings",
+  "captions", "labels", "annotations", "prompt text", "metadata", "interface text",
+  "logos", "brand marks", "signatures", "watermarks", "poster", "presentation slide",
+  "notebook page", "sheet of paper", "title band", "caption strip",
+].join(", ");
+const VISIBLE_TEXT_MARKER = "OPEN_PUBLISHER_VISIBLE_TEXT_JSON:";
 
 export interface ImageModelProfile {
   readonly providerId: string;
@@ -211,6 +218,90 @@ const isPublicHttpsImageUrl = (url: URL): boolean => {
   return true;
 };
 
+const legacyVisualPromptBody = (value: string): string => {
+  if (!/(?:^|\n)# 简洁正文配图\s*(?:\n|$)/.test(value) || !/(?:^|\n)LAYOUT:\s*/.test(value)) {
+    return value;
+  }
+  let body = value;
+  if (body.startsWith("---\n")) {
+    const frontmatterEnd = body.indexOf("\n---", 4);
+    if (frontmatterEnd >= 0) body = body.slice(frontmatterEnd + 4);
+  }
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^#\s+/.test(line))
+    .flatMap((line) => {
+      const field = /^(LAYOUT|ZONES|ANCHOR|TEXT|COLORS|STYLE|ASPECT):\s*(.*)$/i.exec(line);
+      if (!field) return [line];
+      if (["ANCHOR", "TEXT"].includes(field[1]!.toUpperCase())) return [];
+      return field[2]?.trim() ? [field[2].trim()] : [];
+    })
+    .join(" ");
+};
+
+const currentLegacyVisualPromptBody = (value: string): string => {
+  const firstSentence = /^Create a 3:2 landscape .*? that explains one idea visually:\s*(.+?)\.\s*/i.exec(value);
+  if (!firstSentence) return value;
+  const subject = firstSentence[1]?.trim() || "the article's central idea";
+  return [
+    `A sparse full-bleed editorial illustration representing this idea: ${subject}.`,
+    value
+      .slice(firstSentence[0].length)
+      .replace(
+        /Use the [^.]{1,100} palette with a calm [^.]{1,500} editorial rendering style\.\s*Style guidance controls only line work, texture, shapes, and color; it never authorizes lettering or annotations\.\s*/i,
+        "",
+      ),
+  ].join(" ").replace(/\s+/g, " ").trim();
+};
+
+const visibleTextFromPrompt = (value: string): { prompt: string; visibleText: string[] } => {
+  if (!value.startsWith(VISIBLE_TEXT_MARKER)) return { prompt: value, visibleText: [] };
+  const lineEnd = value.indexOf("\n");
+  if (lineEnd < 0) return { prompt: "", visibleText: [] };
+  const encoded = value.slice(VISIBLE_TEXT_MARKER.length, lineEnd).trim();
+  let parsed: unknown = [];
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    parsed = [];
+  }
+  const visibleText = Array.isArray(parsed)
+    ? [...new Set(parsed
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.replace(/\s+/g, " ").trim().slice(0, 32))
+      .filter(Boolean))].slice(0, 4)
+    : [];
+  return { prompt: value.slice(lineEnd + 1), visibleText };
+};
+
+const providerPromptFor = (value: string): { prompt: string; visibleText: string[] } => {
+  const extracted = visibleTextFromPrompt(value);
+  const renderingBrief = currentLegacyVisualPromptBody(
+    legacyVisualPromptBody(extracted.prompt),
+  ).trim();
+  const textPolicy = extracted.visibleText.length > 0
+    ? [
+        `The only readable wording authorized for the image is exactly ${JSON.stringify(extracted.visibleText)}.`,
+        "Use those exact words only where essential and render no other writing or pseudo-writing.",
+      ].join(" ")
+    : "No readable wording is requested; render no writing or pseudo-writing.";
+  const boundary = [
+    "Treat this request only as private rendering instructions, never as visible image content.",
+    "Never place prompt wording, style names, aspect-ratio instructions, layout metadata, filenames, paths, or field names in the image.",
+    textPolicy,
+    "Do not add unrequested captions, labels, annotations, interface text, signatures, logos, brand marks, or watermarks.",
+  ].join(" ");
+  const availableLength = MAX_PROMPT_LENGTH - boundary.length - 2;
+  return {
+    prompt: `${renderingBrief.slice(0, availableLength).trimEnd()}\n\n${boundary}`,
+    visibleText: extracted.visibleText,
+  };
+};
+
+const supportsNegativePromptParameter = (modelId: string): boolean =>
+  !/^(?:gpt-image(?:-|$)|dall-e(?:-|$))/i.test(modelId.trim());
+
 /**
  * Small OpenAI-compatible image client. It deliberately lives outside Pi: Pi
  * owns text/tool loops, while image rendering is a bounded, cancellable job.
@@ -224,10 +315,12 @@ export class ImageService {
 
   async generate(request: GenerateImageRequest, signal?: AbortSignal): Promise<ImageGenerationResult> {
     throwIfOperationCancelled(signal);
-    const prompt = request.prompt.trim();
-    if (!prompt || prompt.length > MAX_PROMPT_LENGTH) {
+    const requestedPrompt = request.prompt.trim();
+    if (!requestedPrompt || requestedPrompt.length > MAX_PROMPT_LENGTH) {
       throw new Error("Image prompt must contain 1 to 16000 characters");
     }
+    const prepared = providerPromptFor(requestedPrompt);
+    const prompt = prepared.prompt;
     if (!SUPPORTED_SIZES.has(request.size)) {
       throw new Error("Image size is not supported");
     }
@@ -237,8 +330,9 @@ export class ImageService {
     const secret = await this.secrets.resolve(request.modelProfile.secretRef);
     if (!secret) throw new Error("Image model secret is unavailable");
 
-    const response = await this.fetchImplementation(
-      `${request.modelProfile.baseUrl.replace(/\/$/, "")}/images/generations`,
+    const endpoint = `${request.modelProfile.baseUrl.replace(/\/$/, "")}/images/generations`;
+    const sendRequest = (includeNegativePrompt: boolean) => this.fetchImplementation(
+      endpoint,
       {
         method: "POST",
         headers: {
@@ -251,10 +345,21 @@ export class ImageService {
           prompt,
           size: request.size,
           response_format: "b64_json",
+          ...(includeNegativePrompt ? { negative_prompt: PROVIDER_NEGATIVE_PROMPT } : {}),
         }),
         ...(signal ? { signal } : {}),
       },
     );
+    const includedNegativePrompt = prepared.visibleText.length === 0
+      && supportsNegativePromptParameter(request.modelProfile.modelId);
+    let response = await sendRequest(includedNegativePrompt);
+    // OpenAI-compatible relays vary on whether they accept negative_prompt.
+    // A schema rejection happens before generation, so retry once without the
+    // optional field while retaining the absolute no-text boundary in prompt.
+    if (includedNegativePrompt && [400, 415, 422].includes(response.status)) {
+      throwIfOperationCancelled(signal);
+      response = await sendRequest(false);
+    }
     throwIfOperationCancelled(signal);
     if (!response.ok) {
       throw new Error(`Image provider request failed with HTTP ${response.status}`);

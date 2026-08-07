@@ -1,0 +1,16 @@
+# Runtime code, release automation, security boundaries and the desktop UI
+# require the maintainer's initial review. Documentation remains open for
+# focused community improvements.
+/.github/ @tllovesxs
+/.gitignore @tllovesxs
+/SECURITY.md @tllovesxs
+
+/apps/ @tllovesxs
+/services/ @tllovesxs
+/packages/ @tllovesxs
+/extensions/ @tllovesxs
+/scripts/ @tllovesxs
+/skills/ @tllovesxs
+
+/package.json @tllovesxs
+/pnpm-lock.yaml @tllovesxs

@@ -9,6 +9,16 @@ const DATA_IMAGE_PATTERN =
 
 type MediaSource = Pick<MediaAsset, "id" | "src">;
 
+export interface PublishMediaSource {
+  assetId: string;
+  source: string;
+}
+
+export interface PublishMediaResolution {
+  sources: PublishMediaSource[];
+  missingAssetIds: string[];
+}
+
 export function mediaMarkdownReference(asset: Pick<MediaAsset, "id">) {
   return `asset://${asset.id}`;
 }
@@ -48,4 +58,30 @@ export function resolveMarkdownImageSource(
     return source ? directImageSource(source) : null;
   }
   return directImageSource(reference);
+}
+
+/**
+ * Projects only the local assets referenced by the current article into the
+ * publish request. Canonical Markdown keeps compact asset:// URLs; the runtime
+ * resolves them only in its immutable platform variants.
+ */
+export function publishMediaSourcesForMarkdown(
+  markdown: string,
+  assets: readonly MediaSource[],
+): PublishMediaResolution {
+  const assetIds = [...new Set(
+    Array.from(markdown.matchAll(/asset:\/\/([a-z0-9:_-]{1,256})/gi), (match) => match[1]!),
+  )];
+  const sources: PublishMediaSource[] = [];
+  const missingAssetIds: string[] = [];
+  for (const assetId of assetIds) {
+    const asset = assets.find((candidate) => candidate.id === assetId);
+    const source = asset ? directImageSource(asset.src) : null;
+    if (!source) {
+      missingAssetIds.push(assetId);
+      continue;
+    }
+    sources.push({ assetId, source });
+  }
+  return { sources, missingAssetIds };
 }

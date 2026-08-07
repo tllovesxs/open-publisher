@@ -12,7 +12,7 @@ afterEach(() => {
 const connectExtension = async (
   bridge: WechatSyncLocalBridge,
   respond: (request: Record<string, unknown>) => Record<string, unknown>,
-) => {
+): Promise<WebSocket> => {
   const port = bridge.websocketPort;
   if (!port) throw new Error("bridge websocket did not start");
   const socket = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -25,6 +25,7 @@ const connectExtension = async (
     socket.addEventListener("open", () => resolve(), { once: true });
     socket.addEventListener("error", () => reject(new Error("extension websocket failed")), { once: true });
   });
+  return socket;
 };
 
 describe("WechatSyncLocalBridge", () => {
@@ -84,5 +85,66 @@ describe("WechatSyncLocalBridge", () => {
     });
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "Invalid or missing token" });
+  });
+
+  it("keeps an established extension session active with lightweight heartbeats", async () => {
+    const bridge = new WechatSyncLocalBridge({
+      token: "extension-token",
+      websocketPort: 0,
+      httpPort: 0,
+      heartbeatIntervalMs: 10,
+    });
+    bridges.push(bridge);
+    bridge.start();
+
+    const requests: Record<string, unknown>[] = [];
+    await connectExtension(bridge, (request) => {
+      requests.push(request);
+      return request.method === "openPublisherHeartbeat"
+        ? { id: request.id, error: { code: -32601, message: "Unknown method" } }
+        : { id: request.id, result: [{ id: "wechat", isAuthenticated: true }] };
+    });
+
+    await expect.poll(
+      () => requests.some((request) => request.method === "openPublisherHeartbeat"),
+    ).toBe(true);
+
+    const response = await fetch(`http://127.0.0.1:${bridge.httpPort}/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "listPlatforms", params: {} }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      result: [{ id: "wechat", isAuthenticated: true }],
+    });
+  });
+
+  it("stops heartbeats after the extension disconnects", async () => {
+    const bridge = new WechatSyncLocalBridge({
+      token: "extension-token",
+      websocketPort: 0,
+      httpPort: 0,
+      heartbeatIntervalMs: 10,
+    });
+    bridges.push(bridge);
+    bridge.start();
+
+    let heartbeatCount = 0;
+    const socket = await connectExtension(bridge, (request) => {
+      if (request.method === "openPublisherHeartbeat") heartbeatCount += 1;
+      return { id: request.id, error: { code: -32601, message: "Unknown method" } };
+    });
+    await expect.poll(() => heartbeatCount).toBeGreaterThan(0);
+    socket.close();
+    await expect.poll(async () => {
+      const response = await fetch(`http://127.0.0.1:${bridge.httpPort}/status`);
+      const status = await response.json() as { connected: boolean };
+      return status.connected;
+    }).toBe(false);
+
+    const countAfterDisconnect = heartbeatCount;
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    expect(heartbeatCount).toBe(countAfterDisconnect);
   });
 });

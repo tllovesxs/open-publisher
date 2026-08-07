@@ -17,6 +17,7 @@ export interface WechatSyncLocalBridgeOptions {
   readonly websocketPort: number;
   readonly httpPort: number;
   readonly requestTimeoutMs?: number;
+  readonly heartbeatIntervalMs?: number;
 }
 
 export class WechatSyncBridgeError extends Error {
@@ -36,12 +37,15 @@ export class WechatSyncBridgeError extends Error {
 export class WechatSyncLocalBridge {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly requestTimeoutMs: number;
+  private readonly heartbeatIntervalMs: number;
   private extension: Bun.ServerWebSocket<undefined> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private websocketServer: Bun.Server<undefined> | null = null;
   private httpServer: Bun.Server<undefined> | null = null;
 
   constructor(private readonly options: WechatSyncLocalBridgeOptions) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 360_000;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 20_000;
   }
 
   get websocketPort(): number | null {
@@ -68,10 +72,15 @@ export class WechatSyncLocalBridge {
               this.extension.close(1012, "A newer extension connection replaced this one");
             }
             this.extension = socket;
+            this.startHeartbeat();
           },
-          message: (_socket, message) => this.handleExtensionMessage(message),
+          message: (socket, message) => {
+            if (this.extension === socket) this.handleExtensionMessage(message);
+          },
           close: (socket) => {
-            if (this.extension === socket) this.extension = null;
+            if (this.extension !== socket) return;
+            this.extension = null;
+            this.clearHeartbeat();
             this.rejectPending("WechatSync 扩展已断开连接。", 503);
           },
         },
@@ -88,6 +97,7 @@ export class WechatSyncLocalBridge {
   }
 
   stop(): void {
+    this.clearHeartbeat();
     this.rejectPending("WechatSync 本地桥已停止。", 503);
     this.extension?.close(1001, "Open Publisher is stopping");
     this.extension = null;
@@ -196,6 +206,45 @@ export class WechatSyncLocalBridge {
       // Ignore unrelated or malformed extension messages. A matching request
       // remains pending until its bounded timeout instead of accepting data
       // that cannot be correlated safely.
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.clearHeartbeat();
+    if (this.heartbeatIntervalMs <= 0) return;
+    this.heartbeatTimer = setInterval(() => {
+      const extension = this.extension;
+      if (!extension) {
+        this.clearHeartbeat();
+        return;
+      }
+      try {
+        extension.send(JSON.stringify({
+          id: `open-publisher-heartbeat:${randomUUID()}`,
+          method: "openPublisherHeartbeat",
+          token: this.options.token,
+        }));
+      } catch {
+        this.clearDisconnectedExtension(extension);
+      }
+    }, this.heartbeatIntervalMs);
+  }
+
+  private clearHeartbeat(): void {
+    if (!this.heartbeatTimer) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  private clearDisconnectedExtension(extension: Bun.ServerWebSocket<undefined>): void {
+    if (this.extension !== extension) return;
+    this.extension = null;
+    this.clearHeartbeat();
+    this.rejectPending("WechatSync 扩展连接已失效，正在等待重新连接。", 503);
+    try {
+      extension.close(1011, "Heartbeat failed");
+    } catch {
+      // The socket may already be closed.
     }
   }
 

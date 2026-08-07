@@ -1,4 +1,5 @@
 import {
+  BookOpenText,
   CheckCircle2,
   CircleAlert,
   CloudUpload,
@@ -18,11 +19,13 @@ interface PublishDialogProps {
   bridge: WechatSyncBridgeStatus | null;
   open: boolean;
   platforms: PlatformDefinition[];
+  publisherConfigured: boolean;
   publishing: boolean;
   refreshing: boolean;
   onClose: () => void;
   onRefresh: (forceRefresh?: boolean) => Promise<void>;
   onOpenSettings: () => void;
+  onOpenPublishingGuide: () => void;
   onSubmit: (platforms: PlatformId[]) => Promise<void>;
 }
 
@@ -31,11 +34,13 @@ export function PublishDialog({
   bridge,
   open,
   platforms,
+  publisherConfigured,
   publishing,
   refreshing,
   onClose,
   onRefresh,
   onOpenSettings,
+  onOpenPublishingGuide,
   onSubmit,
 }: PublishDialogProps) {
   const [selected, setSelected] = useState<Set<PlatformId>>(new Set());
@@ -89,6 +94,7 @@ export function PublishDialog({
 
   if (!open) return null;
   const connected = bridge?.available && bridge.connected && !bridge.stale;
+  const missingPublisherConfiguration = !publisherConfigured;
   const selectedTargets = [...selected];
 
   const togglePlatform = (platform: PlatformId) => {
@@ -133,17 +139,32 @@ export function PublishDialog({
         <div className={`publish-dialog__connection${connected ? " is-connected" : ""}`}>
           {connected ? <Wifi size={17} /> : <WifiOff size={17} />}
           <div>
-            <strong>{connected ? "WechatSync 已连接" : "WechatSync 未连接"}</strong>
-            <span>{bridge?.detail ?? "正在读取本机浏览器桥接状态。"}</span>
+            <strong>{connected
+              ? "WechatSync 已连接"
+              : missingPublisherConfiguration
+                ? "尚未添加发布功能"
+                : "WechatSync 暂未连接"}</strong>
+            <span>{connected
+              ? bridge?.detail
+              : missingPublisherConfiguration
+                ? "先按教程安装文章同步助手，并把插件 Token 填入稿流。"
+                : bridge?.detail ?? "正在读取本机浏览器桥接状态。"}</span>
           </div>
           <div className="publish-dialog__connection-actions">
             <button className="text-button" disabled={refreshing || publishing} onClick={() => void onRefresh(true)} type="button">
               <RefreshCw className={refreshing ? "spin" : undefined} size={14} /> 刷新
             </button>
             {!connected && (
-              <button className="text-button" disabled={publishing} onClick={onOpenSettings} type="button">
-                前往设置
-              </button>
+              <>
+                {missingPublisherConfiguration && (
+                  <button className="text-button" disabled={publishing} onClick={onOpenPublishingGuide} type="button">
+                    <BookOpenText aria-hidden="true" size={14} /> 添加发布功能
+                  </button>
+                )}
+                <button className="text-button" disabled={publishing} onClick={onOpenSettings} type="button">
+                  前往设置
+                </button>
+              </>
             )}
           </div>
         </div>

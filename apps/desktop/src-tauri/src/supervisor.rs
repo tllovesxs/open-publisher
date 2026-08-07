@@ -246,6 +246,15 @@ pub struct CreatePublishPlanRequest {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub delivery_mode: Option<String>,
+    #[serde(default)]
+    pub media_sources: Vec<PublishMediaSourceRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PublishMediaSourceRequest {
+    pub asset_id: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

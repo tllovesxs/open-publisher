@@ -25,6 +25,54 @@ import { WechatSyncLocalBridge } from "./publishing/wechat-sync-local-bridge.js"
 import { ImageService } from "./services/image-service.js";
 
 const config = loadRuntimeConfig(process.env);
+const wechatSyncBridge = new WechatSyncLocalBridge({
+  token: config.wechatSyncToken,
+  websocketPort: config.wechatSyncWebsocketPort,
+  httpPort: config.wechatSyncHttpPort,
+});
+let wechatSyncBridgeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let wechatSyncBridgeStartAttempts = 0;
+let stopping = false;
+
+const startWechatSyncBridge = (): void => {
+  try {
+    wechatSyncBridge.start();
+    wechatSyncBridgeStartAttempts = 0;
+    console.log(JSON.stringify({
+      level: "info",
+      event: "wechat_sync_bridge.listening",
+      websocketPort: config.wechatSyncWebsocketPort,
+      httpPort: config.wechatSyncHttpPort,
+      tokenConfigured: config.wechatSyncToken.length > 0,
+    }));
+  } catch (error: unknown) {
+    wechatSyncBridgeStartAttempts += 1;
+    const retryInMs = Math.min(2_000 * (2 ** (wechatSyncBridgeStartAttempts - 1)), 10_000);
+    console.error(JSON.stringify({
+      level: "error",
+      event: "wechat_sync_bridge.start_failed",
+      message: error instanceof Error ? error.message : String(error),
+      retryInMs,
+    }));
+    if (!stopping) {
+      wechatSyncBridgeRetryTimer = setTimeout(() => {
+        wechatSyncBridgeRetryTimer = null;
+        startWechatSyncBridge();
+      }, retryInMs);
+    }
+  }
+};
+
+const stopWechatSyncBridge = (): void => {
+  stopping = true;
+  if (wechatSyncBridgeRetryTimer) {
+    clearTimeout(wechatSyncBridgeRetryTimer);
+    wechatSyncBridgeRetryTimer = null;
+  }
+  wechatSyncBridge.stop();
+};
+
+startWechatSyncBridge();
 const state: RuntimeReadiness = {
   ready: false,
   checks: {
@@ -72,7 +120,7 @@ const initialize = async (): Promise<RuntimeDatabase> => {
 };
 
 const shutdown = (): void => {
-  wechatSyncBridge?.stop();
+  stopWechatSyncBridge();
   database.close();
   server.stop(true);
   process.exit(0);
@@ -81,6 +129,7 @@ const shutdown = (): void => {
 try {
   database = await initialize();
 } catch (error: unknown) {
+  stopWechatSyncBridge();
   state.checks = { ...state.checks, storage: "failed" };
   console.error(
     JSON.stringify({
@@ -135,28 +184,6 @@ const server = Bun.serve({
   port: config.port,
   fetch: app.fetch,
 });
-
-const wechatSyncBridge = new WechatSyncLocalBridge({
-  token: config.wechatSyncToken,
-  websocketPort: config.wechatSyncWebsocketPort,
-  httpPort: config.wechatSyncHttpPort,
-});
-try {
-  wechatSyncBridge.start();
-  console.log(JSON.stringify({
-    level: "info",
-    event: "wechat_sync_bridge.listening",
-    websocketPort: config.wechatSyncWebsocketPort,
-    httpPort: config.wechatSyncHttpPort,
-    tokenConfigured: config.wechatSyncToken.length > 0,
-  }));
-} catch (error: unknown) {
-  console.error(JSON.stringify({
-    level: "error",
-    event: "wechat_sync_bridge.start_failed",
-    message: error instanceof Error ? error.message : String(error),
-  }));
-}
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

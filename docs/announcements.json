@@ -1,29 +1,18 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-05",
+  "updatedAt": "2026-08-07",
   "repository": "https://github.com/tllovesxs/open-publisher",
   "items": [
     {
-      "id": "read-first",
-      "type": "announcement",
-      "pinned": true,
-      "title": "稿流正在构建：写作、配图与分发保持在同一条工作流中",
-      "summary": "当前版本先把文章创作与本地草稿管理跑稳；平台同步始终由你确认后才会开始。",
-      "date": "2026-08-05",
-      "badge": "置顶",
-      "tags": ["公告", "本地优先", "工作流"],
-      "path": "docs/announcements/read-first.md"
-    },
-    {
-      "id": "announcement-center-guide",
+      "id": "wechatsync-publishing-guide",
       "type": "tutorial",
       "pinned": false,
-      "title": "如何阅读与刷新公告",
-      "summary": "公告内容优先从项目仓库同步；网络暂不可用时，应用会显示随安装包附带的版本。",
-      "date": "2026-08-05",
-      "badge": "使用说明",
-      "tags": ["教程", "公告栏"],
-      "path": "docs/announcements/announcement-center-guide.md"
+      "title": "如何添加文章同步发布功能",
+      "summary": "安装文章同步助手、复制 Token，并把稿流连接到浏览器中的已登录平台。",
+      "date": "2026-08-07",
+      "badge": "发布教程",
+      "tags": ["发布", "WechatSync", "Token"],
+      "path": "docs/integrations/wechatsync-publishing-guide.md"
     }
   ]
 }

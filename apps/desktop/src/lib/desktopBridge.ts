@@ -325,6 +325,7 @@ export interface CreatePublishPlanRequest {
   revisionId: string;
   platforms: PublishPlatform[];
   deliveryMode?: "dry_run" | "wechat_sync_draft";
+  mediaSources?: Array<{ assetId: string; source: string }>;
 }
 
 export interface PublishPlanRequest {

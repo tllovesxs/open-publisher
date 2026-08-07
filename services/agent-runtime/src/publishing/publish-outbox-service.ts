@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import {
+  resolvePublishMediaReferences,
+  type PublishMediaSourceInput,
+} from "./publish-media.js";
 
 export type PublishDeliveryMode = "dry_run" | "wechat_sync_draft";
 export type UnknownPublishResolution = "draft_exists" | "draft_missing";
@@ -28,6 +32,9 @@ export interface DraftDeliveryResult { remoteId: string; remoteUrl?: string; det
 export interface PublishDelivery { deliver(input: { idempotencyKey: string; platform: string; accountRef: string; title: string; markdown: string; mode: PublishDeliveryMode }): Promise<DraftDeliveryResult>; reconcile?(input: { idempotencyKey: string; platform: string; mode: PublishDeliveryMode }): Promise<DraftDeliveryResult | null>; }
 
 const WECHATSYNC_REQUEST_TIMEOUT_MS = 180_000;
+const IMAGE_UPLOAD_CHUNK_CHARACTERS = 256 * 1024;
+const INLINE_DATA_IMAGE_PATTERN =
+  /data:(image\/(?:png|jpe?g|gif|webp|avif));base64,([a-z0-9+/]+={0,2})/gi;
 const isPublishDeliveryMode = (value: string): value is PublishDeliveryMode =>
   value === "dry_run" || value === "wechat_sync_draft";
 
@@ -107,44 +114,99 @@ export class WechatSyncDraftDelivery implements PublishDelivery {
 
   async deliver(input: { idempotencyKey: string; platform: string; accountRef: string; title: string; markdown: string; mode: PublishDeliveryMode }): Promise<DraftDeliveryResult> {
     if (input.mode !== "wechat_sync_draft") throw new PublishDeliveryFailure("Unsupported delivery mode", false);
-    let response: Response;
+    const markdown = await this.uploadInlineImages(input.markdown, input.platform);
+    const payload = await this.bridgeRequest("syncArticle", {
+      platforms: [input.platform],
+      idempotencyKey: input.idempotencyKey,
+      article: {
+        title: input.title,
+        markdown,
+        idempotencyKey: input.idempotencyKey,
+      },
+    }, true) as { syncId?: string; results?: Array<{ platform?: string; success?: boolean; postId?: string; postUrl?: string; error?: string }> } | null;
+    const result = payload?.results?.find((item) => item.platform === input.platform);
+    if (!result?.success) throw new PublishDeliveryFailure(result?.error ?? "WechatSync did not save a draft", true);
+    return {
+      remoteId: result.postId ?? `wechat-sync:${payload?.syncId ?? input.idempotencyKey}:${input.platform}`,
+      ...(result.postUrl ? { remoteUrl: result.postUrl } : {}),
+      details: { mode: "wechat_sync_draft", draftOnly: true, notice: "A platform draft was requested; the user must confirm final publishing." },
+    };
+  }
+
+  private async uploadInlineImages(markdown: string, platform: string): Promise<string> {
+    const images = [...markdown.matchAll(INLINE_DATA_IMAGE_PATTERN)];
+    if (images.length === 0) return markdown;
+    const uploaded = new Map<string, string>();
+    for (const match of images) {
+      const dataUrl = match[0];
+      if (uploaded.has(dataUrl)) continue;
+      const mimeType = match[1]!;
+      const base64 = match[2]!;
+      const uploadId = `open-publisher-${randomUUID()}`;
+      const totalChunks = Math.ceil(base64.length / IMAGE_UPLOAD_CHUNK_CHARACTERS);
+      await this.bridgeRequest("uploadImage:start", {
+        uploadId,
+        totalChunks,
+        mimeType,
+        platform,
+      });
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        await this.bridgeRequest("uploadImage:chunk", {
+          uploadId,
+          chunkIndex,
+          data: base64.slice(
+            chunkIndex * IMAGE_UPLOAD_CHUNK_CHARACTERS,
+            (chunkIndex + 1) * IMAGE_UPLOAD_CHUNK_CHARACTERS,
+          ),
+        });
+      }
+      const completed = await this.bridgeRequest("uploadImage:complete", { uploadId }) as { url?: unknown } | null;
+      const url = typeof completed?.url === "string" ? completed.url : "";
+      if (!/^https:\/\//i.test(url)) {
+        throw new PublishDeliveryFailure(
+          `${platform} 图片上传未返回可访问地址，已停止创建草稿，避免出现“图片转存失败”。`,
+          true,
+        );
+      }
+      uploaded.set(dataUrl, url);
+    }
+    let resolved = markdown;
+    for (const [dataUrl, url] of uploaded) resolved = resolved.split(dataUrl).join(url);
+    return resolved;
+  }
+
+  private async bridgeRequest(
+    method: string,
+    params: Record<string, unknown>,
+    uncertainDraftOutcome = false,
+  ): Promise<unknown> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
+    let response: Response;
     try {
       response = await this.fetchImpl(this.bridgeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // The bridge may ignore unknown fields, but newer adapters can retain this
-        // key with their draft receipt. It never changes a browser session.
-        body: JSON.stringify({
-          method: "syncArticle",
-          params: {
-            platforms: [input.platform],
-            idempotencyKey: input.idempotencyKey,
-            article: {
-              title: input.title,
-              markdown: input.markdown,
-              idempotencyKey: input.idempotencyKey,
-            },
-          },
-        }),
+        body: JSON.stringify({ method, params }),
         redirect: "error",
         signal: timeout,
       });
     } catch (error: unknown) {
       if (timeout.aborted || isTimeoutError(error)) {
-        throw new UnknownPublishOutcome("WechatSync 请求超时，草稿是否已创建无法确认。");
+        if (uncertainDraftOutcome) {
+          throw new UnknownPublishOutcome("WechatSync 请求超时，草稿是否已创建无法确认。");
+        }
+        throw new PublishDeliveryFailure("WechatSync 图片上传超时，尚未创建平台草稿。", true);
       }
       throw new PublishDeliveryFailure("WechatSync 本地桥未连接；请确认浏览器扩展的 CLI/MCP 连接已启用。", true);
     }
-    if (!response.ok) throw new PublishDeliveryFailure("WechatSync local bridge returned an error", true);
-    const payload = await response.json().catch(() => null) as { result?: { syncId?: string; results?: Array<{ platform?: string; success?: boolean; postId?: string; postUrl?: string; error?: string }> } } | null;
-    const result = payload?.result?.results?.find((item) => item.platform === input.platform);
-    if (!result?.success) throw new PublishDeliveryFailure(result?.error ?? "WechatSync did not save a draft", true);
-    return {
-      remoteId: result.postId ?? `wechat-sync:${payload?.result?.syncId ?? input.idempotencyKey}:${input.platform}`,
-      ...(result.postUrl ? { remoteUrl: result.postUrl } : {}),
-      details: { mode: "wechat_sync_draft", draftOnly: true, notice: "A platform draft was requested; the user must confirm final publishing." },
-    };
+    const payload = await response.json().catch(() => null) as { result?: unknown; error?: unknown } | null;
+    if (!response.ok) {
+      const detail = typeof payload?.error === "string"
+        ? payload.error
+        : `WechatSync 本地桥请求失败：${method}`;
+      throw new PublishDeliveryFailure(detail, true);
+    }
+    return payload?.result;
   }
 
   async reconcile(_input: { idempotencyKey: string; platform: string; mode: PublishDeliveryMode }): Promise<DraftDeliveryResult | null> {
@@ -184,13 +246,14 @@ export class PublishDeliveryRouter implements PublishDelivery {
 export class PublishOutboxService {
   constructor(private readonly database: Database, private readonly delivery: PublishDelivery) {}
 
-  createPlan(input: { revisionId: string; title: string; markdown: string; targets: readonly PublishTargetInput[] }): PublishPlanSummary {
+  createPlan(input: { revisionId: string; title: string; markdown: string; mediaSources?: readonly PublishMediaSourceInput[]; targets: readonly PublishTargetInput[] }): PublishPlanSummary {
     if (input.targets.length === 0) throw new Error("publish plan requires at least one target");
     const createdAt = now(); const planId = `plan:${randomUUID()}`; const revisionHash = hash(input.markdown);
+    const publishMarkdown = resolvePublishMediaReferences(input.markdown, input.mediaSources ?? []);
     const variants = input.targets.map((target) => {
       const platform = target.platform.trim().toLowerCase(), accountRef = target.accountRef.trim(), title = (target.title ?? input.title).trim();
       if (!platform || !accountRef || !title) throw new Error("publish target platform, accountRef, and title are required");
-      const markdown = `<!-- open-publisher variant:${platform} -->\n\n${input.markdown.trim()}\n`;
+      const markdown = `<!-- open-publisher variant:${platform} -->\n\n${publishMarkdown.trim()}\n`;
       const contentHash = hash(markdown); const id = `variant:${randomUUID()}`;
       return { id, platform, accountRef, title, markdown, contentHash, targetHash: hash({ platform, accountRef, title, contentHash, deliveryMode: target.deliveryMode }), deliveryMode: target.deliveryMode };
     });

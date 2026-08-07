@@ -1,0 +1,72 @@
+name: 功能建议
+description: 建议写作、配图、编辑、发布或桌面体验改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出建议。请尽量描述真实使用场景，不只写一个功能名。
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过已有 Issue 和 PR，没有找到相同建议。
+          required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 功能范围
+      options:
+        - 项目 / GitHub / 文件读取
+        - Writer 与写作质量
+        - 对话、改写与去 AI 化
+        - Markdown 编辑与预览
+        - 配图、生图与素材库
+        - 模板与仿写
+        - 模型配置与工具
+        - 多平台草稿与发布
+        - 文章管理与历史修订
+        - 桌面端界面与交互
+        - 安装、更新与打包
+        - 文档教程
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你现在怎么做？哪一步最麻烦？
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望功能
+      description: 你希望稿流如何解决这个问题？
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已尝试的替代方案
+  - type: textarea
+    id: examples
+    attributes:
+      label: 参考产品或示例
+      description: 可提供公开页面、脱敏截图或期望输出。
+  - type: dropdown
+    id: willing
+    attributes:
+      label: 是否愿意协助实现
+      options:
+        - 愿意认领开发
+        - 愿意协助测试
+        - 暂时只提供建议
+        - 其他
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他补充

@@ -1,0 +1,110 @@
+name: Bug 反馈
+description: 反馈创作、编辑、配图、发布、界面、安装或运行问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先搜索已有 Issue 和 PR，避免重复提交。
+
+        请不要上传 API Key、Token、Cookie、账号密码、私人文章、未发布项目源码或其他敏感信息。
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过已有 Issue 和 PR，没有找到相同问题。
+          required: true
+        - label: 我已确认日志、截图和样例中不包含密钥、Token、Cookie、账号密码或私人内容。
+          required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 问题范围
+      options:
+        - 创作页 / 读取项目
+        - Writer / 文章生成
+        - 文章编辑 / Markdown 预览
+        - AI 侧边栏 / 改写
+        - 配图 / 生图
+        - 素材库 / 图片粘贴
+        - 模板 / 仿写
+        - 发布 / WechatSync
+        - 模型与密钥设置
+        - 历史修订 / 数据保存
+        - 界面 / 深色模式 / 窗口缩放
+        - 安装 / 启动 / 打包
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 发生了什么？你原本期望什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开稿流
+        2. 进入……
+        3. 输入或选择……
+        4. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 请写出界面现象、错误提示或任务状态。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+      description: 你认为正确结果应该是什么？
+  - type: textarea
+    id: log
+    attributes:
+      label: 运行日志或错误信息
+      description: 请先脱敏，不要粘贴完整密钥、Token 或私人文章。
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: 稿流版本
+      placeholder: 例如：v0.1.0 / main 分支 commit id
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 系统环境
+      placeholder: 例如：Windows 11 x64 / macOS 15 Apple Silicon
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: 模型与 API 类型
+      description: 涉及 AI 时填写模型名和协议类型，不要填写 API Key。
+      placeholder: 例如：OpenAI Responses / gpt-5.6-luna
+  - type: textarea
+    id: sample
+    attributes:
+      label: 脱敏样例或截图
+      description: 可补充脱敏提示词、Markdown 片段或截图。
+  - type: dropdown
+    id: willing
+    attributes:
+      label: 是否愿意协助修复或测试
+      options:
+        - 愿意协助测试
+        - 愿意认领修复
+        - 暂时只能反馈问题
+        - 其他

@@ -83,6 +83,7 @@ class FauxVisualFactory implements WriterAgentFactory {
   constructor(
     private readonly longSelectionReason = false,
     private readonly longChineseFields = false,
+    private readonly visibleText: readonly string[] = [],
   ) {}
 
   createWriterAgent(options: CreateWriterAgentOptions): Agent {
@@ -114,6 +115,7 @@ class FauxVisualFactory implements WriterAgentFactory {
           assetId: null,
           selectionReason: "现有素材没有表达发布状态与回滚关系。",
           alt: "草稿到发布再到回滚的状态流程图",
+          visibleText: this.visibleText,
         },
       ],
     }), { stopReason: "toolUse" })]);
@@ -204,7 +206,8 @@ describe("VisualPlanningService", () => {
     });
     expect(result.plan.placements).toHaveLength(2);
     expect(result.plan.placements.every((placement) => placement.blockId !== null)).toBe(true);
-    expect(result.plan.placements.every((placement) => placement.generationPrompt.includes("ZONES:"))).toBe(true);
+    expect(result.plan.placements.every((placement) => placement.generationPrompt.includes("No readable wording is needed"))).toBe(true);
+    expect(result.plan.placements.every((placement) => !/^(?:---|#)|\b(?:LAYOUT|ZONES|ANCHOR|TEXT):/m.test(placement.generationPrompt))).toBe(true);
     expect(result.plan.placements[0]?.source).toBe("generate");
     expect(result.plan.placements.every((placement) => placement.assetId === null)).toBe(true);
   });
@@ -224,10 +227,31 @@ describe("VisualPlanningService", () => {
       { source: "existing_asset", assetId: "media-architecture", afterHeading: "系统架构" },
       { source: "generate", assetId: null, afterHeading: "实践", visualType: "flowchart" },
     ]);
-    expect(result.plan.placements[1]?.generationPrompt).toContain("ASPECT: 3:2 landscape.");
-    expect(result.plan.placements[1]?.generationPrompt).toContain("Render no readable text");
-    expect(result.plan.placements[1]?.generationPrompt).toContain("at most three visual elements");
-    expect(result.plan.placements[1]?.generationPrompt).not.toContain("LABELS: Prefer no in-image text");
+    expect(result.plan.placements[1]?.generationPrompt).toContain("A sequence of up to three symbolic objects");
+    expect(result.plan.placements[1]?.generationPrompt).toContain("No readable wording is needed");
+    expect(result.plan.placements[1]?.generationPrompt).toContain("OPEN_PUBLISHER_VISIBLE_TEXT_JSON:[]");
+    expect(result.plan.placements[1]?.generationPrompt).not.toContain("3:2");
+    expect(result.plan.placements[1]?.generationPrompt).not.toContain("sketch-notes");
+    expect(result.plan.placements[1]?.generationPrompt).not.toMatch(/\b(?:LAYOUT|ZONES|ANCHOR|TEXT|COLORS|STYLE|ASPECT):/);
+  });
+
+  it("allows only article-backed essential wording and drops planner metadata", async () => {
+    const secrets: SecretProvider = { resolve: async () => "test-key" };
+    const result = await new VisualPlanningService(
+      secrets,
+      new FauxVisualFactory(false, false, ["审核", "3:2 landscape", "sketch-notes"]),
+    ).plan({
+      markdown,
+      sourceRevisionHash: contentHash(markdown),
+      visualComposition,
+      modelProfile: profile,
+    });
+
+    const generationPrompt = result.plan.placements[1]?.generationPrompt ?? "";
+    expect(generationPrompt).toContain('OPEN_PUBLISHER_VISIBLE_TEXT_JSON:["审核"]');
+    expect(generationPrompt).toContain('only readable wording permitted is exactly ["审核"]');
+    expect(generationPrompt).not.toContain("3:2 landscape");
+    expect(generationPrompt).not.toContain("sketch-notes");
   });
 
   it("keeps the source revision hash contract and conservative automatic density", async () => {
