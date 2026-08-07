@@ -4,3 +4,8 @@ packages:
   - "packages/*"
   - "services/*"
   - "skills/*"
+
+onlyBuiltDependencies:
+  - "@google/genai"
+  - "bun"
+  - "protobufjs"
