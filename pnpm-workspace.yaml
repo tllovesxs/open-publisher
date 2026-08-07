@@ -7,5 +7,4 @@ packages:
 
 allowBuilds:
   "@google/genai": false
-  "bun": false
   "protobufjs": false
