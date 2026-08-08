@@ -106,7 +106,7 @@ const defaultModelDraft: ModelDraft = {
   imageBaseUrl: "https://api.siliconflow.cn/v1",
   imageModel: "Qwen/Qwen-Image",
   trustedHosts: "",
-  timeoutSeconds: 120,
+  timeoutSeconds: 300,
 };
 
 function loadModelDraft(): ModelDraft {
