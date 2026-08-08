@@ -14,6 +14,7 @@ import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generati
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import type { TextModelProfile } from "./model-profile.js";
+import { withOpenAICompletionsFinishReasonCompatibility } from "./openai-completions-compat.js";
 
 export interface CreateWriterAgentOptions {
   readonly profile: TextModelProfile;
@@ -88,7 +89,16 @@ export class PiAgentAdapter implements WriterAgentFactory {
         tools: options.tools,
         messages: [],
       },
-      streamFn: models.streamSimple.bind(models),
+      streamFn: (streamModel, context, streamOptions) => models.streamSimple(
+        streamModel,
+        context,
+        streamModel.api === "openai-completions"
+          ? {
+              ...streamOptions,
+              fetch: withOpenAICompletionsFinishReasonCompatibility(streamOptions?.fetch),
+            }
+          : streamOptions,
+      ),
       getApiKey: () => options.apiKey,
       sessionId: options.sessionId,
       toolExecution: "sequential",
