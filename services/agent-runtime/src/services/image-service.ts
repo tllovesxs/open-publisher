@@ -155,7 +155,7 @@ const sanitiseProviderErrorValue = (value: unknown): string | null => {
     .slice(0, MAX_PROVIDER_ERROR_FIELD_LENGTH)
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[REDACTED]")
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "$1 [REDACTED]")
-    .replace(/\b((?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]");
+    .replace(/\b((?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]");
   return sanitised || null;
 };
 

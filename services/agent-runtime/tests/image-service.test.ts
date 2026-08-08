@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ImageService } from "../src/services/image-service.js";
+import { ImageService, readImageProviderError } from "../src/services/image-service.js";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlN7WQAAAAASUVORK5CYII=";
 
@@ -306,6 +306,19 @@ describe("ImageService", () => {
       "Image provider request failed with HTTP 401: Incorrect API key: [REDACTED]",
     );
     await expect(generation).rejects.not.toThrow("sk-example-inline-secret-value");
+  });
+
+  it("redacts generic token labels embedded in provider error messages", async () => {
+    const response = new Response(JSON.stringify({
+      message: "Authentication failed. Token: example-provider-token-value",
+    }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+
+    await expect(readImageProviderError(response)).resolves.toBe(
+      "Image provider request failed with HTTP 401: Authentication failed. Token: [REDACTED]",
+    );
   });
 
   it("does not expose non-JSON provider response bodies", async () => {
