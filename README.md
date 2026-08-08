@@ -55,18 +55,44 @@
 
 ## 🖼️ 界面预览
 
-<!--
-截图文件待补充。收到图片后使用与 Wandao 相同的 2 × 2 表格展示：
-
-docs/images/gaoliu-create.png    创作页：输入主题并选择项目、模板、素材和模型
-docs/images/gaoliu-editor.png    文章页：Markdown 编辑、同步预览和 AI 改文
-docs/images/gaoliu-assets.png    素材库：管理本地图片并交给视觉 Agent 匹配
-docs/images/gaoliu-publish.png   发布页：读取当前登录平台并确认同步草稿
-
-建议截图使用相同窗口尺寸，并在提交前压缩图片体积。
--->
-
-> 📌 **截图占位：** 创作页、文章编辑页、素材库和发布确认页截图将在正式发布前补充。
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/images/gaoliu-create.png" alt="稿流创作页，可选择模板、文风、篇幅、联网与配图策略，并导入项目和资料">
+      <br>
+      <sub><strong>开始创作</strong>：组合项目、资料、素材、模型与写作策略</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/images/gaoliu-editor.png" alt="稿流文章页，同时展示 Markdown 编辑器、渲染预览和 AI 修改侧边栏">
+      <br>
+      <sub><strong>文章工作台</strong>：Markdown 编辑、同步预览、版本记录与 AI 改稿</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/images/gaoliu-templates.png" alt="稿流产品推广模板页，可使用官方模板或导入参考文章">
+      <br>
+      <sub><strong>写作模板</strong>：使用产品推广蓝图或导入参考文章仿写</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/images/gaoliu-assets.png" alt="稿流素材库，以图片网格管理本地上传和 AI 生成素材">
+      <br>
+      <sub><strong>素材库</strong>：统一管理本地图片、AI 生成素材和文章配图</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/images/gaoliu-publishing-guide.png" alt="稿流公告页中的 WechatSync 多平台发布连接教程">
+      <br>
+      <sub><strong>发布教程</strong>：连接 WechatSync，将文章同步到已登录平台</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/images/gaoliu-model-settings.png" alt="稿流设置页，可保存多套模型档案并配置 OpenAI Responses 协议">
+      <br>
+      <sub><strong>模型设置</strong>：保存多套 Provider 档案，分别配置文本与生图模型</sub>
+    </td>
+  </tr>
+</table>
 
 ## ✨ 为什么使用稿流
 
