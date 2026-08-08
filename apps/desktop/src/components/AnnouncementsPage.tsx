@@ -8,6 +8,13 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ANNOUNCEMENT_RAW_BASE_URL,
+  ANNOUNCEMENT_REPOSITORY_URL,
+  githubRepositoryMarkdownUrl,
+  isRepositoryMarkdownPath,
+  rawRepositoryMarkdownUrl,
+} from "../lib/announcementPaths";
 import { externalLinkClickHandler } from "../lib/externalLinks";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -35,8 +42,8 @@ interface NoticeManifest {
   items: NoticeItem[];
 }
 
-const REPOSITORY_URL = "https://github.com/tllovesxs/open-publisher";
-const RAW_BASE_URL = "https://raw.githubusercontent.com/tllovesxs/open-publisher/main/";
+const REPOSITORY_URL = ANNOUNCEMENT_REPOSITORY_URL;
+const RAW_BASE_URL = ANNOUNCEMENT_RAW_BASE_URL;
 const MANIFEST_URL = `${RAW_BASE_URL}docs/announcements.json`;
 const PUBLISHING_GUIDE_PATH = "docs/integrations/wechatsync-publishing-guide.md";
 const MAX_NOTICE_BODY_LENGTH = 80_000;
@@ -108,20 +115,6 @@ function safeText(value: unknown, limit: number, fallback = "") {
   return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ").trim().slice(0, limit) || fallback;
 }
 
-function isRepositoryNoticePath(path: string) {
-  return path === PUBLISHING_GUIDE_PATH;
-}
-
-function rawDocumentUrl(path: string) {
-  if (!isRepositoryNoticePath(path)) return null;
-  return `${RAW_BASE_URL}${path.split("/").map(encodeURIComponent).join("/")}`;
-}
-
-function githubDocumentUrl(path: string) {
-  if (!isRepositoryNoticePath(path)) return REPOSITORY_URL;
-  return `${REPOSITORY_URL}/blob/main/${path.split("/").map(encodeURIComponent).join("/")}`;
-}
-
 function normalizeManifest(value: unknown): NoticeManifest | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<NoticeManifest>;
@@ -130,10 +123,10 @@ function normalizeManifest(value: unknown): NoticeManifest | null {
     .map((raw, index): NoticeItem | null => {
       if (!raw || typeof raw !== "object") return null;
       const item = raw as Partial<NoticeItem>;
-      const path = safeText(item.path, 220);
+      const path = typeof item.path === "string" && isRepositoryMarkdownPath(item.path) ? item.path : "";
       const id = safeText(item.id, 80, `notice-${index + 1}`);
       const title = safeText(item.title, 180, "未命名公告");
-      if (!isRepositoryNoticePath(path)) return null;
+      if (!path) return null;
       return {
         id,
         type: item.type === "tutorial" ? "tutorial" : "announcement",
@@ -259,7 +252,7 @@ export function AnnouncementsPage() {
       setBodyError(null);
       return;
     }
-    const url = rawDocumentUrl(selected.path);
+    const url = rawRepositoryMarkdownUrl(selected.path);
     if (!url) {
       setBody("");
       setBodyState("error");
@@ -335,8 +328,8 @@ export function AnnouncementsPage() {
                 </div>
                 <a
                   className="text-button"
-                  href={githubDocumentUrl(selected.path)}
-                  onClick={externalLinkClickHandler(githubDocumentUrl(selected.path))}
+                  href={githubRepositoryMarkdownUrl(selected.path)}
+                  onClick={externalLinkClickHandler(githubRepositoryMarkdownUrl(selected.path))}
                   rel="noreferrer"
                   target="_blank"
                 >
@@ -352,7 +345,7 @@ export function AnnouncementsPage() {
                   </div>
                 )}
                 {bodyState === "ready" && (
-                  <MarkdownPreview imageBaseUrl={rawDocumentUrl(selected.path) ?? undefined} markdown={body} />
+                  <MarkdownPreview imageBaseUrl={rawRepositoryMarkdownUrl(selected.path) ?? undefined} markdown={body} />
                 )}
                 {bodyState === "error" && (
                   <div className="announcement-document__error" role="alert">

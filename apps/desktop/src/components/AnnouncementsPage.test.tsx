@@ -44,6 +44,46 @@ describe("AnnouncementsPage", () => {
     );
   });
 
+  it("accepts safe docs Markdown paths and rejects paths that require normalization", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          version: 1,
+          updatedAt: "2026-08-08",
+          items: [
+            {
+              id: "safe-release",
+              type: "announcement",
+              title: "安全公告",
+              summary: "来自仓库公告目录",
+              date: "2026-08-08",
+              path: "docs/announcements/release.md",
+            },
+            {
+              id: "normalized-path",
+              type: "announcement",
+              title: "不应显示的公告",
+              summary: "路径首尾包含空格",
+              date: "2026-08-07",
+              path: " docs/announcements/unsafe.md ",
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, text: async () => "# 安全公告正文" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AnnouncementsPage />);
+
+    expect(await screen.findByRole("heading", { name: "安全公告正文" })).toBeVisible();
+    expect(screen.queryByText("不应显示的公告")).toBeNull();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://raw.githubusercontent.com/tllovesxs/open-publisher/main/docs/announcements/release.md",
+      expect.any(Object),
+    );
+  });
   it("loads a remote manifest and its selected Markdown document", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
