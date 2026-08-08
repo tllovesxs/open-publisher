@@ -911,7 +911,7 @@ export function SettingsPage({
                 <button
                   className="button button--quiet"
                   disabled={wechatSyncRefreshing}
-                  onClick={onRefreshWechatSync}
+                  onClick={() => onRefreshWechatSync()}
                   type="button"
                 >
                   {wechatSyncRefreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
