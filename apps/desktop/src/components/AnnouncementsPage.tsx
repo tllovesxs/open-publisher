@@ -7,7 +7,8 @@ import {
   Pin,
   RefreshCw,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { externalLinkClickHandler } from "../lib/externalLinks";
 import { MarkdownPreview } from "./MarkdownPreview";
 
 type NoticeKind = "announcement" | "tutorial";
@@ -201,6 +202,15 @@ export function AnnouncementsPage() {
     [items, selectedId],
   );
 
+  const handleDocumentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const anchor = target.closest("a");
+    const href = anchor?.getAttribute("href");
+    if (!anchor || !href || !event.currentTarget.contains(anchor)) return;
+    externalLinkClickHandler(href)(event);
+  }, []);
+
   const refreshManifest = useCallback(async () => {
     const requestId = ++manifestRequestId.current;
     setSourceState("loading");
@@ -331,12 +341,18 @@ export function AnnouncementsPage() {
                     </div>
                   )}
                 </div>
-                <a className="text-button" href={githubDocumentUrl(selected.path)} rel="noreferrer" target="_blank">
+                <a
+                  className="text-button"
+                  href={githubDocumentUrl(selected.path)}
+                  onClick={externalLinkClickHandler(githubDocumentUrl(selected.path))}
+                  rel="noreferrer"
+                  target="_blank"
+                >
                   在 GitHub 查看 <ExternalLink aria-hidden="true" size={14} />
                 </a>
               </header>
 
-              <div className="announcement-document__body">
+              <div className="announcement-document__body" onClick={handleDocumentClick}>
                 {bodyState === "loading" && (
                   <div className="announcement-document__loading" role="status">
                     <LoaderCircle aria-hidden="true" className="spin" size={20} />

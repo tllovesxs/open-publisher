@@ -616,6 +616,7 @@ fn sync_window_theme(theme: NativeWindowTheme, app: tauri::AppHandle) -> Result<
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(target_os = "windows")]
             window_effects::install_windows_mica(app);
