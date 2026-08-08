@@ -67,3 +67,82 @@ describe("SettingsPage publisher bridge", () => {
     });
   });
 });
+
+describe("SettingsPage model connection", () => {
+  it("labels the save probe as text-only and explains image validation", () => {
+    render(
+      <SettingsPage
+        configuring={false}
+        configuringPublisherBridge={false}
+        disabledNodes={new Set()}
+        githubApplicationError={null}
+        githubApplicationInfo={null}
+        githubApplicationLoading={false}
+        initialTab="models"
+        modelConfiguration={null}
+        modelDiscovering={false}
+        modelDiscovery={null}
+        modelDiscoveryError={null}
+        modelError={null}
+        modelProfiles={[]}
+        modelTest={null}
+        onActivateModelProfile={vi.fn()}
+        onCheckGitHubApplicationInfo={vi.fn()}
+        onConfigureModel={vi.fn()}
+        onConfigurePublisherBridge={vi.fn()}
+        onDiscoverModels={vi.fn()}
+        onRefreshWechatSync={vi.fn()}
+        onRevealPublisherBridgeToken={vi.fn().mockResolvedValue(null)}
+        onRevealSecret={vi.fn().mockResolvedValue(null)}
+        onToggleNode={vi.fn()}
+        platforms={[]}
+        publisherBridgeConfiguration={null}
+        publisherBridgeError={null}
+        runtime={null}
+        wechatSyncRefreshing={false}
+        wechatSyncStatus={null}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "保存并测试文本模型" })).toBeVisible();
+    expect(screen.getByText("生图模型将在首次生成图片时验证，不会在保存时发起生图请求。")).toBeVisible();
+  });
+
+  it("names the text-model probe while it is running", () => {
+    render(
+      <SettingsPage
+        configuring
+        configuringPublisherBridge={false}
+        disabledNodes={new Set()}
+        githubApplicationError={null}
+        githubApplicationInfo={null}
+        githubApplicationLoading={false}
+        initialTab="models"
+        modelConfiguration={null}
+        modelDiscovering={false}
+        modelDiscovery={null}
+        modelDiscoveryError={null}
+        modelError={null}
+        modelProfiles={[]}
+        modelTest={null}
+        onActivateModelProfile={vi.fn()}
+        onCheckGitHubApplicationInfo={vi.fn()}
+        onConfigureModel={vi.fn()}
+        onConfigurePublisherBridge={vi.fn()}
+        onDiscoverModels={vi.fn()}
+        onRefreshWechatSync={vi.fn()}
+        onRevealPublisherBridgeToken={vi.fn().mockResolvedValue(null)}
+        onRevealSecret={vi.fn().mockResolvedValue(null)}
+        onToggleNode={vi.fn()}
+        platforms={[]}
+        publisherBridgeConfiguration={null}
+        publisherBridgeError={null}
+        runtime={null}
+        wechatSyncRefreshing={false}
+        wechatSyncStatus={null}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "正在测试文本模型" })).toBeDisabled();
+  });
+});
