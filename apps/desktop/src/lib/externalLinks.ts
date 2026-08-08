@@ -29,9 +29,9 @@ export async function openExternalUrl(value: string): Promise<boolean> {
 
 export function externalLinkClickHandler(value: string) {
   return (event: { preventDefault: () => void }): boolean => {
+    event.preventDefault();
     const url = normalizeExternalUrl(value);
     if (!url) return false;
-    event.preventDefault();
     void openExternalUrl(url);
     return true;
   };

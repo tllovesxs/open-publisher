@@ -284,6 +284,30 @@ describe("ImageService", () => {
     await expect(generation).rejects.not.toThrow("nested-secret-that-must-not-leak");
   });
 
+  it("redacts credentials embedded in provider error messages", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        message: "Incorrect API key: sk-example-inline-secret-value",
+      }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const generation = service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    await expect(generation).rejects.toThrow(
+      "Image provider request failed with HTTP 401: Incorrect API key: [REDACTED]",
+    );
+    await expect(generation).rejects.not.toThrow("sk-example-inline-secret-value");
+  });
+
   it("does not expose non-JSON provider response bodies", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(

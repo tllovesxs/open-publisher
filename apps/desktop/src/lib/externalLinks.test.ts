@@ -49,7 +49,7 @@ describe("external links", () => {
     expect(windowOpen).not.toHaveBeenCalled();
   });
 
-  it("prevents WebView navigation only for accepted external links", async () => {
+  it("prevents WebView navigation for accepted and rejected external links", async () => {
     isTauriMock.mockReturnValue(true);
     openUrlMock.mockResolvedValue();
     const externalEvent = { preventDefault: vi.fn() };
@@ -60,6 +60,6 @@ describe("external links", () => {
     await vi.waitFor(() => expect(openUrlMock).toHaveBeenCalledWith("https://example.test/"));
 
     expect(externalEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(internalEvent.preventDefault).not.toHaveBeenCalled();
+    expect(internalEvent.preventDefault).toHaveBeenCalledOnce();
   });
 });
