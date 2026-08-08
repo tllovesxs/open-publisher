@@ -7,7 +7,7 @@ import {
   Pin,
   RefreshCw,
 } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { externalLinkClickHandler } from "../lib/externalLinks";
 import { MarkdownPreview } from "./MarkdownPreview";
 
@@ -202,14 +202,6 @@ export function AnnouncementsPage() {
     [items, selectedId],
   );
 
-  const handleDocumentClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const anchor = target.closest("a");
-    const href = anchor?.getAttribute("href");
-    if (!anchor || !href || !event.currentTarget.contains(anchor)) return;
-    externalLinkClickHandler(href)(event);
-  }, []);
 
   const refreshManifest = useCallback(async () => {
     const requestId = ++manifestRequestId.current;
@@ -352,7 +344,7 @@ export function AnnouncementsPage() {
                 </a>
               </header>
 
-              <div className="announcement-document__body" onClick={handleDocumentClick}>
+              <div className="announcement-document__body">
                 {bodyState === "loading" && (
                   <div className="announcement-document__loading" role="status">
                     <LoaderCircle aria-hidden="true" className="spin" size={20} />

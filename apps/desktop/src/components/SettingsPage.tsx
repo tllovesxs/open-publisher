@@ -28,6 +28,7 @@ import type {
   RuntimeSnapshot,
   WechatSyncBridgeStatus,
 } from "../lib/desktopBridge";
+import { externalLinkClickHandler } from "../lib/externalLinks";
 import type { PlatformDefinition } from "../types";
 
 type SettingsTab = "models" | "accounts" | "writing" | "data";
@@ -1102,9 +1103,9 @@ export function SettingsPage({
                   <strong>{githubApplicationInfo.updateAvailable ? `发现 v${githubApplicationInfo.latestVersion}` : githubApplicationInfo.detail}</strong>
                   {githubApplicationInfo.releaseNotes && <p>{githubApplicationInfo.releaseNotes}</p>}
                   <div>
-                    <a href={`https://github.com/${githubApplicationInfo.repository}`} rel="noreferrer" target="_blank">项目主页</a>
-                    {githubApplicationInfo.releaseUrl && <a href={githubApplicationInfo.releaseUrl} rel="noreferrer" target="_blank">查看 Release</a>}
-                    <a href={githubApplicationInfo.authorUrl} rel="noreferrer" target="_blank">作者主页</a>
+                    <a href={`https://github.com/${githubApplicationInfo.repository}`} onClick={externalLinkClickHandler(`https://github.com/${githubApplicationInfo.repository}`)} rel="noreferrer" target="_blank">项目主页</a>
+                    {githubApplicationInfo.releaseUrl && <a href={githubApplicationInfo.releaseUrl} onClick={externalLinkClickHandler(githubApplicationInfo.releaseUrl)} rel="noreferrer" target="_blank">查看 Release</a>}
+                    <a href={githubApplicationInfo.authorUrl} onClick={externalLinkClickHandler(githubApplicationInfo.authorUrl)} rel="noreferrer" target="_blank">作者主页</a>
                   </div>
                 </div>
               )}

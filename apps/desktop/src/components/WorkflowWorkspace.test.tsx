@@ -50,6 +50,7 @@ function snapshot(overrides: Partial<WorkflowWorkspaceSnapshot> = {}): WorkflowW
 
 describe("WorkflowWorkspace", () => {
   it("opens active work, aggregates reviewed sources, and keeps writer deltas out of the timeline", () => {
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
     render(<WorkflowWorkspace snapshot={snapshot()} />);
 
     expect(screen.getByRole("tab", { name: /创作进度 2/ })).toBeVisible();
@@ -59,8 +60,13 @@ describe("WorkflowWorkspace", () => {
     fireEvent.click(screen.getByRole("tab", { name: /参考资料 1/ }));
     const source = screen.getByRole("link", { name: "Open Publisher release notes" });
     expect(source).toHaveAttribute("href", "https://example.test/releases");
+    fireEvent.click(source);
+    expect(windowOpen).toHaveBeenCalledWith(
+      "https://example.test/releases",
+      "_blank",
+      "noopener,noreferrer",
+    );
     expect(screen.getByText("example.test")).toBeVisible();
-
   });
 
   it("shows a retry action for a failed run when the caller can retry", () => {
