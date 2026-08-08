@@ -430,17 +430,21 @@ async fn extract_template(
     .map_err(|_| "template extraction task was cancelled".to_owned())?
 }
 
+fn save_model_configuration(
+    configure: impl FnOnce(ConfigureModelRequest) -> Result<ModelConfigurationSummary, String>,
+    request: ConfigureModelRequest,
+) -> Result<ModelConfigurationSummary, String> {
+    configure(request)
+}
+
 #[tauri::command]
 async fn configure_model(
     request: ConfigureModelRequest,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<ModelConfigurationSummary, String> {
     let model_store = Arc::clone(&state.model_store);
-    let pi_supervisor = Arc::clone(&state.pi_supervisor);
     tauri::async_runtime::spawn_blocking(move || {
-        let summary = model_store.configure_model(request)?;
-        pi_supervisor.stop()?;
-        Ok(summary)
+        save_model_configuration(|request| model_store.configure_model(request), request)
     })
     .await
     .map_err(|_| "model configuration task was cancelled".to_owned())?
@@ -681,4 +685,82 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Open Publisher");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::save_model_configuration;
+    use crate::supervisor::{ConfigureModelRequest, ModelConfigurationSummary};
+    use std::cell::Cell;
+
+    fn model_request() -> ConfigureModelRequest {
+        ConfigureModelRequest {
+            profile_id: Some("test-profile".to_owned()),
+            name: "Test model".to_owned(),
+            base_url: "https://example.test/v1".to_owned(),
+            text_protocol: "openai-completions".to_owned(),
+            api_key: String::new(),
+            text_api_key: "test-secret".to_owned(),
+            text_model: "test-text-model".to_owned(),
+            text_supports_vision: false,
+            text_reasoning: false,
+            text_thinking_level: "auto".to_owned(),
+            text_context_window: 128_000,
+            text_max_tokens: 16_384,
+            native_web_search: "auto".to_owned(),
+            image_base_url: None,
+            image_model: None,
+            image_api_key: String::new(),
+            image_trusted_hosts: Vec::new(),
+            tavily_api_key: String::new(),
+            github_token: String::new(),
+            timeout_seconds: 30,
+        }
+    }
+
+    fn model_summary() -> ModelConfigurationSummary {
+        ModelConfigurationSummary {
+            profile_id: "test-profile".to_owned(),
+            name: "Test model".to_owned(),
+            base_url: "https://example.test/v1".to_owned(),
+            text_protocol: "openai-completions".to_owned(),
+            text_model: "test-text-model".to_owned(),
+            text_supports_vision: false,
+            text_reasoning: false,
+            text_thinking_level: "auto".to_owned(),
+            text_context_window: 128_000,
+            text_max_tokens: 16_384,
+            native_web_search: "auto".to_owned(),
+            image_base_url: None,
+            image_model: None,
+            image_trusted_hosts: Vec::new(),
+            timeout_seconds: 30,
+            secret_configured: true,
+            image_secret_configured: false,
+            web_search_configured: false,
+            github_configured: false,
+            text_key_masked: Some("••••••cret".to_owned()),
+            image_key_masked: None,
+            tavily_key_masked: None,
+            github_token_masked: None,
+            persistence: "local-encrypted",
+        }
+    }
+
+    #[test]
+    fn model_configuration_save_is_independent_from_runtime_lifecycle() {
+        let configured = Cell::new(false);
+        let summary = save_model_configuration(
+            |request| {
+                configured.set(true);
+                assert_eq!(request.text_model, "test-text-model");
+                Ok(model_summary())
+            },
+            model_request(),
+        )
+        .expect("save model configuration");
+
+        assert!(configured.get());
+        assert_eq!(summary.text_model, "test-text-model");
+    }
 }
