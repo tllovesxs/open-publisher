@@ -230,4 +230,102 @@ describe("ImageService", () => {
     })).rejects.toThrow("no usable image output: Image provider returned a non-public image URL");
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves safe JSON details from image-provider HTTP errors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        code: 30014,
+        message: "Token is invalid.",
+        authorization: "Bearer provider-secret-that-must-not-leak",
+      }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const generation = service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    await expect(generation).rejects.toThrow(
+      "Image provider request failed with HTTP 401: 30014: Token is invalid.",
+    );
+    await expect(generation).rejects.not.toThrow("provider-secret-that-must-not-leak");
+  });
+
+  it("reads a nested provider error message without exposing sibling fields", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        error: {
+          message: "Image account is unauthorized.",
+          api_key: "nested-secret-that-must-not-leak",
+        },
+      }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const generation = service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    await expect(generation).rejects.toThrow(
+      "Image provider request failed with HTTP 403: Image account is unauthorized.",
+    );
+    await expect(generation).rejects.not.toThrow("nested-secret-that-must-not-leak");
+  });
+
+  it("does not expose non-JSON provider response bodies", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("upstream proxy failure: private-provider-response", { status: 502 }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    const generation = service.generate({
+      prompt: "a precise product diagram",
+      size: "1024x1024",
+      modelProfile: profile,
+    });
+
+    await expect(generation).rejects.toThrow("Image provider request failed with HTTP 502");
+    await expect(generation).rejects.not.toThrow("private-provider-response");
+  });
+
+  it("removes control characters and limits provider error detail length", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-publisher-image-service-"));
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ message: `Invalid\u0000\n${"x".repeat(2_000)}` }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const service = new ImageService(root, { resolve: async () => "test-secret" }, fetchImplementation);
+
+    let failure: Error | null = null;
+    try {
+      await service.generate({
+        prompt: "a precise product diagram",
+        size: "1024x1024",
+        modelProfile: profile,
+      });
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    }
+
+    expect(failure).not.toBeNull();
+    expect(failure!.message).toContain("Image provider request failed with HTTP 429: Invalid");
+    expect(failure!.message).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(failure!.message.length).toBeLessThanOrEqual(300);
+  });
+
 });
