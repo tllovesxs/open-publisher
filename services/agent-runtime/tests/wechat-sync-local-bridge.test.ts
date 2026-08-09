@@ -147,4 +147,72 @@ describe("WechatSyncLocalBridge", () => {
     await new Promise((resolve) => setTimeout(resolve, 35));
     expect(heartbeatCount).toBe(countAfterDisconnect);
   });
+
+  it("waits briefly for the extension's automatic reconnect before rejecting a request", async () => {
+    const bridge = new WechatSyncLocalBridge({
+      token: "extension-token",
+      websocketPort: 0,
+      httpPort: 0,
+      reconnectGraceMs: 500,
+    });
+    bridges.push(bridge);
+    bridge.start();
+
+    const responsePromise = fetch(`http://127.0.0.1:${bridge.httpPort}/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "listPlatforms", params: {} }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await connectExtension(bridge, (request) => ({
+      id: request.id,
+      result: [{ id: "csdn", isAuthenticated: true }],
+    }));
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      result: [{ id: "csdn", isAuthenticated: true }],
+    });
+  });
+
+  it("immediately marks an in-flight draft request uncertain when the socket is replaced", async () => {
+    const bridge = new WechatSyncLocalBridge({
+      token: "extension-token",
+      websocketPort: 0,
+      httpPort: 0,
+      requestTimeoutMs: 2_000,
+    });
+    bridges.push(bridge);
+    bridge.start();
+
+    const first = new WebSocket(`ws://127.0.0.1:${bridge.websocketPort}`);
+    sockets.push(first);
+    let draftReceived = false;
+    first.addEventListener("message", (event) => {
+      const request = JSON.parse(String(event.data)) as { method?: unknown };
+      if (request.method === "syncArticle") draftReceived = true;
+    });
+    await new Promise<void>((resolve, reject) => {
+      first.addEventListener("open", () => resolve(), { once: true });
+      first.addEventListener("error", () => reject(new Error("extension websocket failed")), { once: true });
+    });
+
+    const responsePromise = fetch(`http://127.0.0.1:${bridge.httpPort}/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        method: "syncArticle",
+        params: { platforms: ["csdn"], article: { title: "Draft", markdown: "# Draft" } },
+      }),
+    });
+    await expect.poll(() => draftReceived).toBe(true);
+    await connectExtension(bridge, (request) => ({ id: request.id, result: [] }));
+
+    const response = await responsePromise;
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      outcomeUncertain: true,
+    });
+  });
 });

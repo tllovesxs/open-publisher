@@ -91,6 +91,35 @@ describe("PublishDialog", () => {
     expect(screen.queryByRole("button", { name: "添加发布功能" })).toBeNull();
   });
 
+  it("does not label a slow platform scan as a WebSocket disconnect", () => {
+    render(
+      <PublishDialog
+        article={article}
+        bridge={{
+          available: true,
+          connected: true,
+          state: "platform_status_unavailable",
+          stale: true,
+          detail: "WechatSync 连接仍然正常，但平台登录状态读取失败。",
+          platforms: [{ id: "csdn", authenticated: true, accountLabel: "demo" }],
+        }}
+        onClose={vi.fn()}
+        onOpenPublishingGuide={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        open
+        platforms={platforms}
+        publishing={false}
+        publisherConfigured
+        refreshing={false}
+      />,
+    );
+
+    expect(screen.getByText("WechatSync 已连接，账号状态待刷新")).toBeVisible();
+    expect(screen.getByRole("button", { name: /同步到/ })).toBeDisabled();
+  });
+
   it("opens the publishing tutorial when no bridge Token has been configured", () => {
     const onOpenPublishingGuide = vi.fn();
     const onOpenSettings = vi.fn();

@@ -47,7 +47,11 @@ const VISUAL_OPERATION_MAX_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const REWRITE_OPERATION_MIN_TIMEOUT: Duration = Duration::from_secs(120);
 const REWRITE_OPERATION_MAX_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const REWRITE_POLLING_GRACE: Duration = Duration::from_secs(10);
-const PUBLISH_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+// WechatSync platform adapters may legitimately spend up to ten minutes on a
+// draft with several images. The native command must outlive that bounded
+// extension operation or it can report failure while the draft is still being
+// created in the browser.
+const PUBLISH_DELIVERY_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

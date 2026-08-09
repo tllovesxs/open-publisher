@@ -4,6 +4,8 @@ interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timeout: ReturnType<typeof setTimeout>;
+  readonly method: string;
+  readonly extension: Bun.ServerWebSocket<undefined>;
 }
 
 interface ExtensionResponse {
@@ -18,12 +20,14 @@ export interface WechatSyncLocalBridgeOptions {
   readonly httpPort: number;
   readonly requestTimeoutMs?: number;
   readonly heartbeatIntervalMs?: number;
+  readonly reconnectGraceMs?: number;
 }
 
 export class WechatSyncBridgeError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly outcomeUncertain = false,
   ) {
     super(message);
   }
@@ -38,14 +42,16 @@ export class WechatSyncLocalBridge {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly requestTimeoutMs: number;
   private readonly heartbeatIntervalMs: number;
+  private readonly reconnectGraceMs: number;
   private extension: Bun.ServerWebSocket<undefined> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private websocketServer: Bun.Server<undefined> | null = null;
   private httpServer: Bun.Server<undefined> | null = null;
 
   constructor(private readonly options: WechatSyncLocalBridgeOptions) {
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 360_000;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 11 * 60_000;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 20_000;
+    this.reconnectGraceMs = options.reconnectGraceMs ?? 4_000;
   }
 
   get websocketPort(): number | null {
@@ -68,8 +74,14 @@ export class WechatSyncLocalBridge {
         },
         websocket: {
           open: (socket) => {
-            if (this.extension && this.extension !== socket) {
-              this.extension.close(1012, "A newer extension connection replaced this one");
+            const previous = this.extension;
+            if (previous && previous !== socket) {
+              this.rejectPendingForExtension(
+                previous,
+                "WechatSync 扩展已建立新连接，旧请求的执行结果无法确认。",
+                503,
+              );
+              previous.close(1012, "A newer extension connection replaced this one");
             }
             this.extension = socket;
             this.startHeartbeat();
@@ -78,10 +90,14 @@ export class WechatSyncLocalBridge {
             if (this.extension === socket) this.handleExtensionMessage(message);
           },
           close: (socket) => {
+            this.rejectPendingForExtension(
+              socket,
+              "WechatSync 扩展已断开连接。",
+              503,
+            );
             if (this.extension !== socket) return;
             this.extension = null;
             this.clearHeartbeat();
-            this.rejectPending("WechatSync 扩展已断开连接。", 503);
           },
         },
       });
@@ -141,21 +157,27 @@ export class WechatSyncLocalBridge {
       return Response.json({ result });
     } catch (error: unknown) {
       const status = error instanceof WechatSyncBridgeError ? error.status : 502;
+      const outcomeUncertain = error instanceof WechatSyncBridgeError
+        && error.outcomeUncertain;
       return Response.json(
-        { error: error instanceof Error ? error.message : String(error) },
+        {
+          error: error instanceof Error ? error.message : String(error),
+          ...(outcomeUncertain ? { outcomeUncertain: true } : {}),
+        },
         { status },
       );
     }
   }
 
-  private requestExtension(
+  private async requestExtension(
     method: string,
     params?: Record<string, unknown>,
   ): Promise<unknown> {
     if (!this.options.token) {
       return Promise.reject(new WechatSyncBridgeError("请先在 Open Publisher 设置中填写 WechatSync Token。", 401));
     }
-    if (!this.extension) {
+    const extension = await this.waitForExtension();
+    if (!extension) {
       return Promise.reject(new WechatSyncBridgeError("本地桥已启动，但浏览器扩展尚未连接。", 503));
     }
 
@@ -163,11 +185,15 @@ export class WechatSyncLocalBridge {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new WechatSyncBridgeError(`WechatSync 请求超时：${method}`, 504));
+        reject(new WechatSyncBridgeError(
+          `WechatSync 请求超时：${method}`,
+          504,
+          method === "syncArticle",
+        ));
       }, this.requestTimeoutMs);
-      this.pending.set(id, { resolve, reject, timeout });
+      this.pending.set(id, { resolve, reject, timeout, method, extension });
       try {
-        this.extension!.send(JSON.stringify({
+        extension.send(JSON.stringify({
           id,
           method,
           token: this.options.token,
@@ -182,6 +208,16 @@ export class WechatSyncLocalBridge {
         ));
       }
     });
+  }
+
+  private async waitForExtension(): Promise<Bun.ServerWebSocket<undefined> | null> {
+    if (this.extension) return this.extension;
+    const deadline = Date.now() + this.reconnectGraceMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      if (this.extension) return this.extension;
+    }
+    return null;
   }
 
   private handleExtensionMessage(message: string | Buffer): void {
@@ -240,7 +276,11 @@ export class WechatSyncLocalBridge {
     if (this.extension !== extension) return;
     this.extension = null;
     this.clearHeartbeat();
-    this.rejectPending("WechatSync 扩展连接已失效，正在等待重新连接。", 503);
+    this.rejectPendingForExtension(
+      extension,
+      "WechatSync 扩展连接已失效，正在等待重新连接。",
+      503,
+    );
     try {
       extension.close(1011, "Heartbeat failed");
     } catch {
@@ -251,8 +291,29 @@ export class WechatSyncLocalBridge {
   private rejectPending(message: string, status: number): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
-      pending.reject(new WechatSyncBridgeError(message, status));
+      pending.reject(new WechatSyncBridgeError(
+        message,
+        status,
+        pending.method === "syncArticle",
+      ));
     }
     this.pending.clear();
+  }
+
+  private rejectPendingForExtension(
+    extension: Bun.ServerWebSocket<undefined>,
+    message: string,
+    status: number,
+  ): void {
+    for (const [id, pending] of this.pending) {
+      if (pending.extension !== extension) continue;
+      clearTimeout(pending.timeout);
+      pending.reject(new WechatSyncBridgeError(
+        message,
+        status,
+        pending.method === "syncArticle",
+      ));
+      this.pending.delete(id);
+    }
   }
 }

@@ -611,7 +611,7 @@ export interface GitHubApplicationInfo {
 export interface WechatSyncBridgeStatus {
   available: boolean;
   connected: boolean;
-  state: "connected" | "token_required" | "token_rejected" | "extension_waiting" | "service_unreachable" | "bridge_error";
+  state: "connected" | "token_required" | "token_rejected" | "extension_waiting" | "service_unreachable" | "bridge_error" | "platform_status_unavailable";
   /** A last-known snapshot retained only while a fresh bridge probe recovers. */
   stale?: boolean;
   detail: string;

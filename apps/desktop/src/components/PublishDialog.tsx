@@ -93,7 +93,12 @@ export function PublishDialog({
   }, [onRefresh, open]);
 
   if (!open) return null;
-  const connected = bridge?.available && bridge.connected && !bridge.stale;
+  const bridgeTransportConnected = Boolean(bridge?.available && bridge.connected);
+  const connected = Boolean(
+    bridgeTransportConnected
+    && bridge?.state === "connected"
+    && !bridge.stale,
+  );
   const missingPublisherConfiguration = !publisherConfigured;
   const selectedTargets = [...selected];
 
@@ -143,7 +148,9 @@ export function PublishDialog({
               ? "WechatSync 已连接"
               : missingPublisherConfiguration
                 ? "尚未添加发布功能"
-                : "WechatSync 暂未连接"}</strong>
+                : bridgeTransportConnected
+                  ? "WechatSync 已连接，账号状态待刷新"
+                  : "WechatSync 暂未连接"}</strong>
             <span>{connected
               ? bridge?.detail
               : missingPublisherConfiguration

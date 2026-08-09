@@ -11,6 +11,11 @@ const AUTHOR: &str = "tllovesxs";
 const AUTHOR_URL: &str = "https://github.com/tllovesxs";
 const WECHATSYNC_STATUS_ATTEMPTS: usize = 2;
 const WECHATSYNC_STATUS_RETRY_DELAY: Duration = Duration::from_millis(220);
+const WECHATSYNC_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+// WechatSync checks platform authentication in batches of five and gives each
+// adapter up to ten seconds. A cold/forced scan can therefore legitimately
+// take around one minute even though the WebSocket itself remains healthy.
+const WECHATSYNC_PLATFORM_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// Native, read-only integrations which must remain available even when the
 /// retired Python runtime is not installed or running.
@@ -96,7 +101,7 @@ impl DesktopIntegrationService {
     ) -> WechatSyncBridgeStatus {
         let client = match Client::builder()
             .connect_timeout(Duration::from_millis(700))
-            .timeout(Duration::from_secs(3))
+            .timeout(WECHATSYNC_PLATFORM_TIMEOUT)
             .no_proxy()
             .redirect(Policy::none())
             .build()
@@ -129,24 +134,28 @@ impl DesktopIntegrationService {
         let response = match read_wechat_sync_platforms(&client, bridge_origin, &request) {
             Ok(response) => response,
             Err(detail) => {
+                let token_required = detail.contains("HTTP 401");
+                let token_rejected = detail.contains("HTTP 403");
                 return WechatSyncBridgeStatus {
                     available: true,
-                    connected: false,
-                    state: if detail.contains("HTTP 401") {
+                    // `/status` already confirmed the WebSocket is open. A
+                    // slow adapter scan must not be shown as a disconnect.
+                    connected: true,
+                    state: if token_required {
                         "token_required"
-                    } else if detail.contains("HTTP 403") {
+                    } else if token_rejected {
                         "token_rejected"
                     } else {
-                        "bridge_error"
+                        "platform_status_unavailable"
                     }
                     .to_owned(),
-                    detail: if detail.contains("HTTP 401") {
+                    detail: if token_required {
                         "WechatSync Token 尚未配置。请将浏览器扩展中显示的 Token 填入设置。"
                             .to_owned()
-                    } else if detail.contains("HTTP 403") {
+                    } else if token_rejected {
                         "Token 与浏览器扩展不一致。请在设置中更新 Token 后重试。".to_owned()
                     } else {
-                        format!("WechatSync 已连接，但平台状态读取失败（{detail}）。")
+                        format!("WechatSync 连接仍然正常，但平台登录状态读取失败（{detail}）。请稍后刷新，不需要重新开关插件。")
                     },
                     platforms: Vec::new(),
                 };
@@ -218,6 +227,7 @@ fn read_wechat_sync_health(
     retry_wechat_sync_read(|| {
         let response = client
             .get(format!("{bridge_origin}/status"))
+            .timeout(WECHATSYNC_HEALTH_TIMEOUT)
             .send()
             .map_err(|error| error.to_string())?;
         read_wechat_sync_json(response)
@@ -229,14 +239,16 @@ fn read_wechat_sync_platforms(
     bridge_origin: &str,
     request: &Value,
 ) -> Result<WechatSyncRequestWire, String> {
-    retry_wechat_sync_read(|| {
-        let response = client
-            .post(format!("{bridge_origin}/request"))
-            .json(request)
-            .send()
-            .map_err(|error| error.to_string())?;
-        read_wechat_sync_json(response)
-    })
+    // Do not retry this request automatically. A timed-out HTTP caller does
+    // not cancel the already-dispatched extension scan, so a retry would run
+    // another full authentication sweep concurrently and make recovery worse.
+    let response = client
+        .post(format!("{bridge_origin}/request"))
+        .timeout(WECHATSYNC_PLATFORM_TIMEOUT)
+        .json(request)
+        .send()
+        .map_err(|error| error.to_string())?;
+    read_wechat_sync_json(response)
 }
 
 fn read_wechat_sync_json<T: serde::de::DeserializeOwned>(
@@ -341,7 +353,13 @@ fn version_tuple(value: &str) -> Option<(u32, u32, u32)> {
 mod tests {
     use super::{
         normalize_account_label, normalize_platform_id, retry_wechat_sync_read,
-        unavailable_wechat_sync_status, version_tuple,
+        unavailable_wechat_sync_status, version_tuple, DesktopIntegrationService,
+    };
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
     };
 
     #[test]
@@ -353,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn wechat_sync_retries_only_read_probes() {
+    fn wechat_sync_retries_short_health_probes() {
         let mut attempts = 0;
         let result = retry_wechat_sync_read(|| {
             attempts += 1;
@@ -365,6 +383,47 @@ mod tests {
         });
         assert_eq!(result.expect("probe retry"), "connected");
         assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn wechat_sync_platform_scan_can_exceed_the_old_three_second_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
+        let address = listener.local_addr().expect("test address");
+        let server = thread::spawn(move || {
+            for (index, body) in [
+                r#"{"connected":true}"#,
+                r#"{"result":[{"id":"csdn","isAuthenticated":true,"username":"writer"}]}"#,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (mut stream, _) = listener.accept().expect("bridge request");
+                let mut request = [0_u8; 4_096];
+                let _ = stream.read(&mut request).expect("read request");
+                if index == 1 {
+                    thread::sleep(Duration::from_millis(3_200));
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+            }
+        });
+
+        let started = Instant::now();
+        let status = DesktopIntegrationService::new()
+            .wechat_sync_status(false, &format!("http://{address}"));
+        server.join().expect("bridge server");
+
+        assert!(started.elapsed() >= Duration::from_secs(3));
+        assert!(status.connected);
+        assert_eq!(status.state, "connected");
+        assert_eq!(status.platforms.len(), 1);
+        assert_eq!(status.platforms[0].id, "csdn");
     }
 
     #[test]

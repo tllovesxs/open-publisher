@@ -31,7 +31,10 @@ export class PublishDeliveryFailure extends Error { constructor(message: string,
 export interface DraftDeliveryResult { remoteId: string; remoteUrl?: string; details: Record<string, unknown>; }
 export interface PublishDelivery { deliver(input: { idempotencyKey: string; platform: string; accountRef: string; title: string; markdown: string; mode: PublishDeliveryMode }): Promise<DraftDeliveryResult>; reconcile?(input: { idempotencyKey: string; platform: string; mode: PublishDeliveryMode }): Promise<DraftDeliveryResult | null>; }
 
-const WECHATSYNC_REQUEST_TIMEOUT_MS = 180_000;
+// WechatSync allows a platform adapter up to ten minutes for draft creation
+// (including image transfers). Keep our outer request slightly longer so the
+// extension, not an earlier desktop timeout, owns the definitive result.
+const WECHATSYNC_REQUEST_TIMEOUT_MS = 10 * 60_000 + 30_000;
 const IMAGE_UPLOAD_CHUNK_CHARACTERS = 256 * 1024;
 const INLINE_DATA_IMAGE_PATTERN =
   /data:(image\/(?:png|jpe?g|gif|webp|avif));base64,([a-z0-9+/]+={0,2})/gi;
@@ -103,6 +106,10 @@ const requiredText = (row: Record<string, unknown>, field: string): string => {
 type PlanRow = { id: string; revision_id: string; revision_hash: string; status: string; approval_status: string; plan_json: string; approval_binding_hash: string | null; created_at: string; updated_at: string };
 type VariantRow = { id: string; plan_id: string; platform: string; account_ref: string; title: string; markdown: string; content_hash: string; target_hash: string };
 type JobRow = { id: string; plan_id: string; variant_id: string; platform: string; account_ref: string; operation: string; idempotency_key: string; payload_hash: string; state: string; remote_id: string | null; last_error: string | null; reconcile_required: number; created_at: string; updated_at: string };
+type PlanConfiguration = {
+  modes: Record<string, PublishDeliveryMode>;
+  mediaSources?: PublishMediaSourceInput[];
+};
 
 /** Local-only bridge. It submits platform drafts and never receives browser credentials. */
 export class WechatSyncDraftDelivery implements PublishDelivery {
@@ -199,11 +206,20 @@ export class WechatSyncDraftDelivery implements PublishDelivery {
       }
       throw new PublishDeliveryFailure("WechatSync 本地桥未连接；请确认浏览器扩展的 CLI/MCP 连接已启用。", true);
     }
-    const payload = await response.json().catch(() => null) as { result?: unknown; error?: unknown } | null;
+    const payload = await response.json().catch(() => null) as {
+      result?: unknown;
+      error?: unknown;
+      outcomeUncertain?: unknown;
+    } | null;
     if (!response.ok) {
       const detail = typeof payload?.error === "string"
         ? payload.error
         : `WechatSync 本地桥请求失败：${method}`;
+      if (uncertainDraftOutcome && payload?.outcomeUncertain === true) {
+        throw new UnknownPublishOutcome(
+          `${detail} 草稿是否已经创建无法确认，请先检查平台草稿箱。`,
+        );
+      }
       throw new PublishDeliveryFailure(detail, true);
     }
     return payload?.result;
@@ -249,12 +265,16 @@ export class PublishOutboxService {
   createPlan(input: { revisionId: string; title: string; markdown: string; mediaSources?: readonly PublishMediaSourceInput[]; targets: readonly PublishTargetInput[] }): PublishPlanSummary {
     if (input.targets.length === 0) throw new Error("publish plan requires at least one target");
     const createdAt = now(); const planId = `plan:${randomUUID()}`; const revisionHash = hash(input.markdown);
-    const publishMarkdown = resolvePublishMediaReferences(input.markdown, input.mediaSources ?? []);
+    const mediaSources = [...(input.mediaSources ?? [])];
+    // Validate and hash the resolved article once, but keep compact asset://
+    // references in every platform row. Previously eight embedded images sent
+    // to ten platforms were copied ten times into SQLite before publishing.
+    const resolvedArticleHash = hash(resolvePublishMediaReferences(input.markdown, mediaSources));
     const variants = input.targets.map((target) => {
       const platform = target.platform.trim().toLowerCase(), accountRef = target.accountRef.trim(), title = (target.title ?? input.title).trim();
       if (!platform || !accountRef || !title) throw new Error("publish target platform, accountRef, and title are required");
-      const markdown = `<!-- open-publisher variant:${platform} -->\n\n${publishMarkdown.trim()}\n`;
-      const contentHash = hash(markdown); const id = `variant:${randomUUID()}`;
+      const markdown = `<!-- open-publisher variant:${platform} -->\n\n${input.markdown.trim()}\n`;
+      const contentHash = hash({ platform, resolvedArticleHash }); const id = `variant:${randomUUID()}`;
       return { id, platform, accountRef, title, markdown, contentHash, targetHash: hash({ platform, accountRef, title, contentHash, deliveryMode: target.deliveryMode }), deliveryMode: target.deliveryMode };
     });
     if (new Set(variants.map((variant) => variant.deliveryMode)).size !== 1) {
@@ -262,7 +282,7 @@ export class PublishOutboxService {
     }
     const binding = hash({ revisionId: input.revisionId, revisionHash, targetHashes: variants.map((variant) => variant.targetHash).sort() });
     this.database.transaction(() => {
-      this.database.query("INSERT INTO publish_plans_v2 VALUES (?, ?, ?, 'draft', 'pending', ?, NULL, ?, ?)").run(planId, input.revisionId, revisionHash, JSON.stringify({ binding, modes: Object.fromEntries(variants.map((variant) => [variant.id, variant.deliveryMode])) }), createdAt, createdAt);
+      this.database.query("INSERT INTO publish_plans_v2 VALUES (?, ?, ?, 'draft', 'pending', ?, NULL, ?, ?)").run(planId, input.revisionId, revisionHash, JSON.stringify({ binding, modes: Object.fromEntries(variants.map((variant) => [variant.id, variant.deliveryMode])), mediaSources }), createdAt, createdAt);
       for (const variant of variants) this.database.query("INSERT INTO publish_variants_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(variant.id, planId, variant.platform, variant.accountRef, variant.title, variant.markdown, variant.contentHash, variant.targetHash);
     })();
     return this.getPlan(planId);
@@ -280,10 +300,11 @@ export class PublishOutboxService {
     const plan = this.plan(planId); const binding = this.binding(planId, plan.revision_id, plan.revision_hash);
     if (plan.approval_status !== "approved" || plan.approval_binding_hash !== binding) throw new Error("publish plan must be explicitly approved without content changes");
     const createdAt = now();
+    const configuration = this.configuration(plan);
     this.database.transaction(() => {
       const variants = this.database.query("SELECT * FROM publish_variants_v2 WHERE plan_id = ?").all(planId).map((row) => this.variant(row as Record<string, unknown>));
       for (const variant of variants) {
-        const mode = (JSON.parse(plan.plan_json) as { modes: Record<string, PublishDeliveryMode> }).modes[variant.id] ?? "dry_run";
+        const mode = configuration.modes[variant.id] ?? "dry_run";
         const payload = { mode, variantId: variant.id, contentHash: variant.content_hash };
         const payloadHash = hash(payload); const idempotencyKey = hash(`publisher-v1:${planId}:${variant.id}:${variant.platform}:${variant.account_ref}:${payloadHash}`);
         this.database.query("INSERT OR IGNORE INTO publish_jobs_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, ?, ?)").run(`job:${randomUUID()}`, planId, variant.id, variant.platform, variant.account_ref, mode, idempotencyKey, payloadHash, JSON.stringify(payload), createdAt, createdAt);
@@ -305,6 +326,11 @@ export class PublishOutboxService {
     const rawVariant = this.database.query("SELECT * FROM publish_variants_v2 WHERE id = ?").get(job.variant_id) as Record<string, unknown> | null;
     if (!rawVariant) throw new Error("publish variant not found");
     const variant = this.variant(rawVariant);
+    const configuration = this.configuration(plan);
+    const deliveryMarkdown = resolvePublishMediaReferences(
+      variant.markdown,
+      configuration.mediaSources ?? [],
+    );
     const startedAt = now();
     const attemptNumber = this.database.transaction(() => {
       // The conditional write is the outbox claim. A second runtime may have
@@ -327,7 +353,7 @@ export class PublishOutboxService {
     })();
     if (attemptNumber === null) throw new Error("publish job was claimed by another process");
     try {
-      const result = await this.delivery.deliver({ idempotencyKey: String(job.idempotency_key), platform: variant.platform, accountRef: variant.account_ref, title: variant.title, markdown: variant.markdown, mode: job.operation as PublishDeliveryMode });
+      const result = await this.delivery.deliver({ idempotencyKey: String(job.idempotency_key), platform: variant.platform, accountRef: variant.account_ref, title: variant.title, markdown: deliveryMarkdown, mode: job.operation as PublishDeliveryMode });
       const completedAt = now(); this.database.transaction(() => { this.database.query("UPDATE publish_attempts_v2 SET state = 'succeeded', response_json = ?, completed_at = ? WHERE job_id = ? AND attempt_number = ?").run(JSON.stringify(result), completedAt, jobId, attemptNumber); this.database.query("UPDATE publish_jobs_v2 SET state = 'succeeded', remote_id = ?, last_error = NULL, reconcile_required = 0, updated_at = ? WHERE id = ?").run(result.remoteId, completedAt, jobId); this.database.query("INSERT OR REPLACE INTO publish_receipts_v2 VALUES (?, ?, ?, 'draft_saved', ?, ?, ?, ?, ?)").run(`receipt:${randomUUID()}`, jobId, variant.platform, result.remoteId, result.remoteUrl ?? null, job.payload_hash, JSON.stringify(result.details), completedAt); })();
     } catch (error: unknown) {
       const unknown = error instanceof UnknownPublishOutcome; const retryable = error instanceof PublishDeliveryFailure && error.retryable; const message = error instanceof Error ? error.message : "unexpected publisher error"; const state = unknown ? "unknown" : retryable ? "failed_retryable" : "failed_terminal"; const completedAt = now(); this.database.transaction(() => { this.database.query("UPDATE publish_attempts_v2 SET state = ?, error = ?, completed_at = ? WHERE job_id = ? AND attempt_number = ?").run(unknown ? "unknown" : "failed", message, completedAt, jobId, attemptNumber); this.database.query("UPDATE publish_jobs_v2 SET state = ?, last_error = ?, reconcile_required = ?, updated_at = ? WHERE id = ?").run(state, message, unknown ? 1 : 0, completedAt, jobId); })();
@@ -472,6 +498,16 @@ export class PublishOutboxService {
   private plan(id: string): PlanRow { const row = this.database.query("SELECT * FROM publish_plans_v2 WHERE id = ?").get(id) as Record<string, unknown> | null; if (!row) throw new Error("publish plan not found"); return { id: requiredText(row, "id"), revision_id: requiredText(row, "revision_id"), revision_hash: requiredText(row, "revision_hash"), status: requiredText(row, "status"), approval_status: requiredText(row, "approval_status"), plan_json: requiredText(row, "plan_json"), approval_binding_hash: typeof row.approval_binding_hash === "string" ? row.approval_binding_hash : null, created_at: requiredText(row, "created_at"), updated_at: requiredText(row, "updated_at") }; }
   private variant(row: Record<string, unknown>): VariantRow { return { id: requiredText(row, "id"), plan_id: requiredText(row, "plan_id"), platform: requiredText(row, "platform"), account_ref: requiredText(row, "account_ref"), title: requiredText(row, "title"), markdown: requiredText(row, "markdown"), content_hash: requiredText(row, "content_hash"), target_hash: requiredText(row, "target_hash") }; }
   private job(row: Record<string, unknown>): JobRow { const reconcile = row.reconcile_required; if (reconcile !== 0 && reconcile !== 1) throw new Error("Corrupt publish outbox row: reconcile_required is invalid"); return { id: requiredText(row, "id"), plan_id: requiredText(row, "plan_id"), variant_id: requiredText(row, "variant_id"), platform: requiredText(row, "platform"), account_ref: requiredText(row, "account_ref"), operation: requiredText(row, "operation"), idempotency_key: requiredText(row, "idempotency_key"), payload_hash: requiredText(row, "payload_hash"), state: requiredText(row, "state"), remote_id: typeof row.remote_id === "string" ? row.remote_id : null, last_error: typeof row.last_error === "string" ? row.last_error : null, reconcile_required: reconcile, created_at: requiredText(row, "created_at"), updated_at: requiredText(row, "updated_at") }; }
+  private configuration(plan: PlanRow): PlanConfiguration {
+    const value = JSON.parse(plan.plan_json) as Partial<PlanConfiguration>;
+    if (!value.modes || typeof value.modes !== "object" || Array.isArray(value.modes)) {
+      throw new Error("corrupt publish plan: delivery modes are missing");
+    }
+    if (value.mediaSources !== undefined && !Array.isArray(value.mediaSources)) {
+      throw new Error("corrupt publish plan: media sources are invalid");
+    }
+    return value as PlanConfiguration;
+  }
   private binding(planId: string, revisionId: string, revisionHash: string): string { const targets = (this.database.query("SELECT target_hash FROM publish_variants_v2 WHERE plan_id = ? ORDER BY id").all(planId) as Array<{ target_hash: string }>).map((value) => value.target_hash).sort(); return hash({ revisionId, revisionHash, targetHashes: targets }); }
   private refreshPlan(planId: string): void { const states = (this.database.query("SELECT state FROM publish_jobs_v2 WHERE plan_id = ?").all(planId) as Array<{ state: string }>).map((row) => row.state); const status = states.some((state) => ["unknown", "failed_terminal"].includes(state)) ? "needs_attention" : states.length > 0 && states.every((state) => state === "succeeded") ? "completed" : states.some((state) => state === "in_progress") ? "running" : "queued"; this.database.query("UPDATE publish_plans_v2 SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), planId); }
 }

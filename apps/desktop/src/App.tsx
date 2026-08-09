@@ -4469,13 +4469,20 @@ export default function App() {
     setPublishAction("process");
     setPublishError(null);
     try {
-      const status = await desktopBridge.wechatSyncStatus({ forceRefresh: true });
-      if (status.available && status.connected && status.platforms.length > 0) {
-        lastKnownWechatSyncStatus.current = status;
-      }
-      setWechatSyncStatus({ ...status, stale: false });
-      if (!status.available || !status.connected) {
-        throw new Error(status.detail || "WechatSync 本地桥未连接。");
+      // The dialog has already loaded an authenticated platform snapshot.
+      // Forcing another full adapter scan here can take around one minute and
+      // previously made the healthy WebSocket look disconnected after the
+      // desktop's short status timeout. Use the visible snapshot and let the
+      // actual draft request be the authoritative connection check.
+      const status = wechatSyncStatus;
+      if (
+        !status
+        || !status.available
+        || !status.connected
+        || status.stale
+        || status.state !== "connected"
+      ) {
+        throw new Error(status?.detail || "WechatSync 本地桥未连接。");
       }
       const unauthenticated = targets.filter(
         (platform) => !status.platforms.find((item) => item.id === platform)?.authenticated,

@@ -49,6 +49,21 @@ describe("WechatSyncDraftDelivery", () => {
     expect(body.params.article.idempotencyKey).toBe(deliveryInput.idempotencyKey);
   });
 
+  it("preserves a disconnect after draft dispatch as an uncertain outcome", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        {
+          error: "WechatSync 扩展已断开连接。",
+          outcomeUncertain: true,
+        },
+        { status: 503 },
+      ),
+    );
+    const delivery = new WechatSyncDraftDelivery(fetchImplementation);
+
+    await expect(delivery.deliver(deliveryInput)).rejects.toBeInstanceOf(UnknownPublishOutcome);
+  });
+
   it("uploads inline image data before syncing and sends only a platform URL", async () => {
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     const fetchImplementation = vi.fn<typeof fetch>();
@@ -268,6 +283,43 @@ describe("PublishOutboxService", () => {
       expect(service.getPlan(plan.planId).jobs[0]).toMatchObject({ state: "succeeded" });
     } finally {
       releaseDelivery?.();
+      database.close();
+    }
+  });
+
+  it("stores embedded media once instead of copying it into every platform variant", async () => {
+    const database = openRuntimeDatabase(await mkdtemp(join(tmpdir(), "open-publisher-outbox-compact-media-")));
+    const delivery: PublishDelivery = {
+      async deliver() {
+        return { remoteId: "test:compact", details: {} };
+      },
+    };
+    const service = new PublishOutboxService(database.sqlite, delivery);
+    const image = `data:image/png;base64,${"a".repeat(128 * 1024)}`;
+    try {
+      service.createPlan({
+        revisionId: "revision:compact",
+        title: "Article",
+        markdown: "# Article\n\n![产品截图](asset://media-product)",
+        mediaSources: [{ assetId: "media-product", source: image }],
+        targets: Array.from({ length: 10 }, (_, index) => ({
+          platform: `platform-${index}`,
+          accountRef: `desktop-platform-${index}`,
+          deliveryMode: "wechat_sync_draft" as const,
+        })),
+      });
+
+      const variants = database.sqlite.query(
+        "SELECT markdown FROM publish_variants_v2",
+      ).all() as Array<{ markdown: string }>;
+      const plan = database.sqlite.query(
+        "SELECT plan_json FROM publish_plans_v2 LIMIT 1",
+      ).get() as { plan_json: string };
+      expect(variants).toHaveLength(10);
+      expect(variants.every((variant) => variant.markdown.includes("asset://media-product"))).toBe(true);
+      expect(variants.some((variant) => variant.markdown.includes("data:image/"))).toBe(false);
+      expect(plan.plan_json.match(/data:image\/png;base64/g)).toHaveLength(1);
+    } finally {
       database.close();
     }
   });
