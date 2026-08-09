@@ -5038,12 +5038,12 @@ export default function App() {
       setRuntime(await desktopBridge.piRuntimeSnapshot());
       setToast(
         result.mocked
-          ? "当前连接使用 Mock 模型"
-          : `模型连接成功 · ${result.model}`,
+          ? "当前文本模型连接使用 Mock 模型"
+          : `文本模型连接成功 · ${result.model}`,
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      setModelError(`连接测试失败：${detail.slice(0, 160)}`);
+      setModelError(`文本模型连接测试失败：${detail.slice(0, 160)}`);
     } finally {
       setConfiguringModel(false);
     }

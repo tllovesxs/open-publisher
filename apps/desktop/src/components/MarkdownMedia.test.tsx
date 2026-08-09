@@ -30,6 +30,19 @@ function WorkbenchHarness({ onImageFileDrop = vi.fn() }: { onImageFileDrop?: (fi
 }
 
 describe("Markdown media support", () => {
+  it("opens external Markdown links with the controlled external opener", () => {
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+    render(<MarkdownPreview markdown="[项目主页](https://example.test/project)" />);
+
+    fireEvent.click(screen.getByRole("link", { name: "项目主页" }));
+
+    expect(windowOpen).toHaveBeenCalledWith(
+      "https://example.test/project",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
+
   it("converts generated runtime IDs into Markdown-safe media IDs", () => {
     expect(generatedMediaAssetId("asset:8676efc7-42ff-493a-9606-c52b1cb35689"))
       .toBe("generated-asset-8676efc7-42ff-493a-9606-c52b1cb35689");

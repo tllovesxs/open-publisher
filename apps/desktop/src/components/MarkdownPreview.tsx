@@ -16,6 +16,7 @@ import ReactMarkdown, {
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { externalLinkClickHandler } from "../lib/externalLinks";
 import { resolveMarkdownImageSource } from "../lib/mediaReferences";
 import type { MediaAsset } from "../types";
 
@@ -193,6 +194,7 @@ export function MarkdownPreview({
         <a
           {...props}
           href={safeHref}
+          onClick={internal ? undefined : externalLinkClickHandler(safeHref)}
           rel={internal ? undefined : "noreferrer"}
           target={internal ? undefined : "_blank"}
         >

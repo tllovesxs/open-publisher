@@ -28,6 +28,7 @@ import type {
   RuntimeSnapshot,
   WechatSyncBridgeStatus,
 } from "../lib/desktopBridge";
+import { externalLinkClickHandler } from "../lib/externalLinks";
 import type { PlatformDefinition } from "../types";
 
 type SettingsTab = "models" | "accounts" | "writing" | "data";
@@ -257,7 +258,7 @@ export function SettingsPage({
     setNativeWebSearch(profile.nativeWebSearch ?? "auto");
     setTimeoutSeconds(profile.timeoutSeconds);
     clearSecretInputs();
-    setValidation("这个档案尚未配置文本 API Key，请输入后点击“保存并测试”。");
+    setValidation("这个档案尚未配置文本 API Key，请输入后点击“保存并测试文本模型”。");
     window.setTimeout(() => document.getElementById("model-api-key")?.focus(), 0);
   };
 
@@ -457,7 +458,7 @@ export function SettingsPage({
                     }`}
                   >
                     <CheckCircle2 size={15} />
-                    {modelTest.mocked ? "Mock 模型" : "连接成功"}
+                    {modelTest.mocked ? "Mock 文本模型" : "文本模型连接成功"}
                     {typeof modelTest.latencyMs === "number" && ` · ${modelTest.latencyMs} ms`}
                   </span>
                 )}
@@ -881,7 +882,7 @@ export function SettingsPage({
                     ) : (
                       <Check size={16} />
                     )}
-                    {configuring ? "正在测试连接" : "保存并测试"}
+                    {configuring ? "正在测试文本模型" : "保存并测试文本模型"}
                   </button>
                   {modelConfiguration && (
                     <span className="session-note">
@@ -889,6 +890,9 @@ export function SettingsPage({
                     </span>
                   )}
                 </div>
+                <p className="session-note">
+                  生图模型将在首次生成图片时验证，不会在保存时发起生图请求。
+                </p>
                 {modelTest?.responseText && (
                   <p className="session-note" role="status">
                     Pi 探针响应：{modelTest.responseText}
@@ -1099,9 +1103,9 @@ export function SettingsPage({
                   <strong>{githubApplicationInfo.updateAvailable ? `发现 v${githubApplicationInfo.latestVersion}` : githubApplicationInfo.detail}</strong>
                   {githubApplicationInfo.releaseNotes && <p>{githubApplicationInfo.releaseNotes}</p>}
                   <div>
-                    <a href={`https://github.com/${githubApplicationInfo.repository}`} rel="noreferrer" target="_blank">项目主页</a>
-                    {githubApplicationInfo.releaseUrl && <a href={githubApplicationInfo.releaseUrl} rel="noreferrer" target="_blank">查看 Release</a>}
-                    <a href={githubApplicationInfo.authorUrl} rel="noreferrer" target="_blank">作者主页</a>
+                    <a href={`https://github.com/${githubApplicationInfo.repository}`} onClick={externalLinkClickHandler(`https://github.com/${githubApplicationInfo.repository}`)} rel="noreferrer" target="_blank">项目主页</a>
+                    {githubApplicationInfo.releaseUrl && <a href={githubApplicationInfo.releaseUrl} onClick={externalLinkClickHandler(githubApplicationInfo.releaseUrl)} rel="noreferrer" target="_blank">查看 Release</a>}
+                    <a href={githubApplicationInfo.authorUrl} onClick={externalLinkClickHandler(githubApplicationInfo.authorUrl)} rel="noreferrer" target="_blank">作者主页</a>
                   </div>
                 </div>
               )}

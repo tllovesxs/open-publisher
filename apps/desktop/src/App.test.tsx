@@ -945,9 +945,10 @@ describe("desktop product flow", () => {
 
     const keyInput = screen.getByLabelText("API Key") as HTMLInputElement;
     fireEvent.change(keyInput, { target: { value: "test-session-secret-value" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试文本模型" }));
 
-    expect(await screen.findByText("连接成功")).toBeVisible();
+    expect(await screen.findByText("文本模型连接成功")).toBeVisible();
+    expect(screen.getByText("文本模型连接成功 · test-text-model")).toBeVisible();
     expect(screen.queryByText("test-session-secret-value")).toBeNull();
     expect(keyInput.type).toBe("password");
   });

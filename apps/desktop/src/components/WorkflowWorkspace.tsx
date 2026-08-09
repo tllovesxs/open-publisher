@@ -19,6 +19,7 @@ import type {
   WorkflowActivityNodeId,
   WorkflowSourceSummary,
 } from "../lib/desktopBridge";
+import { externalLinkClickHandler } from "../lib/externalLinks";
 
 export type WorkspaceRunStatus = "running" | "completed" | "failed";
 
@@ -328,7 +329,7 @@ export function WorkflowWorkspace({
                 <summary>参考资料 {sources.length}</summary>
                 <div>
                   {sources.map((source) => (
-                    <a href={source.url} key={source.url} rel="noreferrer" target="_blank">{source.title || sourceDomain(source.url)}</a>
+                    <a href={source.url} key={source.url} onClick={externalLinkClickHandler(source.url)} rel="noreferrer" target="_blank">{source.title || sourceDomain(source.url)}</a>
                   ))}
                 </div>
               </details>
@@ -420,7 +421,7 @@ export function WorkflowWorkspace({
               {sources.map((source) => (
                 <article className="workflow-source-card" key={source.url}>
                   <div><span>{sourceDomain(source.url)}</span>{source.publishedDate && <time>{source.publishedDate}</time>}</div>
-                  <a href={source.url} rel="noreferrer" target="_blank">{source.title}</a>
+                  <a href={source.url} onClick={externalLinkClickHandler(source.url)} rel="noreferrer" target="_blank">{source.title}</a>
                   <p>{source.excerpt}</p>
                 </article>
               ))}

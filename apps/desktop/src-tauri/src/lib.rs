@@ -436,14 +436,9 @@ async fn configure_model(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<ModelConfigurationSummary, String> {
     let model_store = Arc::clone(&state.model_store);
-    let pi_supervisor = Arc::clone(&state.pi_supervisor);
-    tauri::async_runtime::spawn_blocking(move || {
-        let summary = model_store.configure_model(request)?;
-        pi_supervisor.stop()?;
-        Ok(summary)
-    })
-    .await
-    .map_err(|_| "model configuration task was cancelled".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || model_store.configure_model(request))
+        .await
+        .map_err(|_| "model configuration task was cancelled".to_owned())?
 }
 
 #[tauri::command]
@@ -612,6 +607,7 @@ fn sync_window_theme(theme: NativeWindowTheme, app: tauri::AppHandle) -> Result<
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(target_os = "windows")]
             window_effects::install_windows_mica(app);
@@ -681,4 +677,21 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Open Publisher");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn model_configuration_command_does_not_control_runtime_lifecycle() {
+        let source = include_str!("lib.rs");
+        let command = source
+            .split("async fn configure_model(")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn model_configuration(").next())
+            .expect("configure_model command source");
+
+        assert!(command.contains("model_store.configure_model(request)"));
+        assert!(!command.contains("pi_supervisor"));
+        assert!(!command.contains(".stop("));
+    }
 }

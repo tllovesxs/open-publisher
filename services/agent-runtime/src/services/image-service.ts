@@ -8,6 +8,8 @@ const MAX_PROMPT_LENGTH = 16_000;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_IMAGES = 4;
+const MAX_PROVIDER_ERROR_FIELD_LENGTH = 160;
+const MAX_PROVIDER_ERROR_DETAIL_LENGTH = 240;
 const SUPPORTED_SIZES = new Set(["512x512", "768x768", "1024x1024", "1024x1536", "1536x1024"]);
 const PROVIDER_NEGATIVE_PROMPT = [
   "text", "letters", "words", "numbers", "typography", "pseudo-text", "headings",
@@ -142,6 +144,41 @@ const trustedHostsForProfile = (profile: ImageModelProfile): Set<string> => {
     // Profile validation below reports an invalid base URL.
   }
   return hosts;
+};
+
+const sanitiseProviderErrorValue = (value: unknown): string | null => {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const sanitised = String(value)
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_PROVIDER_ERROR_FIELD_LENGTH)
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[REDACTED]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "$1 [REDACTED]")
+    .replace(/\b((?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]");
+  return sanitised || null;
+};
+
+export const readImageProviderError = async (response: Response): Promise<string> => {
+  const baseMessage = `Image provider request failed with HTTP ${response.status}`;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await response.text());
+  } catch {
+    return baseMessage;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return baseMessage;
+
+  const record = payload as Record<string, unknown>;
+  const code = sanitiseProviderErrorValue(record.code);
+  const nestedError = record.error && typeof record.error === "object" && !Array.isArray(record.error)
+    ? record.error as Record<string, unknown>
+    : null;
+  const message = sanitiseProviderErrorValue(record.message)
+    ?? sanitiseProviderErrorValue(nestedError?.message);
+  const detail = [code, message].filter((value): value is string => Boolean(value)).join(": ");
+  if (!detail) return baseMessage;
+  return `${baseMessage}: ${detail.slice(0, MAX_PROVIDER_ERROR_DETAIL_LENGTH)}`;
 };
 
 const readApiEntries = (payload: unknown): ImageApiEntry[] => {
@@ -362,7 +399,7 @@ export class ImageService {
     }
     throwIfOperationCancelled(signal);
     if (!response.ok) {
-      throw new Error(`Image provider request failed with HTTP ${response.status}`);
+      throw new Error(await readImageProviderError(response));
     }
     const entries = readApiEntries(await response.json());
     if (entries.length === 0) throw new Error("Image provider returned no image output");
